@@ -34,6 +34,7 @@ export interface TokenUsage {
   cachedInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  contextTokens?: number;
   contextWindow?: number;
   costUsd?: number;
 }
@@ -1426,22 +1427,13 @@ export function formatTokenCount(value: number): string {
   return `${value}`;
 }
 
-// "186.1K (18%) · $0.10" — percent only with a known context window, cost
-// only when the provider reports one.
+// Session totals describe billed work, not the current context window.
 export function formatTokenUsage(usage: TokenUsage | undefined): string {
   if (!usage) return "";
   const total = usage.totalTokens ?? 0;
   const parts: string[] = [];
   if (total > 0) {
-    let tokens = formatTokenCount(total);
-    if (usage.contextWindow && usage.contextWindow > 0) {
-      const percent = Math.min(
-        100,
-        Math.round((total / usage.contextWindow) * 100),
-      );
-      tokens += ` (${percent}%)`;
-    }
-    parts.push(tokens);
+    parts.push(`${formatTokenCount(total)} total`);
   }
   if (usage.costUsd && usage.costUsd > 0)
     parts.push(`$${usage.costUsd.toFixed(2)}`);
@@ -2640,19 +2632,44 @@ export function contextMeter(
   usage: TokenUsage | undefined,
   cells = 8,
 ): ContextMeter | undefined {
-  if (!usage?.contextWindow || !usage.totalTokens) return;
-  const ratio = Math.max(0, Math.min(1, usage.totalTokens / usage.contextWindow));
+  if (!usage || !Number.isFinite(usage.contextWindow) || usage.contextWindow! <= 0 ||
+      !Number.isFinite(usage.contextTokens) || usage.contextTokens! < 0) return;
+  const ratio = Math.max(0, Math.min(1, usage.contextTokens! / usage.contextWindow!));
   const filled = Math.round(ratio * cells);
   return {
     ratio,
     filled,
     total: cells,
-    label: `${formatTokenCount(usage.totalTokens)} · ${Math.round(ratio * 100)}%`,
+    label: `${formatTokenCount(usage.contextTokens!)} · ${Math.round(ratio * 100)}%`,
   };
 }
 
 export function renderMeter(meter: ContextMeter): string {
   return `${"▰".repeat(meter.filled)}${"▱".repeat(Math.max(0, meter.total - meter.filled))}`;
+}
+
+// Older controllers saved only cumulative totals. Recover the latest context
+// snapshot from their private event log without rewriting their state.
+export function contextUsageFromEvents(content: string, threadId?: string): Partial<TokenUsage> | undefined {
+  const lines = content.split("\n");
+  for (let index = lines.length - 1; index >= 0; index--) {
+    try {
+      const event = JSON.parse(lines[index]);
+      if (event?.method !== "thread/tokenUsage/updated") continue;
+      const params = event.params;
+      if (threadId && params?.threadId && params.threadId !== threadId) continue;
+      const usage = params?.tokenUsage;
+      const tokens = usage?.last?.totalTokens;
+      if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0) return;
+      const window = usage.modelContextWindow ?? usage.contextWindow;
+      return {
+        contextTokens: tokens,
+        ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { contextWindow: window } : {}),
+      };
+    } catch {
+      // A bounded tail can contain a partial event; use complete records only.
+    }
+  }
 }
 
 export interface PaletteCommand {
@@ -2758,15 +2775,19 @@ export async function deleteSessionArtifacts(
     throw new Error(`Session is ${session.status}; stop it before deleting`);
   const stateDir = resolve(session.stateDir);
   const stateFile = join(stateDir, "state.json");
-  let persisted: { stateDir?: string } | undefined;
+  let persisted: Partial<RunState> | undefined;
   try {
-    persisted = JSON.parse(await readFile(stateFile, "utf8")) as { stateDir?: string };
+    persisted = JSON.parse(await readFile(stateFile, "utf8")) as Partial<RunState>;
   } catch {
     persisted = undefined;
   }
   const { rm } = await import("node:fs/promises");
   let removedStateDir = false;
   if (persisted?.stateDir && resolve(persisted.stateDir) === stateDir) {
+    if (typeof persisted.status !== "string" || !Number.isInteger(persisted.pid))
+      throw new Error("Cannot verify the session state; refresh before deleting");
+    if (!isTerminalStatus(persisted.status) && defaultProcessAlive(persisted.pid!))
+      throw new Error(`Session is now ${persisted.status}; stop it before deleting`);
     await rm(stateDir, { recursive: true, force: true });
     removedStateDir = true;
   }

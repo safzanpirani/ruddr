@@ -13,6 +13,9 @@ import {
 import {
   blendHex,
   clampScrollOffset,
+  contextMeter,
+  formatTokenUsage,
+  renderMeter,
   highlightCode,
   highlightLines,
   parseMarkdown,
@@ -417,4 +420,32 @@ export function isLive(session: Session): boolean {
 export function formatDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${milliseconds}ms`;
   return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`;
+}
+
+export function renderUsage(session: Session | undefined): StyledText {
+  if (!session) return t``;
+  const chunks: StyledText["chunks"] = [];
+  const meter = contextMeter(session.tokenUsage, 8);
+  if (meter) {
+    const color =
+      meter.ratio >= 0.85
+        ? palette.danger
+        : meter.ratio >= 0.6
+          ? palette.warning
+          : palette.success;
+    chunks.push(
+      ...t`${fg(color)(renderMeter(meter))} ${fg(palette.text)(meter.label)}`.chunks,
+    );
+    const cost = session.tokenUsage?.costUsd;
+    if (cost !== undefined)
+      chunks.push(...t`${fg(palette.dim)(` · $${cost.toFixed(cost < 1 ? 3 : 2)}`)}`.chunks);
+  } else {
+    const usage = formatTokenUsage(session.tokenUsage);
+    if (usage) chunks.push(...t`${fg(palette.text)(usage)}`.chunks);
+  }
+  if (chunks.length > 0) chunks.push(...t`${fg(palette.dim)(" · ")}`.chunks);
+  chunks.push(
+    ...t`${fg(sessionStatusColor(session.status))(session.status)}`.chunks,
+  );
+  return new StyledText(chunks);
 }

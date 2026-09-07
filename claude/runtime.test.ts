@@ -95,6 +95,17 @@ describe("query options", () => {
     expect(resumed.persistSession).toBe(false);
   });
 
+  test("does not approve Bash requests in read-only mode", async () => {
+    const options = buildQueryOptions({
+      id: "read-only-id", cwd: "/tmp/project", sandbox: "read-only",
+      persistSession: true, resumed: false,
+    });
+    expect(options.sandbox).toBeUndefined();
+    expect((await options.canUseTool!("Bash", { command: "touch probe-file" }, {
+      signal: new AbortController().signal, toolUseID: "tool", requestId: "request",
+    }))?.behavior).toBe("deny");
+  });
+
   test("runs workspace Bash inside Claude's command sandbox", async () => {
     const workspace = buildQueryOptions({
       id: "workspace-id",
@@ -182,6 +193,54 @@ describe("ClaudeRuddrAdapter", () => {
     ]);
   });
 
+  test("allows a retry after query construction fails", async () => {
+    const emitted: ProtocolMessage[] = [];
+    const stream = new FakeSDKStream();
+    let attempts = 0;
+    const adapter = new ClaudeRuddrAdapter((message) => { emitted.push(message); }, () => {
+      if (++attempts === 1) throw new Error("query construction failed");
+      return stream.query();
+    });
+    try {
+      await adapter.handle({ id: "init", method: "initialize", params: {} });
+      await adapter.handle({ id: "thread", method: "thread/start", params: { cwd: "/tmp/project", sandbox: "read-only" } });
+      const threadId = responseResult(emitted, "thread", "thread.id");
+      const params = { threadId, input: [{ type: "text", text: "hello" }] };
+      await adapter.handle({ id: "first", method: "turn/start", params });
+      expect(emitted.find((message) => "id" in message && message.id === "first")).toMatchObject({ error: { message: "query construction failed" } });
+      await adapter.handle({ id: "retry", method: "turn/start", params });
+      expect(responseResult(emitted, "retry", "turn.id")).toBeTruthy();
+      expect(attempts).toBe(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  test("preserves distinct identical messages while suppressing a repeated result fallback", async () => {
+    const emitted: ProtocolMessage[] = [];
+    const stream = new FakeSDKStream();
+    const adapter = new ClaudeRuddrAdapter((message) => { emitted.push(message); }, () => stream.query());
+    try {
+      await adapter.handle({ id: "init", method: "initialize", params: {} });
+      await adapter.handle({ id: "thread", method: "thread/start", params: { cwd: "/tmp/project", sandbox: "read-only" } });
+      const threadId = responseResult(emitted, "thread", "thread.id");
+      await adapter.handle({ id: "turn", method: "turn/start", params: { threadId, input: [{ type: "text", text: "hello" }] } });
+      for (const index of [0, 1]) {
+        stream.push(sdk({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", index, content_block: { type: "text", text: "Done." } } }));
+        stream.push(sdk({ type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_stop", index } }));
+      }
+      stream.push(sdk({ type: "result", subtype: "success", result: "Done.", queued_turn_count: 0 }));
+      await waitFor(() => emitted.some((message) => notification(message, "turn/completed")));
+      const messages = emitted.filter((message) => notification(message, "item/completed") && JSON.stringify(message).includes('"agentMessage"'));
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ params: { item: { phase: "commentary", text: "Done." } } });
+      expect(messages[1]).toMatchObject({ params: { item: { phase: "final_answer", text: "Done." } } });
+      expect(new Set(messages.map((message) => (message as any).params.item.id)).size).toBe(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+
   test("normalizes thinking, tools, commentary, final output, and completion", async () => {
     const emitted: ProtocolMessage[] = [];
     const stream = new FakeSDKStream();
@@ -257,6 +316,35 @@ describe("ClaudeRuddrAdapter", () => {
     expect(responseResult(emitted, 4, "turnId")).toBe(turnID);
     await adapter.close();
   });
+});
+
+test("Claude context tracks the latest main request and preserves cached input across deltas", async () => {
+  const emitted: ProtocolMessage[] = [];
+  const stream = new FakeSDKStream();
+  const adapter = new ClaudeRuddrAdapter((message) => { emitted.push(message); }, () => stream.query());
+  const usageEvents = () => emitted.filter((message) => notification(message, "thread/tokenUsage/updated")) as Array<{ params: { tokenUsage: { last: { totalTokens: number }; total: { totalTokens: number }; modelContextWindow?: number } } }>;
+  try {
+    await adapter.handle({ id: 1, method: "initialize", params: {} });
+    await adapter.handle({ id: 2, method: "thread/start", params: { cwd: "/tmp", sandbox: "read-only" } });
+    const threadId = responseResult(emitted, 2, "thread.id");
+    await adapter.handle({ id: 3, method: "turn/start", params: { threadId, input: [{ type: "text", text: "hello" }] } });
+    stream.push(sdk({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { model: "main", usage: { input_tokens: 1000, cache_read_input_tokens: 2000, cache_creation_input_tokens: 300, output_tokens: 10 } } } }));
+    stream.push(sdk({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_delta", usage: { input_tokens: null, cache_read_input_tokens: null, output_tokens: 20 } } }));
+    await waitFor(() => usageEvents().length === 2);
+    expect(usageEvents()[1].params.tokenUsage.last.totalTokens).toBe(3320);
+    stream.push(sdk({ type: "stream_event", parent_tool_use_id: "tool-sub", event: { type: "message_start", message: { model: "sub", usage: { input_tokens: 999999 } } } }));
+    stream.push(sdk({ type: "stream_event", parent_tool_use_id: "tool-sub", event: { type: "message_delta", usage: { output_tokens: 9999 } } }));
+    stream.push(sdk({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { model: "main", usage: { input_tokens: 500, output_tokens: 3 } } } }));
+    stream.push(sdk({ type: "result", subtype: "success", result: "done", queued_turn_count: 0, modelUsage: {
+      main: { inputTokens: 2400000, outputTokens: 100000, contextWindow: 200000 },
+      sub: { inputTokens: 0, outputTokens: 0, contextWindow: 1000000 },
+    } }));
+    await waitFor(() => emitted.some((message) => notification(message, "turn/completed")));
+    expect(usageEvents().map((message) => message.params.tokenUsage.last.totalTokens)).toEqual([3310, 3320, 503, 503]);
+    expect(usageEvents().at(-1)?.params.tokenUsage).toMatchObject({ total: { totalTokens: 2500000 }, last: { totalTokens: 503 }, modelContextWindow: 200000 });
+  } finally {
+    await adapter.close();
+  }
 });
 
 test("result status recognizes Claude abort terminal reasons", () => {
@@ -405,7 +493,7 @@ describe("multi-turn sessions", () => {
   await waitFor(() => emitted.some((message) => notification(message, "turn/completed")));
   const usage = emitted.find((message) => notification(message, "thread/tokenUsage/updated")) as { params: { tokenUsage: { total: Record<string, number>; modelContextWindow: number }; costUsd: number } };
   expect(usage.params.tokenUsage.total).toEqual({ inputTokens: 47, cachedInputTokens: 10, outputTokens: 10, totalTokens: 57 });
-  expect(usage.params.tokenUsage.modelContextWindow).toBe(200_000);
+  expect(usage.params.tokenUsage.modelContextWindow).toBeUndefined();
   expect(usage.params.costUsd).toBeCloseTo(0.03);
   await adapter.close();
   });

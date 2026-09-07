@@ -104,7 +104,8 @@ type controller struct {
 	events        *os.File
 	trace         *os.File
 	stderr        *os.File
-	writeMu       sync.Mutex
+	writeOnce     sync.Once
+	writeGate     chan struct{}
 	eventsMu      sync.Mutex
 	traceMu       sync.Mutex
 	outputMu      sync.Mutex
@@ -453,12 +454,15 @@ func (r *controller) startTurn(prompt string, timeout time.Duration) error {
 	if err := r.recordPromptDecision(promptEventID, "accepted"); err != nil {
 		return &ambiguousTurnStartError{err: fmt.Errorf("record accepted prompt: %w", err)}
 	}
-	if err := r.store.update(func(current *runState) {
+	r.turnMu.Lock()
+	err := r.store.update(func(current *runState) {
 		current.TurnID = turnResult.Turn.ID
-		if !terminalStatus(current.Status) {
+		if !r.turnEnded && !r.sessionEnded {
 			current.Status = "active"
 		}
-	}); err != nil {
+	})
+	r.turnMu.Unlock()
+	if err != nil {
 		return &ambiguousTurnStartError{err: fmt.Errorf("turn/start outcome is ambiguous: persist active turn: %w", err)}
 	}
 	r.tracef("[turn] active thread=%s turn=%s", state.ThreadID, turnResult.Turn.ID)
@@ -800,13 +804,23 @@ func (r *controller) writeRPC(message any) error {
 }
 
 func (r *controller) writeRPCWithin(message any, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	raw, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
-	r.writeMu.Lock()
-	defer r.writeMu.Unlock()
-	return writeAllWithTimeout(r.childIn, append(raw, '\n'), timeout)
+	r.writeOnce.Do(func() { r.writeGate = make(chan struct{}, 1) })
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case r.writeGate <- struct{}{}:
+		defer func() { <-r.writeGate }()
+	case <-timer.C:
+		return errors.New("app-server stdin write timed out")
+	case <-r.sessionDone:
+		return errors.New("session ended before app-server stdin write")
+	}
+	return writeAllWithTimeout(r.childIn, append(raw, '\n'), time.Until(deadline))
 }
 
 func writeAllWithTimeout(writer io.WriteCloser, data []byte, timeout time.Duration) error {
@@ -931,12 +945,15 @@ func (r *controller) handleServerMessage(message rpcEnvelope) {
 			r.tracef("[turn] nested started thread=%s turn=%s", params.ThreadID, params.Turn.ID)
 			return
 		}
-		if err := r.store.update(func(state *runState) {
+		r.turnMu.Lock()
+		err := r.store.update(func(state *runState) {
 			state.TurnID = params.Turn.ID
-			if !terminalStatus(state.Status) {
+			if !r.turnEnded && !r.sessionEnded {
 				state.Status = "active"
 			}
-		}); err != nil {
+		})
+		r.turnMu.Unlock()
+		if err != nil {
 			r.stopChild.Store(true)
 			r.fail(fmt.Errorf("persist started turn: %w", err))
 			terminateProcessTree(r.child, false)
@@ -970,6 +987,9 @@ func (r *controller) handleTokenUsage(raw json.RawMessage) {
 				CachedInputTokens int64 `json:"cachedInputTokens"`
 				OutputTokens      int64 `json:"outputTokens"`
 			} `json:"total"`
+			Last *struct {
+				TotalTokens *int64 `json:"totalTokens"`
+			} `json:"last"`
 			ModelContextWindow int64 `json:"modelContextWindow"`
 			ContextWindow      int64 `json:"contextWindow"`
 		} `json:"tokenUsage"`
@@ -988,7 +1008,7 @@ func (r *controller) handleTokenUsage(raw json.RawMessage) {
 	if contextWindow == 0 {
 		contextWindow = params.TokenUsage.ContextWindow
 	}
-	if total.TotalTokens == 0 && total.InputTokens == 0 && total.OutputTokens == 0 && params.CostUSD == 0 {
+	if total.TotalTokens == 0 && total.InputTokens == 0 && total.OutputTokens == 0 && params.CostUSD == 0 && params.TokenUsage.Last == nil {
 		return
 	}
 	usage := &tokenUsage{
@@ -998,6 +1018,9 @@ func (r *controller) handleTokenUsage(raw json.RawMessage) {
 		TotalTokens:       total.TotalTokens,
 		ContextWindow:     contextWindow,
 		CostUSD:           params.CostUSD,
+	}
+	if last := params.TokenUsage.Last; last != nil && last.TotalTokens != nil && *last.TotalTokens >= 0 {
+		usage.ContextTokens = last.TotalTokens
 	}
 	if usage.CostUSD == 0 && state.TokenUsage != nil {
 		usage.CostUSD = state.TokenUsage.CostUSD
@@ -1203,6 +1226,13 @@ func (r *controller) persistTerminal(status, errText string) {
 		state.Status = status
 		state.Error = redactedStateError(status, errText)
 		state.CompletedAt = time.Now().UTC()
+		// A completed turn is not a completed idle session. Never expose a
+		// terminal status to waiters or deletion while the session stays open.
+		if r.cfg.Idle && !r.sessionEnded {
+			state.Status = "idle"
+			state.Error = ""
+			state.CompletedAt = time.Time{}
+		}
 	}); err != nil {
 		persistErr := fmt.Sprintf("persist terminal state: %v", err)
 		r.appendResultError(persistErr)
@@ -1325,6 +1355,10 @@ func (r *controller) shutdownChild() {
 			terminateProcessTree(r.child, true)
 		}
 		<-r.waitCh
+	}
+	if r.stopChild.Load() {
+		// The parent exiting does not prove that its descendants honored TERM.
+		terminateProcessTree(r.child, true)
 	}
 	if r.readDone != nil {
 		select {

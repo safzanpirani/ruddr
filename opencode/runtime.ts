@@ -486,7 +486,7 @@ export class HTTPBackend implements OpenCodeBackend {
         throw new Error(`OpenCode API ${response.status}: ${detail || response.statusText}`);
       }
       if (response.status === 204) return null;
-      return response.json();
+      return await response.json();
     } finally {
       if (timeout) clearTimeout(timeout);
       this.pendingRequests.delete(controller);

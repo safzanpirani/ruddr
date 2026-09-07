@@ -6,6 +6,7 @@ import type { ProtocolMessage } from "../adapter/protocol";
 class FakePiClient implements PiClient {
   commands: Record<string, unknown>[] = [];
   event?: (event: Record<string, unknown>) => void;
+  contextTokens: number | null = 12;
 
   async start(config: { id: string }, onEvent: (event: Record<string, unknown>) => void): Promise<string> {
     this.event = onEvent;
@@ -19,7 +20,7 @@ class FakePiClient implements PiClient {
         data: {
           tokens: { input: 20, output: 5, cacheRead: 3, cacheWrite: 0, totalTokens: 28 },
           cost: 0.02,
-          contextUsage: { contextWindow: 1_000_000 },
+          contextUsage: { contextWindow: 1_000_000, tokens: this.contextTokens },
         },
       };
     }
@@ -76,7 +77,27 @@ test("Pi adapter steers, reports tools, and completes after agent_settled", asyn
   expect(JSON.stringify(emitted)).toContain("PI_OK");
   expect(JSON.stringify(emitted)).toContain("tool-1");
   expect(JSON.stringify(notification(emitted, "thread/tokenUsage/updated"))).toContain('"totalTokens":28');
+  expect(notification(emitted, "thread/tokenUsage/updated")).toMatchObject({ params: { tokenUsage: { last: { totalTokens: 12 } } } });
   await adapter.close();
+});
+
+test("Pi clears unknown context after compaction instead of reusing session totals", async () => {
+  const emitted: ProtocolMessage[] = [];
+  const client = new FakePiClient();
+  client.contextTokens = null;
+  const adapter = new PiRuddrAdapter((message) => { emitted.push(message); }, client);
+  try {
+    await adapter.handle({ id: 1, method: "initialize", params: {} });
+    await adapter.handle({ id: 2, method: "thread/start", params: { cwd: "/tmp", sandbox: "read-only" } });
+    const threadId = result(emitted, 2).thread.id;
+    await adapter.handle({ id: 3, method: "turn/start", params: { threadId, input: [{ type: "text", text: "hello" }] } });
+    client.event?.({ type: "agent_settled" });
+    await waitFor(() => notification(emitted, "turn/completed") !== undefined);
+    const usage = notification(emitted, "thread/tokenUsage/updated") as { params: { tokenUsage: { last?: unknown } } };
+    expect(usage.params.tokenUsage.last).toBeUndefined();
+  } finally {
+    await adapter.close();
+  }
 });
 
 test("Pi waits for an accepted steer and the following settled event", async () => {

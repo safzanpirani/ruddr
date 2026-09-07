@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -48,13 +47,14 @@ type runState struct {
 	Error       string      `json:"error,omitempty"`
 }
 
-// tokenUsage carries cumulative counters only — counts and cost are
-// redaction-safe metadata for state.json.
+// tokenUsage keeps cumulative counters and the latest context estimate separate.
+// Counts and cost are redaction-safe metadata for state.json.
 type tokenUsage struct {
 	InputTokens       int64   `json:"inputTokens,omitempty"`
 	CachedInputTokens int64   `json:"cachedInputTokens,omitempty"`
 	OutputTokens      int64   `json:"outputTokens,omitempty"`
 	TotalTokens       int64   `json:"totalTokens,omitempty"`
+	ContextTokens     *int64  `json:"contextTokens,omitempty"`
 	ContextWindow     int64   `json:"contextWindow,omitempty"`
 	CostUSD           float64 `json:"costUsd,omitempty"`
 }
@@ -151,17 +151,6 @@ func newStateStore(cfg runConfig) (*stateStore, error) {
 	return store, nil
 }
 
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
-}
-
 func (s *stateStore) update(fn func(*runState)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -213,14 +202,7 @@ func persistState(path string, state runState) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writePrivateFile(path, raw)
 }
 
 func readState(stateDir string) (runState, error) {
@@ -287,14 +269,19 @@ func displayedState(state runState) runState {
 }
 
 func writePrivateFile(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func printJSON(value any) error {

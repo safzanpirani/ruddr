@@ -296,8 +296,11 @@ func (r *controller) interrupt() error {
 }
 
 func (r *controller) interruptSettlementResult() error {
+	r.turnMu.Lock()
+	lastTurn := r.lastTurn
+	r.turnMu.Unlock()
 	state := r.store.snapshot()
-	if state.Status == "failed" {
+	if state.Status == "failed" || lastTurn == "failed" {
 		if resultErr := r.privateResultError(); resultErr != "" {
 			return errors.New(resultErr)
 		}

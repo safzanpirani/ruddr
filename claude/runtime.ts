@@ -81,6 +81,7 @@ interface TurnState {
   toolsByIndex: Map<number, ToolBlock>;
   toolsByID: Map<string, ToolBlock>;
   emittedTexts: Set<string>;
+  emittedBlockIDs: Set<string>;
   interruptRequested: boolean;
 }
 
@@ -132,6 +133,11 @@ export class ClaudeRuddrAdapter {
   private usageTotals = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 };
   private costTotal = 0;
   private contextWindow = 0;
+  private contextModel?: string;
+  private lastUsage?: {
+    input_tokens: number; cache_creation_input_tokens: number;
+    cache_read_input_tokens: number; output_tokens: number;
+  };
 
   constructor(
     private readonly emit: (message: ProtocolMessage) => void | Promise<void>,
@@ -266,12 +272,15 @@ export class ClaudeRuddrAdapter {
       toolsByIndex: new Map(),
       toolsByID: new Map(),
       emittedTexts: new Set(),
+      emittedBlockIDs: new Set(),
       interruptRequested: false,
     };
-    this.turn = turn;
-    this.queue = new AsyncMessageQueue();
+    const queue = new AsyncMessageQueue();
     const options = buildQueryOptions(this.thread);
-    this.runtime = this.createQuery({ prompt: this.queue, options });
+    const runtime = this.createQuery({ prompt: queue, options });
+    this.turn = turn;
+    this.queue = queue;
+    this.runtime = runtime;
     this.streamTask = this.consumeRuntime(this.runtime);
     this.queue.push(userMessage(text));
     await this.emit({
@@ -343,6 +352,22 @@ export class ClaudeRuddrAdapter {
     const turn = this.turn;
     if (!turn) return;
     const event = message.event;
+    if (!message.parent_tool_use_id && (event.type === "message_start" || event.type === "message_delta")) {
+      if (event.type === "message_start") {
+        if (this.contextModel && this.contextModel !== event.message.model) this.contextWindow = 0;
+        this.contextModel = event.message.model;
+        this.lastUsage = { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+      }
+      const usage = event.type === "message_start" ? event.message.usage : event.usage;
+      if (this.lastUsage) {
+        for (const key of Object.keys(this.lastUsage) as Array<keyof NonNullable<typeof this.lastUsage>>) {
+          const value = usage[key];
+          if (typeof value === "number" && Number.isFinite(value) && value >= 0) this.lastUsage[key] = value;
+        }
+        await this.emitUsageSnapshot();
+      }
+      return;
+    }
     if (message.parent_tool_use_id && event.type === "content_block_delta") {
       if (event.delta.type === "text_delta" || event.delta.type === "thinking_delta") return;
     }
@@ -447,7 +472,7 @@ export class ClaudeRuddrAdapter {
     }
     const status = resultStatus(result);
     if (status === "completed") {
-      if (this.turn.pendingText.length === 0 && result.subtype === "success" && result.result.trim()) {
+      if (this.turn.pendingText.length === 0 && result.subtype === "success" && result.result.trim() && !this.turn.emittedTexts.has(result.result.trim())) {
         this.turn.pendingText.push({ index: -1, id: internalID(), text: result.result });
       }
       const finalBlock = this.turn.pendingText.pop();
@@ -477,10 +502,6 @@ export class ClaudeRuddrAdapter {
           count(usage.cacheReadInputTokens);
         cached += count(usage.cacheReadInputTokens);
         output += count(usage.outputTokens);
-        this.contextWindow = Math.max(
-          this.contextWindow,
-          count(usage.contextWindow),
-        );
       }
     } else if (isRecord(result.usage)) {
       input =
@@ -497,13 +518,26 @@ export class ClaudeRuddrAdapter {
     if (typeof result.total_cost_usd === "number" && Number.isFinite(result.total_cost_usd)) {
       this.costTotal += result.total_cost_usd;
     }
-    if (this.usageTotals.totalTokens === 0 && this.costTotal === 0) return;
+    const mainModel = this.contextModel ? result.modelUsage?.[this.contextModel] : undefined;
+    const window = count((mainModel ?? (perModel.length === 1 ? perModel[0] : undefined))?.contextWindow);
+    if (window > 0) this.contextWindow = window;
+    await this.emitUsageSnapshot();
+  }
+
+  private async emitUsageSnapshot(): Promise<void> {
+    if (!this.thread || (this.usageTotals.totalTokens === 0 && this.costTotal === 0 && !this.lastUsage)) return;
+    const last = this.lastUsage;
+    const input = last ? last.input_tokens + last.cache_creation_input_tokens + last.cache_read_input_tokens : 0;
     await this.emit({
       method: "thread/tokenUsage/updated",
       params: {
         threadId: this.thread.id,
         tokenUsage: {
           total: { ...this.usageTotals },
+          ...(last ? { last: {
+            inputTokens: input, cachedInputTokens: last.cache_read_input_tokens,
+            outputTokens: last.output_tokens, totalTokens: input + last.output_tokens,
+          } } : {}),
           ...(this.contextWindow > 0
             ? { modelContextWindow: this.contextWindow }
             : {}),
@@ -521,7 +555,8 @@ export class ClaudeRuddrAdapter {
   private async emitAgentMessage(block: TextBlock, phase: "commentary" | "final_answer"): Promise<void> {
     const turn = this.turn;
     const text = block.text.trim();
-    if (!turn || !text || turn.emittedTexts.has(text)) return;
+    if (!turn || !text || turn.emittedBlockIDs.has(block.id)) return;
+    turn.emittedBlockIDs.add(block.id);
     turn.emittedTexts.add(text);
     await this.emit({
       method: "item/completed",
@@ -599,7 +634,7 @@ export function buildQueryOptions(thread: ThreadConfig): Options {
                 message: "Ruddr cannot answer interactive questions; proceed with best judgment.",
               };
             }
-            if (toolName === "Bash") {
+            if (toolName === "Bash" && thread.sandbox === "workspace-write") {
               if (input.dangerouslyDisableSandbox === true) {
                 return {
                   behavior: "deny" as const,

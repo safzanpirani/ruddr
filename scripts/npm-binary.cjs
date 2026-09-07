@@ -90,11 +90,12 @@ async function ensureBinary(options = {}) {
     const expected = checksums[asset];
     const url = `https://github.com/${repository}/releases/download/v${manifest.version}/${asset}`;
     try {
+      if (typeof expected !== "string" || !/^[0-9a-f]{64}$/i.test(expected))
+        throw new Error(`no valid pinned checksum for ${asset}; build from source instead`);
       await download(url, temporary, log);
       const actual = sha256(temporary);
-      if (expected && actual !== expected)
+      if (actual !== expected.toLowerCase())
         throw new Error(`checksum mismatch for ${asset}: expected ${expected}, got ${actual}`);
-      if (!expected) log(`ruddr: no pinned checksum for ${asset}; accepting download as-is`);
       return finish();
     } catch (error) {
       try {

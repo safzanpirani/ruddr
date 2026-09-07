@@ -164,6 +164,37 @@ test("OpenCode HTTP requests time out and server announcements stay on loopback"
   await backend.close();
 });
 
+test("OpenCode keeps response bodies bounded by timeout and shutdown", async () => {
+  for (const closeEarly of [false, true]) {
+    let bodyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { bodyStarted = resolve; });
+    const fetcher = (async (_input: unknown, init?: RequestInit) => new Response(
+      new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(init.signal!.reason), { once: true });
+          controller.enqueue(new TextEncoder().encode('{"id":'));
+          bodyStarted();
+        },
+      }),
+    )) as typeof fetch;
+    const backend = new HTTPBackend(closeEarly ? 10_000 : 20, fetcher);
+    Object.assign(backend, { baseURL: "http://127.0.0.1:4096", password: "test" });
+    const pending = backend.prompt("ses_test", "hello");
+    const outcome = pending.catch((error: Error) => error);
+    await started;
+    // Let fetch resolve so the request is consuming its response body.
+    await Promise.resolve();
+    if (closeEarly) await backend.close();
+    try {
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(closeEarly ? "closing" : "timed out");
+    } finally {
+      await backend.close();
+    }
+  }
+});
+
 test("OpenCode adapter installs distinct Ruddr agents without discarding inline config", () => {
   const config = JSON.parse(ruddrConfigContent("read-only", JSON.stringify({ theme: "ruddr", agents: { existing: { mode: "primary" } } })));
   expect(config.theme).toBe("ruddr");

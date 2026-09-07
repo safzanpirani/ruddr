@@ -338,7 +338,7 @@ export class PiRuddrAdapter extends BaseAdapter {
     const input = number(tokens.input);
     const output = number(tokens.output);
     const cached = number(tokens.cacheRead);
-    const total = number(tokens.totalTokens) || input + output + cached + number(tokens.cacheWrite);
+    const total = number(tokens.total) || number(tokens.totalTokens) || input + output + cached + number(tokens.cacheWrite);
     if (total === 0 && number(stats.cost) === 0) return;
     await this.emit({
       method: "thread/tokenUsage/updated",
@@ -351,6 +351,8 @@ export class PiRuddrAdapter extends BaseAdapter {
             outputTokens: output,
             totalTokens: total,
           },
+          ...(typeof context.tokens === "number" && Number.isFinite(context.tokens) && context.tokens >= 0
+            ? { last: { totalTokens: context.tokens } } : {}),
           ...(number(context.contextWindow) ? { modelContextWindow: number(context.contextWindow) } : {}),
         },
         costUsd: number(stats.cost),

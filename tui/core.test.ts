@@ -42,6 +42,7 @@ import {
   visibleGitDiffLineIndices,
   clampScrollOffset,
   contextMeter,
+  contextUsageFromEvents,
   DEFAULT_MOBILE_WIDTH_THRESHOLD,
   layoutForWidth,
   deleteSessionArtifacts,
@@ -688,11 +689,14 @@ describe("artifact and display helpers", () => {
   test("builds a context meter and filters palette commands", () => {
     expect(contextMeter(undefined)).toBeUndefined();
     expect(contextMeter({ totalTokens: 100 })).toBeUndefined();
-    const meter = contextMeter({ totalTokens: 50_000, contextWindow: 200_000 }, 8)!;
+    const meter = contextMeter({ totalTokens: 2_500_000, contextTokens: 50_000, contextWindow: 200_000 }, 8)!;
     expect(meter.filled).toBe(2);
     expect(meter.label).toBe("50.0K · 25%");
     expect(renderMeter(meter)).toBe("▰▰▱▱▱▱▱▱");
-    expect(renderMeter(contextMeter({ totalTokens: 900, contextWindow: 100 }, 4)!)).toBe("▰▰▰▰");
+    expect(renderMeter(contextMeter({ contextTokens: 900, contextWindow: 100 }, 4)!)).toBe("▰▰▰▰");
+    expect(contextMeter({ totalTokens: 2_500_000, contextWindow: 200_000 })).toBeUndefined();
+    expect(contextMeter({ contextTokens: 0, contextWindow: 200_000 })?.label).toBe("0 · 0%");
+    expect(contextMeter({ contextTokens: Number.NaN, contextWindow: 200_000 })).toBeUndefined();
     const commands = [
       { id: "new", label: "New session", key: "n" },
       { id: "theme", label: "Change theme", key: "t", hint: "colors" },
@@ -718,6 +722,24 @@ describe("artifact and display helpers", () => {
     expect(typewriterReveal(0, 100, 24)).toBe(24);
     expect(typewriterReveal(90, 100, 24)).toBe(100);
     expect(typewriterReveal(120, 100)).toBe(100);
+  });
+
+  test("rechecks persisted liveness before deleting a stale selection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ruddr-delete-live-"));
+    const stateDir = join(root, "run");
+    const registry = join(root, "registry");
+    await mkdir(stateDir);
+    await mkdir(registry);
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({ stateDir, pid: process.pid, status: "active" }));
+    const entry = join(registry, "live.run");
+    await writeFile(entry, stateDir);
+    for (const status of ["stale", "completed"]) {
+      await expect(deleteSessionArtifacts({ stateDir, status }, [registry])).rejects.toThrow("stop it before deleting");
+      expect(await readFile(entry, "utf8")).toBe(stateDir);
+      expect(JSON.parse(await readFile(join(stateDir, "state.json"), "utf8")).status).toBe("active");
+    }
+    await writeFile(join(stateDir, "state.json"), JSON.stringify({ stateDir, pid: 0, status: "active" }));
+    expect((await deleteSessionArtifacts({ stateDir, status: "stale" }, [registry])).removedStateDir).toBe(true);
   });
 
   test("deletes finished session state and its registry entries only", async () => {
@@ -1220,15 +1242,27 @@ describe("artifact and display helpers", () => {
 });
 
 describe("promptable TUI helpers", () => {
-  test("formats token usage like opencode's footer", () => {
+  test("labels cumulative token usage without treating it as context", () => {
     expect(
       formatTokenUsage({ totalTokens: 186_100, contextWindow: 1_000_000, costUsd: 0.1 }),
-    ).toBe("186.1K (19%) · $0.10");
-    expect(formatTokenUsage({ totalTokens: 2_400 })).toBe("2.4K");
-  expect(formatTokenUsage({ totalTokens: 2_400, contextWindow: 1_000 })).toBe("2.4K (100%)");
+    ).toBe("186.1K total · $0.10");
+    expect(formatTokenUsage({ totalTokens: 2_400 })).toBe("2.4K total");
+    expect(formatTokenUsage({ totalTokens: 2_400, contextWindow: 1_000 })).toBe("2.4K total");
     expect(formatTokenUsage({ totalTokens: 0 })).toBe("");
     expect(formatTokenUsage(undefined)).toBe("");
-    expect(formatTokenUsage({ totalTokens: 1_500_000, costUsd: 12.345 })).toBe("1.5M · $12.35");
+    expect(formatTokenUsage({ totalTokens: 1_500_000, costUsd: 12.345 })).toBe("1.5M total · $12.35");
+  });
+
+  test("recovers latest root context from older event logs without using totals", () => {
+    const usage = (threadId: string, tokens?: number) => JSON.stringify({
+      method: "thread/tokenUsage/updated", params: { threadId, tokenUsage: {
+        total: { totalTokens: 2_500_000 }, last: tokens === undefined ? null : { totalTokens: tokens }, modelContextWindow: 200_000,
+      } },
+    });
+    const events = [usage("root", 180_000), usage("root", 50_000), usage("subagent", 199_000), '{"partial"'].join("\n");
+    expect(contextUsageFromEvents(events, "root")).toEqual({ contextTokens: 50_000, contextWindow: 200_000 });
+    expect(contextUsageFromEvents(`${events}\n${usage("root")}`, "root")).toBeUndefined();
+    expect(contextUsageFromEvents(usage("root", 0), "root")?.contextTokens).toBe(0);
   });
 
   test("routes prompts by session status without converting", () => {

@@ -30,11 +30,10 @@ import {
   AsyncTaskGate,
   LatestRead,
   attachToolDetails,
-  contextMeter,
+  contextUsageFromEvents,
   deleteSessionArtifacts,
   filterPaletteCommands,
   formatElapsed,
-  renderMeter,
   typewriterReveal,
   helpSegments,
   spinnerFrame,
@@ -49,7 +48,6 @@ import {
   discoverSessions,
   emptyPromptHint,
   filterSessions,
-  formatTokenUsage,
   initialViewState,
   idlePromptControlArguments,
   latestAgentUpdate,
@@ -108,10 +106,10 @@ import {
   listScrollOffset,
   renderChatEntry,
   renderSessionDetails,
+  renderUsage,
   renderToolDetail,
   renderTraceActivity,
   scrollListBy,
-  sessionStatusColor,
   spanChunks,
   TOOL_OUTPUT_LINES,
 } from "./render";
@@ -2285,11 +2283,18 @@ async function main(): Promise<void> {
         artifact === "chat" || artifact === "diff"
           ? Promise.resolve("")
           : readTail(artifactPath, ARTIFACT_TAIL_BYTES),
-        artifact === "output" || artifact === "diff"
+        (artifact === "output" || artifact === "diff") && session.tokenUsage?.contextTokens !== undefined
           ? Promise.resolve("")
           : readTail(session.eventsPath, ARTIFACT_TAIL_BYTES),
       ]);
       if (!readIsCurrent()) return;
+      if (session.tokenUsage?.contextTokens === undefined) {
+        const context = contextUsageFromEvents(eventContent, session.threadId);
+        if (context) {
+          session.tokenUsage = { ...session.tokenUsage, ...context };
+          updateChrome();
+        }
+      }
       if (artifact === "chat") {
         const entries = parseChatTranscript(eventContent, session.threadId);
         const rows: ActivityRow[] = [];
@@ -2808,34 +2813,6 @@ async function main(): Promise<void> {
         })();
       }
       return branch ? `${shortCwd}:${branch}` : shortCwd;
-    }
-
-    function renderUsage(session: Session | undefined): StyledText {
-      if (!session) return t``;
-      const chunks: StyledText["chunks"] = [];
-      const meter = contextMeter(session.tokenUsage, 8);
-      if (meter) {
-        const color =
-          meter.ratio >= 0.85
-            ? palette.danger
-            : meter.ratio >= 0.6
-              ? palette.warning
-              : palette.success;
-        chunks.push(
-          ...t`${fg(color)(renderMeter(meter))} ${fg(palette.text)(meter.label)}`.chunks,
-        );
-        const cost = session.tokenUsage?.costUsd;
-        if (cost !== undefined)
-          chunks.push(...t`${fg(palette.dim)(` · $${cost.toFixed(cost < 1 ? 3 : 2)}`)}`.chunks);
-      } else {
-        const usage = formatTokenUsage(session.tokenUsage);
-        if (usage) chunks.push(...t`${fg(palette.text)(usage)}`.chunks);
-      }
-      if (chunks.length > 0) chunks.push(...t`${fg(palette.dim)(" · ")}`.chunks);
-      chunks.push(
-        ...t`${fg(sessionStatusColor(session.status))(session.status)}`.chunks,
-      );
-      return new StyledText(chunks);
     }
 
     let updateAvailable = args.updateAvailable;

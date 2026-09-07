@@ -494,6 +494,7 @@ func TestInterruptAcknowledgementForcesLocalTeardown(t *testing.T) {
 	grandchildPIDFile := filepath.Join(dir, "grandchild.pid")
 	if runtime.GOOS != "windows" {
 		t.Setenv("GO_WANT_RUDDR_GRANDCHILD_PID_FILE", grandchildPIDFile)
+		t.Setenv("GO_WANT_RUDDR_TERM_IGNORING_GRANDCHILD", "1")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -521,6 +522,11 @@ func TestInterruptAcknowledgementForcesLocalTeardown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			if process, err := os.FindProcess(grandchildPID); err == nil {
+				_ = process.Kill()
+			}
+		})
 	}
 	response, err := sendControl(stateDir, controlRequest{Command: "interrupt"}, time.Second)
 	if err != nil {
@@ -1156,6 +1162,60 @@ func TestRPCCallBoundsBlockedStdinWrite(t *testing.T) {
 	}
 }
 
+func TestRPCDeadlineIncludesWaitingForWriter(t *testing.T) {
+	writer := &blockingWriteCloser{closed: make(chan struct{})}
+	r := &controller{childIn: writer, pending: make(map[string]chan rpcEnvelope)}
+	r.writeOnce.Do(func() { r.writeGate = make(chan struct{}, 1) })
+	r.writeGate <- struct{}{}
+	defer func() { <-r.writeGate }()
+	errCh := make(chan error, 1)
+	go func() { errCh <- r.call("turn/steer", map[string]any{}, nil, 20*time.Millisecond) }()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "write timed out") {
+			t.Fatalf("queued RPC error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued RPC did not honor its deadline")
+	}
+	select {
+	case <-writer.closed:
+		t.Fatal("queued timeout closed stdin belonging to another writer")
+	default:
+	}
+	if len(r.pending) != 0 {
+		t.Fatal("timed out RPC left a pending response")
+	}
+}
+
+func TestIdleTurnDoesNotPublishTerminalSessionState(t *testing.T) {
+	for _, status := range []string{"completed", "failed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			store, err := newStateStore(runConfig{StateDir: filepath.Join(t.TempDir(), "run"), Idle: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &controller{cfg: runConfig{Idle: true}, store: store, turnDone: make(chan struct{}), sessionDone: make(chan struct{})}
+			defer r.closeControlServer()
+			if !r.finishTurn(status, "") {
+				t.Fatal("turn did not finish")
+			}
+			state, err := readState(store.snapshot().StateDir)
+			if err != nil || state.Status != "idle" || !state.CompletedAt.IsZero() {
+				t.Fatalf("inter-turn state = %+v, %v", state, err)
+			}
+			if got := r.interruptSettlementResult(); (got != nil) != (status == "failed") {
+				t.Fatalf("interrupted turn outcome for %s = %v", status, got)
+			}
+			r.persistFinalIdleExit()
+			state, err = readState(store.snapshot().StateDir)
+			if err != nil || state.Status != status || state.CompletedAt.IsZero() {
+				t.Fatalf("final state = %+v, %v", state, err)
+			}
+		})
+	}
+}
+
 type temporaryAcceptError struct{}
 
 func (temporaryAcceptError) Error() string   { return "temporary accept failure" }
@@ -1359,9 +1419,27 @@ func TestRunDoesNotReportSuccessWhenStatePersistenceFails(t *testing.T) {
 		})
 	}()
 
-	waitForRunStatus(t, stateDir, "active")
-	createBlockingDirectory(t, filepath.Join(stateDir, stateFileName+".tmp"))
-	_, _ = sendControl(stateDir, controlRequest{Command: "steer", Text: "finish now"}, time.Second)
+	active := waitForRunStatus(t, stateDir, "active")
+	// Connect before moving the directory, since short paths keep the socket
+	// inside it. The open connection survives the rename on every platform.
+	conn, err := net.DialTimeout("unix", active.SocketPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	// Keep the last durable state readable, but make the controller's original
+	// artifact directory unwritable regardless of temporary-file naming.
+	savedDir := stateDir + "-saved"
+	if err := os.Rename(stateDir, savedDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stateDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(conn).Encode(controlRequest{Command: "steer", Text: "finish now"}); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-errCh:
 		if err == nil || !strings.Contains(err.Error(), "persist") {
@@ -1372,7 +1450,7 @@ func TestRunDoesNotReportSuccessWhenStatePersistenceFails(t *testing.T) {
 		<-errCh
 		t.Fatal("run did not stop after state persistence failed")
 	}
-	persisted, err := readState(stateDir)
+	persisted, err := readState(savedDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1409,7 +1487,11 @@ func TestRunFailsWhenAgentOutputCannotBePersisted(t *testing.T) {
 	}()
 
 	waitForRunStatus(t, stateDir, "active")
-	if err := os.Mkdir(filepath.Join(stateDir, "output.md.tmp"), 0o700); err != nil {
+	outputPath := filepath.Join(stateDir, "output.md")
+	if err := os.Rename(outputPath, outputPath+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outputPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = sendControl(stateDir, controlRequest{Command: "steer", Text: "finish now"}, time.Second)
@@ -1430,34 +1512,12 @@ func TestRunFailsWhenAgentOutputCannotBePersisted(t *testing.T) {
 	if state.Status != "failed" {
 		t.Fatalf("status = %q, want failed", state.Status)
 	}
-	output, err := os.ReadFile(filepath.Join(stateDir, "output.md"))
+	output, err := os.ReadFile(outputPath + ".saved")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(output) != 0 {
 		t.Fatalf("failed output persistence changed reserved output.md to %q", output)
-	}
-}
-
-func createBlockingDirectory(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for {
-		err := os.Mkdir(path, 0o700)
-		if err == nil {
-			return
-		}
-		if !errors.Is(err, os.ErrExist) {
-			t.Fatal(err)
-		}
-		info, statErr := os.Stat(path)
-		if statErr == nil && info.IsDir() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("atomic state writer did not release %s", path)
-		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -1487,6 +1547,14 @@ func runHelperAppServer() {
 		if err := child.Start(); err == nil {
 			if os.Getenv("GO_WANT_RUDDR_TERM_IGNORING_GRANDCHILD") != "1" {
 				_ = os.WriteFile(pidFile, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+			} else {
+				deadline := time.Now().Add(2 * time.Second)
+				for time.Now().Before(deadline) {
+					if raw, err := os.ReadFile(pidFile); err == nil && len(bytes.TrimSpace(raw)) > 0 {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
 			}
 		}
 	}
