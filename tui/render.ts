@@ -1,3 +1,12 @@
+import {
+  type CodeToken,
+  type CodeSpan,
+  highlightCode,
+  highlightLines,
+  type InlineSpan,
+  type MarkdownLine,
+  parseMarkdown
+} from "./syntax";
 // Pure renderers: styled text for chat, activity, tool cards, code, and
 // session details. They read the live palette and hold no UI state.
 import {
@@ -16,15 +25,8 @@ import {
   contextMeter,
   formatTokenUsage,
   renderMeter,
-  highlightCode,
-  highlightLines,
-  parseMarkdown,
   statusGlyph,
   type ChatEntry,
-  type CodeSpan,
-  type CodeToken,
-  type InlineSpan,
-  type MarkdownLine,
   type Session,
   type ToolEventDetail,
   type TraceActivity,

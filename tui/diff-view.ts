@@ -1,3 +1,9 @@
+import {
+  type CodeSpan,
+  filetypeForPath,
+  highlightCode,
+  highlightLines
+} from "./syntax";
 // The Diff tab: changed-file tree, draggable divider, folding, hunk and file
 // navigation, and the styled patch rows. It owns every piece of diff state
 // and talks to the surrounding dashboard through DiffHost.
@@ -20,18 +26,14 @@ import {
 import {
   diffTreeWidthForPointer,
   diffTreeWidthForRatio,
-  filetypeForPath,
   gitDiffFileStats,
   gitDiffGutterWidth,
   gitDiffSummary,
   gitDiffTree,
-  highlightCode,
-  highlightLines,
   nextGitDiffBoundary,
   parseGitDiff,
   parseGitDiffHunkHeader,
   visibleGitDiffLineIndices,
-  type CodeSpan,
   type GitDiffFileStats,
   type GitDiffLine,
   type GitDiffSummary,

@@ -109,7 +109,8 @@ type controller struct {
 	eventsMu      sync.Mutex
 	traceMu       sync.Mutex
 	outputMu      sync.Mutex
-	outputParts   []string
+	outputStarted bool
+	outputBreaks  int
 	resultMu      sync.Mutex
 	resultError   string
 	pendingMu     sync.Mutex
@@ -479,8 +480,8 @@ func (r *controller) rollbackRejectedTurn(turnNumber int) error {
 		return fmt.Errorf("persist rejected turn rollback: %w", err)
 	}
 	r.outputMu.Lock()
-	if len(r.outputParts) > 0 && r.outputParts[len(r.outputParts)-1] == "---" {
-		r.outputParts = r.outputParts[:len(r.outputParts)-1]
+	if r.outputBreaks > 0 {
+		r.outputBreaks--
 	}
 	r.outputMu.Unlock()
 	r.turnMu.Lock()
@@ -1290,18 +1291,25 @@ func (r *controller) recordPromptDecision(id, decision string) error {
 func (r *controller) appendOutputSeparator() {
 	r.outputMu.Lock()
 	defer r.outputMu.Unlock()
-	if len(r.outputParts) == 0 {
+	if !r.outputStarted {
 		return
 	}
-	r.outputParts = append(r.outputParts, "---")
+	r.outputBreaks++
 }
 
 func (r *controller) recordAgentMessage(text string) error {
 	r.outputMu.Lock()
 	defer r.outputMu.Unlock()
-	r.outputParts = append(r.outputParts, text)
-	content := strings.Join(r.outputParts, "\n\n") + "\n"
-	return writePrivateFile(r.store.snapshot().OutputPath, []byte(content))
+	content := text + "\n"
+	if r.outputStarted {
+		content = "\n" + strings.Repeat("---\n\n", r.outputBreaks) + content
+	}
+	if err := appendPrivateOutput(r.store.snapshot().OutputPath, content); err != nil {
+		return err
+	}
+	r.outputStarted = true
+	r.outputBreaks = 0
+	return nil
 }
 
 func (r *controller) privateResultError() string {

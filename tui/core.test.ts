@@ -1,3 +1,13 @@
+import {
+  INITIAL_HIGHLIGHT_STATE,
+  filetypeForPath,
+  filetypeForFence,
+  highlightCode,
+  highlightLines,
+  highlightLine,
+  parseInline,
+  parseMarkdown
+} from "./syntax";
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -48,16 +58,8 @@ import {
   deleteSessionArtifacts,
   sessionIsDeletable,
   diffTreeWidthForRatio,
-  filetypeForFence,
-  filetypeForPath,
   filterPaletteCommands,
-  highlightCode,
-  highlightLine,
-  highlightLines,
-  INITIAL_HIGHLIGHT_STATE,
   nextDiffPollDelay,
-  parseInline,
-  parseMarkdown,
   renderMeter,
   typewriterReveal,
   promptModeForSession,

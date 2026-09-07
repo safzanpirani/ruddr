@@ -9,31 +9,13 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 
-export type RPCID = string | number | null;
-
-export interface RPCRequest {
-  id?: RPCID;
-  method: string;
-  params?: unknown;
-}
-
-export interface RPCError {
-  code: number;
-  message: string;
-}
-
-export interface RPCResponse {
-  id: RPCID;
-  result?: unknown;
-  error?: RPCError;
-}
-
-export interface RPCNotification {
-  method: string;
-  params: unknown;
-}
-
-export type ProtocolMessage = RPCResponse | RPCNotification;
+import {
+  BaseAdapter, InvalidParamsError, MethodNotFoundError,
+  errorMessage, isRecord, record, readTextInput,
+  type ProtocolMessage,
+} from "../adapter/protocol";
+// Preserve the adapter's existing type imports for consumers.
+export type { RPCID, RPCRequest, RPCError, RPCResponse, RPCNotification, ProtocolMessage } from "../adapter/protocol";
 
 export type QueryFactory = (input: {
   prompt: AsyncIterable<SDKUserMessage>;
@@ -121,14 +103,12 @@ export class AsyncMessageQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-export class ClaudeRuddrAdapter {
-  private initialized = false;
+export class ClaudeRuddrAdapter extends BaseAdapter {
   private thread?: ThreadConfig;
   private turn?: TurnState;
   private queue?: AsyncMessageQueue;
   private runtime?: Query;
   private streamTask?: Promise<void>;
-  private closed = false;
   private turnsCompleted = 0;
   private usageTotals = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 };
   private costTotal = 0;
@@ -140,38 +120,12 @@ export class ClaudeRuddrAdapter {
   };
 
   constructor(
-    private readonly emit: (message: ProtocolMessage) => void | Promise<void>,
+    emit: (message: ProtocolMessage) => void | Promise<void>,
     private readonly createQuery: QueryFactory = ({ prompt, options }) =>
       query({ prompt, options }),
     private readonly streamSettleTimeoutMs = 1_000,
-  ) {}
-
-  async handle(request: RPCRequest): Promise<void> {
-    const hasID = Object.hasOwn(request, "id");
-    try {
-      const result = await this.dispatch(request.method, request.params);
-      if (hasID) await this.emit({ id: request.id ?? null, result });
-    } catch (error) {
-      if (!hasID) {
-        await this.emit({
-          method: "error",
-          params: { error: { message: errorMessage(error) } },
-        });
-        return;
-      }
-      await this.emit({
-        id: request.id ?? null,
-        error: {
-          code:
-            error instanceof MethodNotFoundError
-              ? -32601
-              : error instanceof InvalidParamsError
-                ? -32602
-                : -32000,
-          message: errorMessage(error),
-        },
-      });
-    }
+  ) {
+    super(emit);
   }
 
   async close(): Promise<void> {
@@ -185,7 +139,7 @@ export class ClaudeRuddrAdapter {
     ]);
   }
 
-  private async dispatch(method: string, params: unknown): Promise<unknown> {
+  protected async dispatch(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case "initialize":
         this.initialized = true;
@@ -722,18 +676,6 @@ function summarizeTool(name: string, input: Record<string, unknown>): string {
   return serialized === "{}" ? name : `${name} ${serialized}`;
 }
 
-function readTextInput(value: unknown): string {
-  if (!Array.isArray(value)) throw new InvalidParamsError("input must be an array");
-  const text = value
-    .filter(isRecord)
-    .filter((item) => item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text as string)
-    .join("\n")
-    .trim();
-  if (!text) throw new InvalidParamsError("input contains no text");
-  return text;
-}
-
 function parseSandbox(value: unknown): ThreadConfig["sandbox"] {
   if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") return value;
   throw new InvalidParamsError("sandbox must be read-only, workspace-write, or danger-full-access");
@@ -763,15 +705,7 @@ function parseJSONRecord(value: string): Record<string, unknown> | undefined {
   }
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new InvalidParamsError(`${label} must be an object`);
-  return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
+// Claude configuration strings historically trim whitespace.
 function requiredString(value: unknown, label: string): string {
   const parsed = optionalString(value);
   if (!parsed) throw new InvalidParamsError(`${label} is required`);
@@ -785,10 +719,3 @@ function optionalString(value: unknown): string | undefined {
 function internalID(): string {
   return typeof Bun.randomUUIDv7 === "function" ? Bun.randomUUIDv7() : randomUUID();
 }
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-class InvalidParamsError extends Error {}
-class MethodNotFoundError extends Error {}

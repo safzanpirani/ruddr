@@ -447,6 +447,12 @@ scales with the terminal. Classic mode shows compact session metadata by default
 cycle through expanded, hidden, and compact metadata. Beta mode starts with
 metadata hidden and uses the same cycle.
 
+Failed sends and early launch failures leave the prompt open for editing or an
+explicit retry. A successful submission closes it only if the draft has not
+changed. TUI launches retain `prompt.md` and `launch.stderr.log` in the private
+run directory and surface startup errors. A controller that is still starting
+after the brief launch check stays registered; Ruddr does not retry it.
+
 Press `t` to open the theme picker. Moving through the list previews each
 palette immediately; Enter saves the choice globally and Escape restores the
 previous palette. Ruddr includes the 33 built-in OpenCode themes (using their
@@ -477,7 +483,7 @@ Run artifacts:
 - `state.json` — IDs, status, paths, and timestamps; no prompt or output text.
 - `events.jsonl` — raw provider protocol events plus Ruddr prompt decisions.
 - `trace.log` — compact human-readable progress.
-- `output.md` — all completed `agentMessage` items in order.
+- `output.md` — all completed `agentMessage` items appended in order.
 - `provider.stderr.log` — child diagnostics (legacy runs retain their persisted
   `app-server.stderr.log` path).
 
@@ -487,6 +493,11 @@ Ruddr creates a random owner-only temporary parent and records it in state.
 The raw events, trace, and output can contain prompt, command, and completion
 content. Persisted errors in `state.json` are generic; details remain in the
 private trace and stderr logs.
+
+Output appends avoid rewriting long transcripts. A reported partial write is
+rolled back to the previous file length; an abrupt process or machine crash can
+leave a partial final message, as with the other append-only logs. `state.json`
+continues to use atomic replacement.
 
 The global run registry stores only private state-directory references under
 `~/.local/state/ruddr/runs` (or `XDG_STATE_HOME`). It does not duplicate

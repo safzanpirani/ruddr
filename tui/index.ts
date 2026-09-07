@@ -17,15 +17,6 @@ import {
   underline,
 } from "@opentui/core";
 import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
   artifactAllowsTextSelection,
   AsyncTaskGate,
   LatestRead,
@@ -97,6 +88,8 @@ import {
 import { readWorkspaceDiff, touchedSince, diffCache } from "./git";
 import { diffTints, palette, setPalette } from "./palette";
 import { errorMessage, runControl } from "./process";
+import { PromptSubmission, sendControlPrompt } from "./prompt";
+import { launchSession } from "./session-launch";
 import {
   activityCopyText,
   activitySearchText,
@@ -162,6 +155,10 @@ async function main(): Promise<void> {
     const refreshGate = new AsyncTaskGate();
     const artifactReads = new LatestRead();
     let actionRunning = false;
+    const promptSubmission = new PromptSubmission(
+      () => promptInput.plainText,
+      () => closePrompt(),
+    );
     let detailsExpanded = false;
     let sessionQuery = "";
     const artifactQueries: Record<Artifact, string> = {
@@ -1724,6 +1721,7 @@ async function main(): Promise<void> {
         return;
       }
       pendingModel = option.model;
+      promptSubmission.invalidate();
       closeModelPicker();
       setStatus(`Model: ${option.model.label || option.model.id}`);
       updatePromptChrome();
@@ -1849,6 +1847,7 @@ async function main(): Promise<void> {
     }
 
     function openPromptInput(): void {
+      promptSubmission.invalidate();
       view = reduceView(view, { type: "open-steer" });
       promptInput.setText("");
       fitPromptHeight();
@@ -1922,6 +1921,7 @@ async function main(): Promise<void> {
     }
 
     function closePrompt(): void {
+      promptSubmission.invalidate();
       pendingModel = undefined;
       pendingResume = undefined;
       promptMode = undefined;
@@ -1939,7 +1939,7 @@ async function main(): Promise<void> {
       const message = promptInput.plainText.trim();
       if (!message) return;
       if (mode === "new") {
-        await startNewSession(message);
+        await performPromptAction(() => startNewSession(message));
         return;
       }
       const target = promptTarget;
@@ -1965,170 +1965,69 @@ async function main(): Promise<void> {
         );
         return;
       }
-      if (mode === "steer") await submitSteer(message, session);
-      else if (mode === "prompt") await submitIdlePrompt(message, session);
-      else await continueThread(message, session);
+      await performPromptAction(async () => {
+        if (mode === "continue") return continueThread(message, session);
+        setStatus(mode === "steer" ? `Steering ${sessionLabel(session)}…` : "Sending prompt…");
+        const result = await sendControlPrompt(args.ruddr, message, (file) =>
+          mode === "steer"
+            ? steerControlArguments(session.stateDir, session.turnId!, file)
+            : idlePromptControlArguments(session.stateDir, file),
+        );
+        return result || (mode === "steer" ? "Steer accepted" : "Prompt accepted");
+      });
     }
 
-    async function submitIdlePrompt(
-      message: string,
-      session: Session,
-    ): Promise<void> {
-      if (session.status !== "idle") {
-        setStatus("Session is no longer idle; the prompt was not sent", true);
-        return;
-      }
+    async function performPromptAction(send: () => Promise<string>): Promise<void> {
       actionRunning = true;
-      closePrompt();
-      setStatus("Sending prompt…");
-      let scratchDirectory = "";
       try {
-        scratchDirectory = await mkdtemp(join(tmpdir(), "ruddr-tui-prompt-"));
-        await chmod(scratchDirectory, 0o700);
-        const messageFile = join(scratchDirectory, "message.md");
-        await writeFile(messageFile, `${message}\n`, { mode: 0o600 });
-        const result = await runControl(
-          args.ruddr,
-          idlePromptControlArguments(session.stateDir, messageFile),
-        );
-        setStatus(result || "Prompt accepted", "success");
+        const status = await promptSubmission.submit(send);
+        if (destroyed || shutdownPromise) return;
+        setStatus(status, "success");
         await refresh();
-        setTimeout(() => void refresh(), 300);
       } catch (error) {
-        setStatus(errorMessage(error), true);
+        if (!destroyed && !shutdownPromise) setStatus(errorMessage(error), true);
       } finally {
         actionRunning = false;
-        if (scratchDirectory)
-          await rm(scratchDirectory, { recursive: true, force: true });
       }
     }
 
-    async function startNewSession(message: string): Promise<void> {
-      actionRunning = true;
+    function registerLaunchedSession(stateDirectory: string): void {
+      args.stateDirs.push(stateDirectory);
+      if (destroyed || shutdownPromise) return;
+      view = reduceView(view, { type: "select", stateDir: stateDirectory });
+      void refresh();
+    }
+
+    async function startNewSession(message: string): Promise<string> {
       const resume = pendingResume;
       const model = pendingModel;
-      closePrompt();
-      try {
-        const provider = resume?.provider ?? model?.provider ?? "codex";
-        // TODO(review): Deja hits do not expose their original cwd, so resumes currently use the TUI launch directory.
-        const cwd = process.cwd();
-        const baseDirectory = join(cwd, ".scratch", "ruddr-tui");
-        await mkdir(baseDirectory, { recursive: true, mode: 0o700 });
-        await chmod(baseDirectory, 0o700);
-        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const stateDirectory = join(baseDirectory, `${stamp}.run`);
-        await mkdir(stateDirectory, { mode: 0o700 });
-        const promptFile = join(stateDirectory, "prompt.md");
-        await writeFile(promptFile, `${message}\n`, { mode: 0o600 });
-        const runArgs = newSessionRunArguments({
-          provider,
-          model: model?.id,
-          cwd,
-          promptFile,
-          stateDirectory,
+      const provider = resume?.provider ?? model?.provider ?? "codex";
+      // TODO(review): Deja hits do not expose their original cwd, so resumes currently use the TUI launch directory.
+      const cwd = process.cwd();
+      setStatus(resume ? `Resuming ${resume.provider} session…` : `Starting ${provider} session…`);
+      await launchSession({
+        ruddr: args.ruddr, cwd, message,
+        argumentsForFiles: (promptFile, stateDirectory) => newSessionRunArguments({
+          provider, model: model?.id, cwd, promptFile, stateDirectory,
           ...(resume ? { resumeThreadId: resume.sessionId } : {}),
-        });
-        const child = Bun.spawn([args.ruddr, ...runArgs], {
-          cwd,
-          stdout: "ignore",
-          stderr: "ignore",
-          stdin: "ignore",
-        });
-        child.unref();
-        args.stateDirs.push(stateDirectory);
-        view = reduceView(view, { type: "select", stateDir: stateDirectory });
-        setStatus(
-          resume
-            ? `Resuming ${resume.provider} session…`
-            : `Starting ${provider} session…`,
-        );
-        setTimeout(() => void refresh(), 250);
-        setTimeout(() => void refresh(), 1_000);
-      } catch (error) {
-        setStatus(errorMessage(error), true);
-      } finally {
-        actionRunning = false;
-      }
+        }),
+        onSpawn: registerLaunchedSession,
+      });
+      return `Started ${provider} session controller`;
     }
 
-    async function submitSteer(
-      message: string,
-      session: Session,
-    ): Promise<void> {
-      if (session.status !== "active") {
-        setStatus("Turn is no longer active; the steer was not sent", true);
-        return;
-      }
-      actionRunning = true;
-      closePrompt();
-      setStatus(`Steering ${sessionLabel(session)}…`);
-      let scratchDirectory = "";
-      try {
-        scratchDirectory = await mkdtemp(join(tmpdir(), "ruddr-tui-steer-"));
-        await chmod(scratchDirectory, 0o700);
-        const messageFile = join(scratchDirectory, "message.md");
-        await writeFile(messageFile, `${message}\n`, { mode: 0o600 });
-        const result = await runControl(
-          args.ruddr,
-          steerControlArguments(session.stateDir, session.turnId!, messageFile),
-        );
-        setStatus(result || "Steer accepted", "success");
-        await refresh();
-      } catch (error) {
-        setStatus(errorMessage(error), true);
-      } finally {
-        actionRunning = false;
-        if (scratchDirectory)
-          await rm(scratchDirectory, { recursive: true, force: true });
-      }
-    }
-
-    async function continueThread(
-      message: string,
-      session: Session,
-    ): Promise<void> {
-      if (!session?.threadId || !session.cwd || isLive(session)) return;
-      const modelOverride = pendingModel;
-      actionRunning = true;
-      closePrompt();
-      try {
-        const baseDirectory = join(session.cwd, ".scratch", "ruddr-tui");
-        await mkdir(baseDirectory, { recursive: true, mode: 0o700 });
-        await chmod(baseDirectory, 0o700);
-        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const stateDirectory = join(baseDirectory, `${stamp}.run`);
-        await mkdir(stateDirectory, { mode: 0o700 });
-        const promptFile = join(stateDirectory, "prompt.md");
-        await writeFile(promptFile, `${message}\n`, { mode: 0o600 });
-        const overrides =
-          modelOverride &&
-          modelOverride.provider === (session.provider ?? "codex")
-            ? { model: modelOverride.id }
-            : {};
-        const runArgs = continuationRunArguments(
-          session,
-          promptFile,
-          stateDirectory,
-          overrides,
-        );
-        const child = Bun.spawn([args.ruddr, ...runArgs], {
-          cwd: session.cwd,
-          stdout: "ignore",
-          stderr: "ignore",
-          stdin: "ignore",
-        });
-        child.unref();
-        args.stateDirs.push(stateDirectory);
-        setStatus(
-          `Started a new run for thread ${session.threadId.slice(0, 12)}`,
-          "success",
-        );
-        setTimeout(() => void refresh(), 250);
-      } catch (error) {
-        setStatus(errorMessage(error), true);
-      } finally {
-        actionRunning = false;
-      }
+    async function continueThread(message: string, session: Session): Promise<string> {
+      const model = pendingModel;
+      const overrides = model && model.provider === (session.provider ?? "codex")
+        ? { model: model.id } : {};
+      setStatus(`Continuing thread ${session.threadId!.slice(0, 12)}…`);
+      await launchSession({
+        ruddr: args.ruddr, cwd: session.cwd!, message,
+        argumentsForFiles: (promptFile, stateDirectory) =>
+          continuationRunArguments(session, promptFile, stateDirectory, overrides),
+        onSpawn: registerLaunchedSession,
+      });
+      return `Started a new run for thread ${session.threadId!.slice(0, 12)}`;
     }
 
     async function requestInterrupt(): Promise<void> {
@@ -2974,6 +2873,7 @@ async function main(): Promise<void> {
       if (shutdownPromise) return shutdownPromise;
       shutdownPromise = (async () => {
         artifactReads.stop();
+        promptSubmission.invalidate();
         clearInterval(refreshTimer);
         clearInterval(animationTimer);
         if (statusTimer) clearTimeout(statusTimer);
