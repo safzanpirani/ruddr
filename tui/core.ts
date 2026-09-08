@@ -1530,6 +1530,7 @@ export interface ModelInfo {
 
 // Embedded fallback for older ruddr binaries without `ruddr models`.
 export const FALLBACK_MODELS: ModelInfo[] = [
+  { provider: "codex", id: "gpt-6-astra", label: "GPT-6-Astra", available: true },
   { provider: "codex", id: "gpt-5.6-sol", label: "GPT-5.6-Sol", default: true, available: true },
   { provider: "codex", id: "gpt-5.6-terra", label: "GPT-5.6-Terra", available: true },
   { provider: "codex", id: "gpt-5.6-luna", label: "GPT-5.6-Luna", available: true },

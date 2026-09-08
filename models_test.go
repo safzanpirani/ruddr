@@ -11,6 +11,7 @@ func TestModelCatalogDefaults(t *testing.T) {
 	}
 	defaults := map[string]int{}
 	sawClaudeFable51 := false
+	sawGPT6Astra := false
 	sawOpencode := false
 	sawPi := false
 	for _, model := range modelCatalog {
@@ -19,6 +20,9 @@ func TestModelCatalogDefaults(t *testing.T) {
 		}
 		if model.Available && model.ID == "" {
 			t.Fatalf("available model without id: %#v", model)
+		}
+		if model.Provider == providerCodex && model.ID == "gpt-6-astra" {
+			sawGPT6Astra = model.Available && len(model.Efforts) == len(codexEfforts)
 		}
 		if model.Provider == providerClaude && model.ID == "claude-fable-5-1" {
 			sawClaudeFable51 = model.Available
@@ -47,5 +51,8 @@ func TestModelCatalogDefaults(t *testing.T) {
 	}
 	if !sawClaudeFable51 {
 		t.Fatal("catalog is missing Claude Fable 5.1")
+	}
+	if !sawGPT6Astra {
+		t.Fatal("catalog is missing GPT-6-Astra")
 	}
 }

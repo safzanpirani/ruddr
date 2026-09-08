@@ -1362,8 +1362,11 @@ describe("promptable TUI helpers", () => {
 
   test("builds picker options for OpenCode and Pi", () => {
     const options = modelPickerOptions(FALLBACK_MODELS);
-    expect(options[0].value).toBe("codex/gpt-5.6-sol");
-    expect(options[0].name).toContain("*");
+    const codexDefault = options.find((option) => option.value === "codex/gpt-5.6-sol");
+    expect(codexDefault?.name).toContain("*");
+    const astra = options.find((option) => option.value === "codex/gpt-6-astra");
+    expect(astra?.name).toBe("GPT-6-Astra");
+    expect(astra?.disabled).toBe(false);
     const fable51 = options.find((option) => option.value === "claude/claude-fable-5-1");
     const opencode = options.find((option) => option.model.provider === "opencode");
     const pi = options.find((option) => option.model.provider === "pi");

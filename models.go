@@ -22,6 +22,7 @@ var codexEfforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
 var piEfforts = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 var modelCatalog = []providerModel{
+	{Provider: providerCodex, ID: "gpt-6-astra", Label: "GPT-6-Astra", Efforts: codexEfforts, Available: true},
 	{Provider: providerCodex, ID: "gpt-5.6-sol", Label: "GPT-5.6-Sol", Efforts: codexEfforts, Default: true, Available: true},
 	{Provider: providerCodex, ID: "gpt-5.6-terra", Label: "GPT-5.6-Terra", Efforts: codexEfforts, Available: true},
 	{Provider: providerCodex, ID: "gpt-5.6-luna", Label: "GPT-5.6-Luna", Efforts: codexEfforts, Available: true},
