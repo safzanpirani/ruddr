@@ -106,6 +106,19 @@ the download is blocked, the launcher builds the bundled Go sources with a
 local Go 1.24 toolchain instead. Set `RUDDR_BINARY` to use a binary you built
 yourself, or `RUDDR_SKIP_DOWNLOAD=1` to skip the fetch and always build.
 
+The install-time fetch only saves time on the first run. The launcher checks
+for the binary on every invocation and downloads it when it is missing. An npm
+policy that blocks install scripts therefore delays the first `ruddr` call and
+changes nothing else. That policy also skips the bundled delegate skill. Run
+`ruddr skill install` once after an install that reported blocked scripts.
+
+`npm install -g` needs write access to the global prefix. Install into a user
+prefix when it does not have that access:
+
+```bash
+npm install -g --prefix "$HOME/.local" ruddr
+```
+
 The Codex provider needs only the binary. `ruddr tui` and the Claude,
 OpenCode, and Pi providers also need Bun 1.4 or newer on `PATH`.
 
