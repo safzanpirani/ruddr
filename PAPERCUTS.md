@@ -116,3 +116,10 @@ While proving Rudder's live diff tab with --state-dir, the TUI still prioritized
 
 While replaying a Rudder tree click in a detached tmux PTY, tmux send-keys delivered the SGR mouse sequence as keyboard input instead of a mouse event. The pane capture could not validate mouse hit-testing; use a real attached client or a dedicated mouse-event harness for this proof.
 
+## 405436 · 2026-09-10T13:21:43.136Z — claude-code — claude-opus-5
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **Tags:** `tooling`
+
+Pushing an annotated vX.Y.Z tag to safzanpirani/ruddr fired the Release workflow twice for the same tag (runs 34481919306 and 34481917607, identical 13:19:28 push event). The first published npm and the GitHub release; the second raced it and failed with npm E403 'cannot publish over the previously published versions: 0.4.0', leaving a red failed run on a successful release. Consider a concurrency group keyed on the tag in .github/workflows/release.yml.
+
