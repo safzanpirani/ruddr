@@ -8,6 +8,12 @@ permissions:
   contents: write
   id-token: write
 
+# One tag pushed once has delivered two identical push events, and the loser
+# of the resulting race fails on npm after the winner has already published.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -90,5 +96,10 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "ruddr@$version" version >/dev/null 2>&1; then
+            echo "ruddr@$version is already on npm; nothing to publish"
+            exit 0
+          fi
           npm pack --dry-run
           npm publish --access public --provenance
