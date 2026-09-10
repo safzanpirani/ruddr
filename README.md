@@ -165,7 +165,7 @@ $EDITOR .scratch/ruddr-demo/prompt.md
   --cwd "$PWD" \
   --prompt-file .scratch/ruddr-demo/prompt.md \
   --state-dir .scratch/ruddr-demo/run \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   --sandbox workspace-write
 ```
 
@@ -381,7 +381,7 @@ Typing in the prompt input routes by session status. An active turn gets a
 steer. An idle `--idle` session gets a new turn over the control socket. A
 finished session continues its thread in a fresh run. The prompt metadata shows
 the selected session's model, token usage, cost, and status. For example, it
-can show `gpt-5.6-sol · 186.1K (24%) · idle`.
+can show `gpt-6-astra · 186.1K (24%) · idle`.
 
 The context meter uses the latest context usage reported by the provider.
 Session token totals remain available in the details panel and are labeled
@@ -524,7 +524,7 @@ lifecycle and steering:
   --cwd "$PWD" \
   --prompt-file .scratch/ruddr-demo/prompt.md \
   --state-dir .scratch/ruddr-demo/run \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   --sandbox workspace-write \
   -- \
   /Users/safzan/Development/projects/codex-auth-broker-private/codex-auth-broker \
