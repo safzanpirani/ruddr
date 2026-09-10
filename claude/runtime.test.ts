@@ -288,6 +288,23 @@ describe("ClaudeRuddrAdapter", () => {
     expect(notifications.some((message) => message.method === "item/completed" && JSON.stringify(message).includes("I found the issue") && JSON.stringify(message).includes("commentary"))).toBe(true);
     expect(notifications.some((message) => message.method === "item/completed" && JSON.stringify(message).includes("Done.") && JSON.stringify(message).includes("final_answer"))).toBe(true);
     expect(JSON.stringify(notifications.find((message) => message.method === "turn/completed"))).toContain(turnID);
+
+    // Assistant text streams as it arrives, in the same shape Codex emits, and
+    // the completed item that follows shares the streamed item's id.
+    const deltas = notifications.filter((message) => message.method === "item/agentMessage/delta");
+    expect(deltas.map((message) => (message.params as { delta: string }).delta)).toEqual([
+      "I found the issue.",
+    ]);
+    const streamedID = (deltas[0].params as { itemId: string }).itemId;
+    expect(
+      notifications.some(
+        (message) =>
+          message.method === "item/completed" &&
+          (message.params as { item: { id: string; text: string } }).item.id === streamedID &&
+          (message.params as { item: { id: string; text: string } }).item.text ===
+            "I found the issue.",
+      ),
+    ).toBe(true);
     await adapter.close();
   });
 
@@ -314,6 +331,14 @@ describe("ClaudeRuddrAdapter", () => {
     expect(textOf((await iterator.next()).value)).toBe("first");
     expect(textOf((await iterator.next()).value)).toBe("steer");
     expect(responseResult(emitted, 4, "turnId")).toBe(turnID);
+    // The steer also reaches the transcript as its own user message; nothing
+    // in the Claude stream echoes it back.
+    const userItems = emitted
+      .filter((message): message is Extract<ProtocolMessage, { method: string }> =>
+        "method" in message && message.method === "item/completed")
+      .map((message) => (message.params as { item: { type: string; text: string } }).item)
+      .filter((item) => item.type === "userMessage");
+    expect(userItems.map((item) => item.text)).toEqual(["steer"]);
     await adapter.close();
   });
 });

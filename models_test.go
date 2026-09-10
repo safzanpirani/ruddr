@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestModelCatalogDefaults(t *testing.T) {
-	if got := defaultModel(providerCodex); got != "gpt-5.6-sol" {
+	if got := defaultModel(providerCodex); got != "gpt-6-astra" {
 		t.Fatalf("codex default = %q", got)
 	}
 	if got := defaultModel(providerClaude); got != "claude-opus-5" {

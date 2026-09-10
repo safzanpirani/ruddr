@@ -20,8 +20,8 @@ not installed).
 
 - `--provider codex` (the default) runs a Codex app-server session. Use it
   when the user says "codex", or when work should run on the Codex quota
-  instead of the parent agent's. Default to `--model gpt-5.6-sol
-  --effort medium`.
+  instead of the parent agent's. Default to `--model gpt-6-astra
+  --effort low`.
 - `--provider claude` runs Claude Code through Ruddr's adapter. Use it when
   the user says "claude", or for a clean-context second Claude. Default to
   `--model claude-opus-5 --effort medium`.
@@ -104,7 +104,7 @@ At the very end, print a **"Handoff report"**:
 
 ```bash
 ruddr run \
-  --provider codex --model gpt-5.6-sol --effort medium \
+  --provider codex --model gpt-6-astra --effort low \
   --cwd "$PWD" \
   --prompt-file .scratch/<task-slug>/brief.md \
   --state-dir .scratch/<task-slug>/run \

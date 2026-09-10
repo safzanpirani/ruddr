@@ -447,10 +447,12 @@ export function parseArguments(
       ruddr = value;
       index++;
     } else if (argument === "--root") {
-      roots.push(value);
+      roots.push(resolve(value));
       index++;
     } else if (argument === "--state-dir") {
-      stateDirs.push(value);
+      // state.json records an absolute stateDir, so resolve here to keep the
+      // explicit-session comparisons honest for a relative argument.
+      stateDirs.push(resolve(value));
       index++;
     } else if (argument === "--interval") {
       interval = parseInterval(value);
@@ -683,6 +685,9 @@ export class LatestRead {
 
 export class AsyncTaskGate {
   private active?: Promise<void>;
+  // stop() waits on this rather than on the task itself: shutdown must reach
+  // the renderer teardown even when the in-flight task failed.
+  private settled = Promise.resolve();
   private stopping = false;
 
   run(task: () => Promise<void>): Promise<void> {
@@ -693,12 +698,16 @@ export class AsyncTaskGate {
         if (this.active === active) this.active = undefined;
       });
     this.active = active;
+    this.settled = active.then(
+      () => {},
+      () => {},
+    );
     return active;
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
-    await this.active;
+    await this.settled;
   }
 }
 
@@ -1007,6 +1016,30 @@ export function visibleSessions(
   });
 }
 
+/**
+ * Moves the sessions named by `--state-dir` to the front, in the order they
+ * were given. A focused inspection asked for those directories by name, so a
+ * busier globally registered run must not take the initial selection.
+ */
+export function prioritizeExplicitSessions(
+  sessions: Session[],
+  explicitStateDirs: string[],
+): Session[] {
+  if (explicitStateDirs.length === 0) return sessions;
+  const rank = new Map<string, number>();
+  explicitStateDirs.forEach((stateDir, index) => {
+    if (!rank.has(stateDir)) rank.set(stateDir, index);
+  });
+  const explicit: Session[] = [];
+  const rest: Session[] = [];
+  for (const session of sessions) {
+    if (rank.has(session.stateDir)) explicit.push(session);
+    else rest.push(session);
+  }
+  explicit.sort((left, right) => rank.get(left.stateDir)! - rank.get(right.stateDir)!);
+  return [...explicit, ...rest];
+}
+
 export function latestAgentUpdate(content: string): string | undefined {
   let latest: string | undefined;
   for (const line of content.split("\n")) {
@@ -1200,8 +1233,25 @@ export function parseChatTranscript(
 ): ChatEntry[] {
   const entries: ChatEntry[] = [];
   const toolIndexById = new Map<string, number>();
+  const agentIndexById = new Map<string, number>();
+  const agentTextById = new Map<string, string>();
   const rejectedPromptIds = new Set<string>();
   const rootThreads = new Set<string>(rootThreadId ? [rootThreadId] : []);
+  // Codex streams an agent message as `item/agentMessage/delta` before the
+  // completed item lands, so the transcript grows word by word instead of
+  // appearing all at once when the turn ends.
+  const writeAgentMessage = (id: string, text: string): void => {
+    agentTextById.set(id, text);
+    const trimmed = text.trim();
+    const existing = agentIndexById.get(id);
+    if (existing !== undefined) {
+      if (trimmed) entries[existing] = { kind: "agent", text: trimmed, itemId: id };
+      return;
+    }
+    if (!trimmed) return;
+    agentIndexById.set(id, entries.length);
+    entries.push({ kind: "agent", text: trimmed, itemId: id });
+  };
   for (const line of content.split("\n")) {
     try {
       const event = JSON.parse(line) as {
@@ -1209,6 +1259,8 @@ export function parseChatTranscript(
         params?: {
           threadId?: string;
           promptId?: string;
+          itemId?: string;
+          delta?: string;
           item?: {
             id?: string;
             type?: string;
@@ -1220,6 +1272,7 @@ export function parseChatTranscript(
             query?: string;
             exitCode?: number;
             origin?: string;
+            content?: unknown;
           };
         };
       };
@@ -1234,20 +1287,42 @@ export function parseChatTranscript(
       const threadId = event.params?.threadId;
       if (item?.type === "userMessage" && item.origin === "ruddr" && threadId)
         rootThreads.add(threadId);
-      if (!item?.type || !event.method?.startsWith("item/")) continue;
+      if (!event.method?.startsWith("item/")) continue;
       // Sub-agent items carry a different threadId; keep the root conversation.
       if (threadId && rootThreads.size > 0 && !rootThreads.has(threadId))
         continue;
+      if (event.method === "item/agentMessage/delta") {
+        const id = event.params?.itemId;
+        const delta = event.params?.delta;
+        // A bounded tail can start mid-message; the completed item still
+        // replaces whatever partial text was recovered here.
+        if (id && delta) writeAgentMessage(id, (agentTextById.get(id) ?? "") + delta);
+        continue;
+      }
+      if (!item?.type) continue;
       if (item.type === "userMessage") {
-        const text = item.text?.trim();
-        if (event.method === "item/completed" && text)
-          entries.push({ kind: "user", text, itemId: item.id });
+        // Ruddr records each prompt as a `text` item; Codex reports its own
+        // user messages, steers included, as a `content` array.
+        const text = (item.text ?? flattenSummary(item.content)).trim();
+        if (event.method === "item/completed" && text) {
+          // The provider echoes the prompt Ruddr already recorded. One bubble.
+          const previous = entries[entries.length - 1];
+          if (!(previous?.kind === "user" && previous.text === text))
+            entries.push({ kind: "user", text, itemId: item.id });
+        }
         continue;
       }
       if (item.type === "agentMessage") {
-        const text = item.text?.trim();
-        if (event.method === "item/completed" && text)
-          entries.push({ kind: "agent", text });
+        if (!item.id) {
+          const text = item.text?.trim();
+          if (event.method === "item/completed" && text)
+            entries.push({ kind: "agent", text });
+          continue;
+        }
+        // The completed item carries the authoritative text; it supersedes any
+        // deltas, including a partial run recovered from a truncated tail.
+        if (event.method === "item/completed") writeAgentMessage(item.id, item.text ?? "");
+        else if (item.text) writeAgentMessage(item.id, item.text);
         continue;
       }
       if (item.type === "reasoning") {
@@ -1530,7 +1605,8 @@ export interface ModelInfo {
 
 // Embedded fallback for older ruddr binaries without `ruddr models`.
 export const FALLBACK_MODELS: ModelInfo[] = [
-  { provider: "codex", id: "gpt-5.6-sol", label: "GPT-5.6-Sol", default: true, available: true },
+  { provider: "codex", id: "gpt-6-astra", label: "GPT-6-Astra", default: true, available: true },
+  { provider: "codex", id: "gpt-5.6-sol", label: "GPT-5.6-Sol", available: true },
   { provider: "codex", id: "gpt-5.6-terra", label: "GPT-5.6-Terra", available: true },
   { provider: "codex", id: "gpt-5.6-luna", label: "GPT-5.6-Luna", available: true },
   { provider: "claude", id: "claude-fable-5-1", label: "Claude Fable 5.1", available: true },
@@ -1869,7 +1945,14 @@ export function typewriterReveal(
   step = 24,
 ): number {
   if (revealed >= targetLength) return targetLength;
-  return Math.min(targetLength, revealed + step);
+  // The target now grows from live provider deltas, and a fast model outruns a
+  // fixed step. A large backlog drains proportionally so the reveal stays
+  // smooth without trailing further and further behind the real stream.
+  const remaining = targetLength - revealed;
+  return Math.min(
+    targetLength,
+    revealed + Math.max(step, Math.ceil(remaining / 8)),
+  );
 }
 
 /** Clamps a list scroll offset so the viewport never runs past the end. */

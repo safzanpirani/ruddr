@@ -14,6 +14,7 @@ While extracting Codex app-server schema fields in zsh, assigning a loop variabl
 
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **Tags:** `misleading-error`
+- **Resolved:** 2026-09-10T12:31:19.817Z — README.md documents the method as unavailable and records that Ruddr intentionally does not expose it.
 
 Codex CLI 0.145.0 generate-json-schema --experimental advertises thread/items/list, but a live initialized experimental app-server call returns JSON-RPC -32601: thread/items/list is not supported yet. Generated protocol availability does not guarantee the runtime handler exists; add a capability/runtime probe or document this method as unavailable.
 
@@ -78,6 +79,7 @@ The bundled quick_validate.py script is not executable, so the documented direct
 
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **Tags:** `test-gap`
+- **Resolved:** 2026-09-10T12:31:19.817Z — Shutdown awaits the refresh gate before destroying the renderer, the gate now settles even when the refresh fails, and refresh no longer writes status into a torn-down renderer.
 
 While restarting the TUI after a PTY verification, pressing q during an in-flight refresh destroyed the renderer before refresh finished. refresh then called setStatus on a destroyed TextBuffer and crashed; shutdown should await or cancel refresh work before renderer destruction.
 
@@ -85,6 +87,7 @@ While restarting the TUI after a PTY verification, pressing q during an in-fligh
 
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **Tags:** `flaky-command`
+- **Resolved:** 2026-09-10T12:31:19.817Z — The Pi startup handshake has its own budget instead of borrowing the steady-state RPC deadline, and the test helper waits on a wall clock rather than a fixed poll count.
 
 The Pi RPC timeout regression test failed when bun test ran concurrently with Go tests and TypeScript checking, then passed alone and in a serial full Bun run. The 500ms test deadline appears sensitive to host contention.
 
@@ -101,6 +104,7 @@ While deploying Rudder to Ampere, I hardcoded an expected SHA-256 that did not m
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **About:** `tmux`
 - **Tags:** `dx`
+- **Resolved:** 2026-09-10T12:31:19.817Z — The TUI resolves --state-dir to an absolute path and pins explicitly named sessions to the top of the list, so they take the initial selection.
 
 While proving Rudder's live diff tab with --state-dir, the TUI still prioritized a globally registered active session. The expected checkout-specific diff pattern timed out even though the viewer rendered another workspace's real diff. Explicit state directories should be easier to select or prioritize during focused inspection.
 

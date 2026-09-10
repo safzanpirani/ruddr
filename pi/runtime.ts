@@ -36,6 +36,9 @@ interface PiTurn {
 type PiProcess = Bun.Subprocess<"pipe", "pipe", "inherit">;
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+// Launching the Pi binary is far slower and more variable than a steady-state
+// RPC, so the startup handshake gets its own budget.
+const DEFAULT_START_TIMEOUT_MS = 60_000;
 const FIRE_AND_FORGET_UI_METHODS = new Set([
   "notify",
   "setStatus",
@@ -46,7 +49,7 @@ const FIRE_AND_FORGET_UI_METHODS = new Set([
 
 export interface PiClient {
   start(config: PiThread, onEvent: (event: Record<string, unknown>) => void): Promise<string>;
-  send(command: Record<string, unknown>): Promise<Record<string, unknown>>;
+  send(command: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
   close(): Promise<void>;
 }
 
@@ -149,14 +152,30 @@ export class PiRuddrAdapter extends BaseAdapter {
       releasePending = resolve;
     });
     turn.pendingSteers.add(pending);
+    const text = readTextInput(input.input);
     try {
-      await this.client.send({ type: "steer", message: readTextInput(input.input) });
+      await this.client.send({ type: "steer", message: text });
       turn.steerGeneration++;
     } finally {
       turn.pendingSteers.delete(pending);
       releasePending();
     }
+    await this.emitUserMessage(text);
     return { turnId: turn.id };
+  }
+
+  // Codex reports a steer as its own userMessage item, which is what puts the
+  // steer in the transcript. Pi echoes nothing back, so the
+  // adapter emits it once the steer has been accepted.
+  private async emitUserMessage(text: string): Promise<void> {
+    if (!this.thread) return;
+    await this.emit({
+      method: "item/completed",
+      params: {
+        threadId: this.thread.id,
+        item: { id: randomUUID(), type: "userMessage", status: "completed", text },
+      },
+    });
   }
 
   private async interruptTurn(params: unknown): Promise<unknown> {
@@ -373,7 +392,10 @@ export class SubprocessPiClient implements PiClient {
   private onEvent?: (event: Record<string, unknown>) => void;
   private closing = false;
 
-  constructor(private readonly rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS) {}
+  constructor(
+    private readonly rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS,
+    private readonly startTimeoutMs = Math.max(rpcTimeoutMs, DEFAULT_START_TIMEOUT_MS),
+  ) {}
 
   async start(config: PiThread, onEvent: (event: Record<string, unknown>) => void): Promise<string> {
     this.onEvent = onEvent;
@@ -396,11 +418,17 @@ export class SubprocessPiClient implements PiClient {
     });
     this.process = process;
     void this.readOutput(process);
-    const state = record((await this.send({ type: "get_state" })).data, "Pi state");
+    const state = record(
+      (await this.send({ type: "get_state" }, this.startTimeoutMs)).data,
+      "Pi state",
+    );
     return requiredString(state.sessionId, "Pi session id");
   }
 
-  async send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async send(
+    command: Record<string, unknown>,
+    timeoutMs = this.rpcTimeoutMs,
+  ): Promise<Record<string, unknown>> {
     const process = this.process;
     if (!process) throw new Error("Pi RPC process is not running");
     const id = `ruddr-pi-${++this.requestSequence}`;
@@ -409,14 +437,14 @@ export class SubprocessPiClient implements PiClient {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        const error = new Error(`Pi RPC ${String(command.type ?? "command")} timed out after ${this.rpcTimeoutMs}ms`);
+        const error = new Error(`Pi RPC ${String(command.type ?? "command")} timed out after ${timeoutMs}ms`);
         pending.reject(error);
         this.failProcess(process, error);
-      }, this.rpcTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
     });
     try {
-      await this.write(process, { ...command, id });
+      await this.write(process, { ...command, id }, timeoutMs);
     } catch (error) {
       this.rejectPending(id, errorMessage(error));
       this.failProcess(process, error instanceof Error ? error : new Error(errorMessage(error)));
@@ -482,7 +510,11 @@ export class SubprocessPiClient implements PiClient {
     await this.write(process, message);
   }
 
-  private async write(process: PiProcess, message: Record<string, unknown>): Promise<void> {
+  private async write(
+    process: PiProcess,
+    message: Record<string, unknown>,
+    timeoutMs = this.rpcTimeoutMs,
+  ): Promise<void> {
     const operation = this.writeChain.then(async () => {
       if (this.process !== process) throw new Error("Pi RPC process is not running");
       process.stdin.write(`${JSON.stringify(message)}\n`);
@@ -494,8 +526,8 @@ export class SubprocessPiClient implements PiClient {
       operation,
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
-          () => reject(new Error(`Pi RPC write timed out after ${this.rpcTimeoutMs}ms`)),
-          this.rpcTimeoutMs,
+          () => reject(new Error(`Pi RPC write timed out after ${timeoutMs}ms`)),
+          timeoutMs,
         );
       }),
     ]).finally(() => {

@@ -58,6 +58,15 @@ test("Pi adapter steers, reports tools, and completes after agent_settled", asyn
     { type: "prompt", message: "first" },
     { type: "steer", message: "correction" },
   ]);
+  // The steer reaches the transcript as its own user message; Pi echoes none.
+  expect(
+    emitted
+      .filter((message): message is Extract<ProtocolMessage, { method: string }> =>
+        "method" in message && message.method === "item/completed")
+      .map((message) => (message.params as { item: { type: string; text: string } }).item)
+      .filter((item) => item.type === "userMessage")
+      .map((item) => item.text),
+  ).toEqual(["correction"]);
 
   client.event?.({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: { path: "README.md" } });
   client.event?.({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read", args: { path: "README.md" }, result: { content: [{ type: "text", text: "ok" }] }, isError: false });
@@ -148,7 +157,9 @@ test("Pi waits for an accepted steer and the following settled event", async () 
 });
 
 test("Pi RPC rejects interactive extension UI and times out unanswered commands", async () => {
-  const client = new SubprocessPiClient(500);
+  // The 500ms deadline is what this test asserts on; spawning the fake Pi
+  // binary is host-contention sensitive and gets its own generous budget.
+  const client = new SubprocessPiClient(500, 30_000);
   const events: Array<Record<string, unknown>> = [];
   const executable = fileURLToPath(new URL("testdata/fake-pi.ts", import.meta.url));
   const sessionID = await client.start(
@@ -177,8 +188,11 @@ function notification(messages: ProtocolMessage[], method: string): ProtocolMess
   return messages.find((message) => "method" in message && message.method === method);
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let index = 0; index < 100; index++) {
+// A wall-clock deadline, not an iteration count: a loaded host stretches every
+// sleep, and a fixed number of 5ms polls quietly became a ~500ms budget.
+async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (predicate()) return;
     await Bun.sleep(5);
   }

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -1394,15 +1395,23 @@ func (r *controller) tracef(format string, args ...any) {
 		return
 	}
 	stamp := time.Now().UTC().Format(time.RFC3339)
-	_, _ = fmt.Fprintf(r.trace, "%s %s\n", stamp, fmt.Sprintf(format, args...))
+	// Every trace record must stay on one line: `peek` and the TUI parse the
+	// log line by line, and provider-supplied error text can contain newlines.
+	_, _ = fmt.Fprintf(r.trace, "%s %s\n", stamp, singleLine(fmt.Sprintf(format, args...)))
 }
 
+// oneLine collapses whitespace and truncates on a rune boundary, so a
+// multi-byte character is never cut in half into invalid UTF-8.
 func oneLine(value string, limit int) string {
 	value = singleLine(value)
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "…"
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut] + "…"
 }
 
 func singleLine(value string) string {

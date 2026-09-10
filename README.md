@@ -427,7 +427,11 @@ the tab bar, the sessions list, and the bottom of Chat and Activity. Status
 messages lead with a `✓`, `›`, `!`, or `×` glyph and clear themselves after a
 few seconds. Chat renders agent Markdown (headings, lists, quotes, inline code,
 and fenced code with syntax coloring) and types out the newest message as it
-streams. Activity tool rows collapse to one line and expand into a card with
+streams. The text is live: Codex reports partial assistant text as
+`item/agentMessage/delta` and the Claude, OpenCode, and Pi adapters emit the
+same notification, so a message appears while the model writes it rather than
+all at once when the turn ends. Your steers appear in the transcript too.
+Activity tool rows collapse to one line and expand into a card with
 the command, status, working directory, input, and output. Empty states are
 clickable: they start a session, open the prompt, or retry a failed diff read.
 Right-click a session for a context menu: prompt or steer it, stop it, open its

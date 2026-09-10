@@ -244,12 +244,27 @@ export class ClaudeRuddrAdapter extends BaseAdapter {
     return { turn: { id: turn.id, status: "inProgress" } };
   }
 
-  private steerTurn(params: unknown): unknown {
+  private async steerTurn(params: unknown): Promise<unknown> {
     const input = record(params, "steer parameters");
     const turn = this.requireActiveTurn(input);
     const text = readTextInput(input.input);
     this.queue?.push(userMessage(text));
+    await this.emitUserMessage(text);
     return { turnId: turn.id };
+  }
+
+  // Codex reports a steer as its own userMessage item, which is what puts the
+  // steer in the transcript. Nothing echoes it back here, so the adapter emits
+  // it once the provider has accepted the text.
+  private async emitUserMessage(text: string): Promise<void> {
+    if (!this.thread) return;
+    await this.emit({
+      method: "item/completed",
+      params: {
+        threadId: this.thread.id,
+        item: { id: internalID(), type: "userMessage", status: "completed", text },
+      },
+    });
   }
 
   private async interruptTurn(params: unknown): Promise<unknown> {
@@ -354,6 +369,7 @@ export class ClaudeRuddrAdapter extends BaseAdapter {
         const block = turn.textBlocks.get(event.index) ?? { index: event.index, id: internalID(), text: "" };
         block.text += event.delta.text;
         turn.textBlocks.set(event.index, block);
+        await this.emitAgentMessageDelta(block.id, event.delta.text);
       } else if (event.delta.type === "thinking_delta") {
         const block = turn.thinkingBlocks.get(event.index) ?? { index: event.index, id: internalID(), text: "" };
         block.text += event.delta.thinking;
@@ -504,6 +520,18 @@ export class ClaudeRuddrAdapter extends BaseAdapter {
   private async flushPendingText(phase: "commentary" | "final_answer"): Promise<void> {
     const pending = this.turn?.pendingText.splice(0) ?? [];
     for (const block of pending) await this.emitAgentMessage(block, phase);
+  }
+
+  // Codex streams partial assistant text as item/agentMessage/delta and Ruddr
+  // readers render it live. Emitting the same shape keeps Claude turns from
+  // appearing in one blob when the message finally completes; the completed
+  // item that follows carries the same id and the authoritative text.
+  private async emitAgentMessageDelta(itemId: string, delta: string): Promise<void> {
+    if (!this.thread || !delta) return;
+    await this.emit({
+      method: "item/agentMessage/delta",
+      params: { threadId: this.thread.id, itemId, delta },
+    });
   }
 
   private async emitAgentMessage(block: TextBlock, phase: "commentary" | "final_answer"): Promise<void> {

@@ -191,9 +191,12 @@ func startAppServerSession(ctx context.Context, cwd string, childCommand []strin
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		_ = stdout.Close()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdin.Close()
 		return nil, err
 	}
 	scanner := bufio.NewScanner(stdout)
@@ -241,7 +244,9 @@ func (s *appServerSession) call(method string, params any, target any) error {
 		if message.Error != nil {
 			return fmt.Errorf("%s (%d)", message.Error.Message, message.Error.Code)
 		}
-		if target != nil {
+		// A void result arrives as an omitted or null `result`; that is a
+		// successful response, not a decoding failure.
+		if target != nil && len(message.Result) > 0 {
 			return json.Unmarshal(message.Result, target)
 		}
 		return nil
@@ -286,6 +291,10 @@ func (s *appServerSession) close() {
 }
 
 func printRawJSON(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		_, err := fmt.Fprintln(os.Stdout, "null")
+		return err
+	}
 	var formatted bytes.Buffer
 	if err := json.Indent(&formatted, raw, "", "  "); err != nil {
 		return err

@@ -96,7 +96,12 @@ test("OpenCode adapter preserves same-turn steering and normalizes final output"
     cost: 0.01,
   });
   await waitFor(() => notification(emitted, "turn/completed") !== undefined);
-  expect(JSON.stringify(notification(emitted, "item/completed"))).toContain("checked");
+  // The steer reaches the transcript as its own user message, the way Codex
+  // reports one; nothing else echoes it back.
+  expect(itemsOfType(emitted, "userMessage").map((item) => item.text)).toEqual([
+    "correction",
+  ]);
+  expect(JSON.stringify(itemsOfType(emitted, "reasoning"))).toContain("checked");
   expect(JSON.stringify(emitted)).toContain("OPENCODE_OK");
   expect(JSON.stringify(notification(emitted, "thread/tokenUsage/updated"))).toContain('"totalTokens":16');
   await adapter.close();
@@ -210,6 +215,17 @@ function result(messages: ProtocolMessage[], id: string | number): Record<string
 
 function notification(messages: ProtocolMessage[], method: string): ProtocolMessage | undefined {
   return messages.find((message) => "method" in message && message.method === method);
+}
+
+function itemsOfType(
+  messages: ProtocolMessage[],
+  type: string,
+): Array<Record<string, any>> {
+  return messages
+    .filter((message): message is Extract<ProtocolMessage, { method: string }> =>
+      "method" in message && message.method === "item/completed")
+    .map((message) => (message.params as { item: Record<string, any> }).item)
+    .filter((item) => item?.type === type);
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

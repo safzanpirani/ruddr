@@ -29,6 +29,7 @@ import {
   idlePromptControlArguments,
   latestAgentUpdate,
   parseTraceActivities,
+  prioritizeExplicitSessions,
   parseToolEventDetails,
   readTail,
   reduceView,
@@ -78,12 +79,18 @@ import {
   type Session,
 } from "./core";
 
-function deferred(): { promise: Promise<void>; resolve: () => void } {
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+} {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -204,6 +211,38 @@ describe("TUI layout helpers", () => {
   });
 });
 
+describe("explicit state directories", () => {
+  test("an explicitly named session takes the initial selection from a busier one", () => {
+    const focused = session({ stateDir: "/focused/run", status: "completed" });
+    const listed = [session({ stateDir: "/other/run", status: "active" }), focused];
+
+    const ordered = prioritizeExplicitSessions(listed, ["/focused/run"]);
+    expect(ordered[0]).toBe(focused);
+    expect(reduceView(initialViewState, { type: "sessions", sessions: ordered })
+      .selectedStateDir).toBe("/focused/run");
+  });
+
+  test("keeps command-line order and leaves the rest untouched", () => {
+    const first = session({ stateDir: "/a" });
+    const second = session({ stateDir: "/b" });
+    const other = session({ stateDir: "/c" });
+    expect(
+      prioritizeExplicitSessions([other, second, first], ["/b", "/a"]).map(
+        (entry) => entry.stateDir,
+      ),
+    ).toEqual(["/b", "/a", "/c"]);
+    expect(prioritizeExplicitSessions([other, first], []).map((entry) => entry.stateDir))
+      .toEqual(["/c", "/a"]);
+    expect(prioritizeExplicitSessions([other], ["/missing"]).map((entry) => entry.stateDir))
+      .toEqual(["/c"]);
+  });
+
+  test("resolves a relative --state-dir so it matches the persisted stateDir", () => {
+    const parsed = parseArguments(["--ruddr", "r", "--state-dir", ".scratch/task/run"], {});
+    expect(parsed.stateDirs).toEqual([join(process.cwd(), ".scratch", "task", "run")]);
+  });
+});
+
 describe("async task gate", () => {
   test("waits for an active refresh and rejects new work before teardown", async () => {
     const gate = new AsyncTaskGate();
@@ -226,6 +265,22 @@ describe("async task gate", () => {
     active.resolve();
     await Promise.all([firstRun, stopping]);
     expect(stopped).toBe(true);
+  });
+
+  // Quitting while a refresh is failing must still reach renderer teardown.
+  test("stop settles when the active task rejects", async () => {
+    const gate = new AsyncTaskGate();
+    const active = deferred();
+    const firstRun = gate.run(() => active.promise);
+    firstRun.catch(() => {});
+
+    const stopping = gate.stop();
+    active.reject(new Error("refresh blew up"));
+    await expect(stopping).resolves.toBeUndefined();
+  });
+
+  test("stop resolves when no task ever ran", async () => {
+    await expect(new AsyncTaskGate().stop()).resolves.toBeUndefined();
   });
 });
 
@@ -1362,7 +1417,7 @@ describe("promptable TUI helpers", () => {
 
   test("builds picker options for OpenCode and Pi", () => {
     const options = modelPickerOptions(FALLBACK_MODELS);
-    expect(options[0].value).toBe("codex/gpt-5.6-sol");
+    expect(options[0].value).toBe("codex/gpt-6-astra");
     expect(options[0].name).toContain("*");
     const fable51 = options.find((option) => option.value === "claude/claude-fable-5-1");
     const opencode = options.find((option) => option.model.provider === "opencode");
@@ -1451,6 +1506,70 @@ describe("promptable TUI helpers", () => {
     expect(entries.map((entry) => entry.kind)).toEqual(["user", "tool", "agent", "user"]);
     expect(entries[1]).toMatchObject({ text: "bun test", status: "completed" });
     expect(entries.some((entry) => entry.text === "hidden")).toBe(false);
+  });
+
+  test("streams an agent message from provider deltas before it completes", () => {
+    const events = [
+      { method: "item/completed", params: { threadId: "root", item: { type: "userMessage", origin: "ruddr", text: "go" } } },
+      { method: "item/started", params: { threadId: "root", item: { id: "msg-1", type: "agentMessage", text: "" } } },
+      { method: "item/agentMessage/delta", params: { threadId: "root", itemId: "msg-1", delta: "Reading" } },
+      { method: "item/agentMessage/delta", params: { threadId: "root", itemId: "msg-1", delta: " the" } },
+      { method: "item/agentMessage/delta", params: { threadId: "root", itemId: "msg-1", delta: " file" } },
+    ].map((line) => JSON.stringify(line));
+
+    // Mid-stream: the partial message is already in the transcript.
+    const streaming = parseChatTranscript(events.join("\n"));
+    expect(streaming.map((entry) => entry.kind)).toEqual(["user", "agent"]);
+    expect(streaming[1]).toMatchObject({ text: "Reading the file", itemId: "msg-1" });
+
+    // The completed item supersedes the accumulated deltas without duplicating.
+    const completed = parseChatTranscript(
+      [
+        ...events,
+        JSON.stringify({
+          method: "item/completed",
+          params: { threadId: "root", item: { id: "msg-1", type: "agentMessage", text: "Reading the file now." } },
+        }),
+      ].join("\n"),
+    );
+    expect(completed.map((entry) => entry.kind)).toEqual(["user", "agent"]);
+    expect(completed[1].text).toBe("Reading the file now.");
+  });
+
+  test("keeps streamed messages in order and ignores sub-agent deltas", () => {
+    const lines = [
+      { method: "item/completed", params: { threadId: "root", item: { type: "userMessage", origin: "ruddr", text: "go" } } },
+      { method: "item/agentMessage/delta", params: { threadId: "root", itemId: "msg-1", delta: "first" } },
+      { method: "item/completed", params: { threadId: "root", item: { id: "msg-1", type: "agentMessage", text: "first" } } },
+      { method: "item/started", params: { threadId: "root", item: { id: "cmd-1", type: "commandExecution", command: "bun test" } } },
+      { method: "item/agentMessage/delta", params: { threadId: "sub", itemId: "msg-sub", delta: "hidden" } },
+      { method: "item/agentMessage/delta", params: { threadId: "root", itemId: "msg-2", delta: "second" } },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n");
+    const entries = parseChatTranscript(lines);
+    expect(entries.map((entry) => entry.text)).toEqual(["go", "first", "bun test", "second"]);
+  });
+
+  test("shows provider-reported prompts and steers without duplicating Ruddr's own", () => {
+    const lines = [
+      // Ruddr records the prompt, then Codex echoes the same text back.
+      { method: "item/completed", params: { threadId: "root", item: { id: "ruddr-prompt-1", type: "userMessage", origin: "ruddr", text: "do the thing" } } },
+      { method: "item/completed", params: { threadId: "root", item: { id: "codex-1", type: "userMessage", content: [{ type: "text", text: "do the thing" }] } } },
+      { method: "item/completed", params: { threadId: "root", item: { id: "msg-1", type: "agentMessage", text: "working" } } },
+      // A steer only ever reaches the log as a provider user message.
+      { method: "item/completed", params: { threadId: "root", item: { id: "codex-2", type: "userMessage", content: [{ type: "text", text: "tests first" }] } } },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n");
+    const entries = parseChatTranscript(lines);
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "agent", "user"]);
+    expect(entries.map((entry) => entry.text)).toEqual([
+      "do the thing",
+      "working",
+      "tests first",
+    ]);
+    expect(entries[0].itemId).toBe("ruddr-prompt-1");
   });
 
   test("filters old transcripts by the selected root thread", () => {

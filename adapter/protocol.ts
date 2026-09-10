@@ -68,24 +68,41 @@ export async function* readLines(
 ): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
-  let buffered = "";
+  // Chunks stay unjoined until a newline arrives, and the size guard tracks a
+  // running byte count. Scanning and concatenating the whole buffer on every
+  // chunk made a single multi-megabyte line cost quadratic time.
+  let pending: string[] = [];
+  let pendingBytes = 0;
+  const joinPending = (): string => {
+    const buffered = pending.length === 1 ? pending[0] : pending.join("");
+    pending = buffered ? [buffered] : [];
+    return buffered;
+  };
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffered += decoder.decode(value, { stream: true });
-      if (Buffer.byteLength(buffered) > MAX_LINE_BYTES) {
+      const decoded = decoder.decode(value, { stream: true });
+      if (!decoded) continue;
+      pending.push(decoded);
+      pendingBytes += Buffer.byteLength(decoded);
+      if (pendingBytes > MAX_LINE_BYTES) {
         throw new Error("JSON-RPC line exceeds 64 MiB");
       }
+      if (!decoded.includes("\n")) continue;
+      let buffered = joinPending();
       let newline = buffered.indexOf("\n");
       while (newline >= 0) {
-        yield buffered.slice(0, newline).replace(/\r$/, "");
+        const line = buffered.slice(0, newline);
+        yield line.replace(/\r$/, "");
+        pendingBytes -= Buffer.byteLength(line) + 1;
         buffered = buffered.slice(newline + 1);
         newline = buffered.indexOf("\n");
       }
+      pending = buffered ? [buffered] : [];
     }
-    buffered += decoder.decode();
-    if (buffered) yield buffered.replace(/\r$/, "");
+    const tail = joinPending() + decoder.decode();
+    if (tail) yield tail.replace(/\r$/, "");
   } finally {
     reader.releaseLock();
   }

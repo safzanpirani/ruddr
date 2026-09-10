@@ -16,7 +16,7 @@ func TestConfigureProviderDefaultsKeepsCodexCompatible(t *testing.T) {
 	if cfg.Provider != providerCodex {
 		t.Fatalf("provider = %q, want codex", cfg.Provider)
 	}
-	if cfg.Model != "gpt-5.6-sol" {
+	if cfg.Model != "gpt-6-astra" {
 		t.Fatalf("model = %q, want Codex default", cfg.Model)
 	}
 	if got := strings.Join(cfg.ChildCommand, " "); got != "codex app-server --listen stdio://" {

@@ -51,6 +51,7 @@ import {
   parseModelCatalog,
   parseToolEventDetails,
   parseTraceActivities,
+  prioritizeExplicitSessions,
   promptModeForSession,
   promptTargetForSession,
   readTail,
@@ -2067,15 +2068,18 @@ async function main(): Promise<void> {
 
     async function refresh(reason?: string): Promise<void> {
       return refreshGate.run(async () => {
-        if (reason) setStatus(reason);
         try {
+          if (reason) setStatus(reason);
           discoveredSessions = await discoverSessions({
             roots: args.roots,
             stateDirs: args.stateDirs,
           });
-          listedSessions = visibleSessions(
-            discoveredSessions,
-            args.includeAll,
+          listedSessions = prioritizeExplicitSessions(
+            visibleSessions(
+              discoveredSessions,
+              args.includeAll,
+              args.stateDirs,
+            ),
             args.stateDirs,
           );
           applySessionFilter();
@@ -2083,7 +2087,9 @@ async function main(): Promise<void> {
           lastRefreshAt = Date.now();
           if (reason) showIdleStatus();
         } catch (error) {
-          setStatus(errorMessage(error), true);
+          // Quitting mid-refresh tears the renderer down; reporting into it
+          // afterwards would crash the shutdown path.
+          if (!destroyed && !shutdownPromise) setStatus(errorMessage(error), true);
         }
       });
     }
@@ -2221,7 +2227,12 @@ async function main(): Promise<void> {
               stream?.id === lastAgent.id ? stream.revealed : (previousLength ?? 0);
             stream = { id: lastAgent.id, revealed: from, target: lastAgent.text.length };
           }
-        } else if (stream && lastAgent?.id !== stream.id) stream = undefined;
+        } else if (stream) {
+          // The turn ended. Let the reveal run out on the final text rather
+          // than freezing the row half-written.
+          if (lastAgent?.id === stream.id) stream.target = lastAgent.text.length;
+          else stream = undefined;
+        }
         for (const row of rows)
           if (row.chat?.kind === "agent") seenAgentLength.set(row.id, row.text.length);
         setArtifactRows(
@@ -2838,9 +2849,16 @@ async function main(): Promise<void> {
         updateWorkingIndicator();
         const liveIndex = artifactRows.findIndex((row) => row.live);
         if (liveIndex >= 0) refreshArtifactRow(liveIndex);
-        if (stream && stream.revealed < stream.target) {
+      }
+      // The reveal runs whether or not the turn is still working, so a message
+      // that finished mid-animation still types itself out to the end.
+      if (stream) {
+        const streamIndex = artifactRows.findIndex((row) => row.id === stream!.id);
+        if (stream.revealed >= stream.target) {
+          stream = undefined;
+          if (streamIndex >= 0) refreshArtifactRow(streamIndex);
+        } else {
           stream.revealed = typewriterReveal(stream.revealed, stream.target);
-          const streamIndex = artifactRows.findIndex((row) => row.id === stream!.id);
           if (streamIndex >= 0) refreshArtifactRow(streamIndex);
           if (artifactFollowing) resumeFollowing(false);
         }
@@ -2872,19 +2890,24 @@ async function main(): Promise<void> {
     function shutdown(): Promise<void> {
       if (shutdownPromise) return shutdownPromise;
       shutdownPromise = (async () => {
-        artifactReads.stop();
-        promptSubmission.invalidate();
-        clearInterval(refreshTimer);
-        clearInterval(animationTimer);
-        if (statusTimer) clearTimeout(statusTimer);
-        diffView.dispose();
-        for (const signal of signalNames) process.off(signal, shutdown);
-        await refreshGate.stop();
-        if (!destroyed) {
-          renderer.destroy();
-          destroyed = true;
+        try {
+          artifactReads.stop();
+          promptSubmission.invalidate();
+          clearInterval(refreshTimer);
+          clearInterval(animationTimer);
+          if (statusTimer) clearTimeout(statusTimer);
+          diffView.dispose();
+          for (const signal of signalNames) process.off(signal, shutdown);
+          // In-flight refresh work still writes into the renderer, so let it
+          // settle before the buffers it draws into are destroyed.
+          await refreshGate.stop();
+        } finally {
+          if (!destroyed) {
+            renderer.destroy();
+            destroyed = true;
+          }
+          resolveDone?.();
         }
-        resolveDone?.();
       })();
       return shutdownPromise;
     }

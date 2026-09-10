@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.3.4"
+const version = "0.4.0"
 
 func main() {
 	ctx := context.Background()
@@ -90,7 +90,7 @@ func runCommandContext(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.CWD, "cwd", cwd, "working directory for the provider session")
 	fs.StringVar(&cfg.PromptFile, "prompt-file", "", "file containing the initial task")
 	fs.StringVar(&cfg.StateDir, "state-dir", "", "directory for state, trace, and output")
-	fs.StringVar(&cfg.Model, "model", "", "provider model; Codex defaults to gpt-5.6-sol")
+	fs.StringVar(&cfg.Model, "model", "", "provider model; Codex defaults to gpt-6-astra")
 	fs.StringVar(&cfg.Effort, "effort", "", "reasoning effort override")
 	fs.StringVar(&cfg.Sandbox, "sandbox", "workspace-write", "read-only, workspace-write, or danger-full-access")
 	fs.StringVar(&cfg.ApprovalPolicy, "approval-policy", "never", "Codex approval policy; adapters require never")
@@ -348,7 +348,14 @@ func waitCommand(args []string) error {
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)
 	}
-	ticker := time.NewTicker(250 * time.Millisecond)
+	return waitForTerminalState(stateDir, deadline, processAlive, 250*time.Millisecond)
+}
+
+// waitForTerminalState polls the persisted state until it is terminal, the
+// controller disappears, or the deadline passes. The liveness probe and tick
+// are seams so lifecycle tests stay deterministic.
+func waitForTerminalState(stateDir string, deadline time.Time, alive func(int) bool, tick time.Duration) error {
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
 		state, err := readState(stateDir)
@@ -356,16 +363,17 @@ func waitCommand(args []string) error {
 			return err
 		}
 		if terminalStatus(state.Status) {
-			fmt.Println(state.Status)
-			if state.Status == "completed" {
-				return nil
-			}
-			if state.Error != "" {
-				return errors.New(state.Error)
-			}
-			return fmt.Errorf("turn ended with status %s", state.Status)
+			return reportWaitResult(state)
 		}
-		if !processAlive(state.PID) {
+		if !alive(state.PID) {
+			// The controller persists its terminal state and only then exits,
+			// so a dead pid observed after a non-terminal read may simply mean
+			// the run finished between the two checks. Re-read before calling
+			// the state stale.
+			final, finalErr := readState(stateDir)
+			if finalErr == nil && terminalStatus(final.Status) {
+				return reportWaitResult(final)
+			}
 			return fmt.Errorf("Ruddr pid %d is not running; state is stale at status=%s", state.PID, state.Status)
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -373,6 +381,18 @@ func waitCommand(args []string) error {
 		}
 		<-ticker.C
 	}
+}
+
+// reportWaitResult prints the terminal status and maps it to an exit error.
+func reportWaitResult(state runState) error {
+	fmt.Println(state.Status)
+	if state.Status == "completed" {
+		return nil
+	}
+	if state.Error != "" {
+		return errors.New(state.Error)
+	}
+	return fmt.Errorf("turn ended with status %s", state.Status)
 }
 
 func printUsage() {

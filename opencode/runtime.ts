@@ -152,14 +152,30 @@ export class OpenCodeRuddrAdapter extends BaseAdapter {
       releasePending = resolve;
     });
     turn.pendingSteers.add(pending);
+    const text = readTextInput(input.input);
     try {
-      await this.backend.prompt(this.thread!.id, readTextInput(input.input), "steer");
+      await this.backend.prompt(this.thread!.id, text, "steer");
       turn.steerGeneration++;
     } finally {
       turn.pendingSteers.delete(pending);
       releasePending();
     }
+    await this.emitUserMessage(text);
     return { turnId: turn.id };
+  }
+
+  // Codex reports a steer as its own userMessage item, which is what puts the
+  // steer in the transcript. OpenCode echoes nothing back, so the
+  // adapter emits it once the steer has been accepted.
+  private async emitUserMessage(text: string): Promise<void> {
+    if (!this.thread) return;
+    await this.emit({
+      method: "item/completed",
+      params: {
+        threadId: this.thread.id,
+        item: { id: randomUUID(), type: "userMessage", status: "completed", text },
+      },
+    });
   }
 
   private async interruptTurn(params: unknown): Promise<unknown> {
