@@ -306,9 +306,10 @@ func peekCommand(args []string) error {
 
 func interruptCommand(args []string) error {
 	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
-	var stateDir string
+	var stateDir, expectedTurnID string
 	var timeout time.Duration
 	fs.StringVar(&stateDir, "state-dir", "", "Ruddr run state directory")
+	fs.StringVar(&expectedTurnID, "expected-turn-id", "", "reject the interrupt if the active turn changed")
 	fs.DurationVar(&timeout, "timeout", defaultInterruptOperationTimeout+5*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -321,14 +322,17 @@ func interruptCommand(args []string) error {
 	if state.Status != "active" {
 		return fmt.Errorf("turn is not active: status=%s", state.Status)
 	}
-	response, err := sendControl(stateDir, controlRequest{Command: "interrupt"}, timeout)
+	if expectedTurnID == "" {
+		expectedTurnID = state.TurnID
+	}
+	response, err := sendControl(stateDir, controlRequest{Command: "interrupt", ExpectedTurnID: expectedTurnID}, timeout)
 	if err != nil {
 		return err
 	}
 	if !response.OK {
 		return errors.New(response.Error)
 	}
-	fmt.Printf("interrupt requested for turn %s\n", response.State.TurnID)
+	fmt.Printf("interrupt requested for turn %s\n", expectedTurnID)
 	return nil
 }
 
@@ -410,7 +414,7 @@ Usage:
   %[1]s models [--json]
   %[1]s status --state-dir DIR [--json]
   %[1]s peek --state-dir DIR [-n 25]
-  %[1]s interrupt --state-dir DIR
+  %[1]s interrupt --state-dir DIR [--expected-turn-id ID]
   %[1]s wait --state-dir DIR [--timeout 10m]
   %[1]s update [--check]                        (install the latest release)
   %[1]s skill install [--dir DIR]               (install the ruddr-delegate agent skill)

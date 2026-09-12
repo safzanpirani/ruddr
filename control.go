@@ -109,7 +109,7 @@ func (r *controller) handleControl(conn net.Conn) {
 		}
 		response.OK = true
 	case "interrupt":
-		if err := r.interrupt(); err != nil {
+		if err := r.interrupt(request.ExpectedTurnID); err != nil {
 			response.Error = err.Error()
 			break
 		}
@@ -235,14 +235,17 @@ func (r *controller) shutdown() error {
 	return nil
 }
 
-func (r *controller) interrupt() error {
+func (r *controller) interrupt(expectedTurnID string) error {
+	r.turnMu.Lock()
 	state := r.store.snapshot()
+	turnDone := r.turnDone
+	r.turnMu.Unlock()
 	if state.Status != "active" || state.ThreadID == "" || state.TurnID == "" {
 		return fmt.Errorf("turn is not active: status=%s", state.Status)
 	}
-	r.turnMu.Lock()
-	turnDone := r.turnDone
-	r.turnMu.Unlock()
+	if expectedTurnID != "" && state.TurnID != expectedTurnID {
+		return fmt.Errorf("active turn changed from %s to %s; interrupt was not sent", expectedTurnID, state.TurnID)
+	}
 	interruptTimeout := r.cfg.InterruptTimeout
 	if interruptTimeout <= 0 {
 		interruptTimeout = defaultInterruptOperationTimeout
@@ -271,19 +274,26 @@ func (r *controller) interrupt() error {
 			return errors.New("session ended before the interrupted turn settled")
 		case <-timer.C:
 			settleErr := fmt.Errorf("interrupted turn %s did not settle within %s", state.TurnID, interruptTimeout)
-			if !r.endSessionIfTurnOpen("failed", settleErr.Error()) {
+			if !r.endSessionIfTurnOpen(turnDone, "failed", settleErr.Error()) {
 				return r.interruptSettlementResult()
 			}
-			r.stopChild.Store(true)
 			terminateProcessTree(r.child, false)
 			return settleErr
 		}
 	}
-	r.stopChild.Store(true)
+	if r.cfg.Idle {
+		// A delayed failure for an old interrupt cannot authorize teardown
+		// of the next turn (or an already settled idle session).
+		if !r.endSessionIfTurnOpen(turnDone, "interrupted", "") {
+			return rpcErr
+		}
+	} else {
+		r.stopChild.Store(true)
+		r.endSession("interrupted", "")
+	}
 	if rpcErr != nil {
 		r.tracef("[warn] turn/interrupt failed; forcing local teardown: %v", rpcErr)
 	}
-	r.endSession("interrupted", "")
 	terminateProcessTree(r.child, false)
 	finalState := r.store.snapshot()
 	if finalState.Status == "interrupted" {

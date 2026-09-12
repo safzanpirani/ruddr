@@ -230,10 +230,7 @@ func (s *appServerSession) call(method string, params any, target any) error {
 		}
 		if message.Method != "" {
 			if len(message.ID) > 0 {
-				var requestID any
-				if json.Unmarshal(message.ID, &requestID) == nil {
-					_ = s.write(map[string]any{"id": requestID, "error": map[string]any{"code": -32601, "message": "Ruddr thread command cannot answer interactive requests"}})
-				}
+				_ = s.write(map[string]any{"id": message.ID, "error": map[string]any{"code": -32601, "message": "Ruddr thread command cannot answer interactive requests"}})
 			}
 			continue
 		}

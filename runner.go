@@ -888,6 +888,9 @@ func (r *controller) readChild(reader io.Reader) {
 		if id, ok := rpcID(message.ID); ok {
 			r.pendingMu.Lock()
 			ch := r.pending[id]
+			// Claim the reply once. A duplicate must never fill this mailbox
+			// again and block the reader before the caller can unregister it.
+			delete(r.pending, id)
 			r.pendingMu.Unlock()
 			if ch != nil {
 				ch <- message
@@ -1042,13 +1045,12 @@ func (r *controller) handleTokenUsage(raw json.RawMessage) {
 }
 
 func (r *controller) rejectServerRequest(message rpcEnvelope) {
-	var id any
-	if err := json.Unmarshal(message.ID, &id); err != nil {
+	if !json.Valid(message.ID) {
 		return
 	}
 	r.tracef("[warn] unsupported server request %s", message.Method)
 	_ = r.writeRPC(map[string]any{
-		"id": id,
+		"id": message.ID,
 		"error": map[string]any{
 			"code":    -32601,
 			"message": "Ruddr cannot answer this interactive request; run with approvalPolicy=never",
@@ -1191,18 +1193,19 @@ func (r *controller) endSession(status, errText string) {
 	r.sessionOnce.Do(func() { close(r.sessionDone) })
 }
 
-// endSessionIfTurnOpen claims an active turn and ends its session atomically.
-// It returns false when another lifecycle event settled the turn first.
-func (r *controller) endSessionIfTurnOpen(status, errText string) bool {
+// endSessionIfTurnOpen claims the observed turn and ends its session atomically.
+// It returns false if that turn settled or a newer turn has started.
+func (r *controller) endSessionIfTurnOpen(turnDone chan struct{}, status, errText string) bool {
 	r.turnMu.Lock()
-	if r.turnEnded || r.sessionEnded {
+	if r.turnDone != turnDone || r.turnEnded || r.sessionEnded {
 		r.turnMu.Unlock()
 		return false
 	}
 	r.sessionEnded = true
 	r.turnEnded = true
 	r.lastTurn = status
-	turnDone := r.turnDone
+	// Publish teardown ownership before waking the controller's shutdown path.
+	r.stopChild.Store(true)
 	r.persistTerminal(status, errText)
 	close(turnDone)
 	r.turnMu.Unlock()

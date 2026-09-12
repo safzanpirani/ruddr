@@ -347,6 +347,11 @@ per provider) that the TUI's picker uses.
 ./ruddr interrupt --state-dir .scratch/ruddr-demo/run
 ```
 
+Use `interrupt --expected-turn-id TURN_ID` to stop only the turn you observed.
+If that turn has changed, Ruddr rejects the command. Without the flag, the CLI
+captures the current turn ID before sending the control request. Delayed
+interrupt failures also leave later turns running.
+
 For a live fullscreen view of several runs, install the CLI and its TUI assets
 once, then launch the dashboard from any directory:
 

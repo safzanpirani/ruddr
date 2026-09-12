@@ -1563,6 +1563,7 @@ func runHelperAppServer() {
 	turnCounter := 0
 	currentTurn := "turn-test"
 	rejectedSecondTurn := false
+	deferredInterruptID := ""
 	for scanner.Scan() {
 		var request struct {
 			ID     string         `json:"id"`
@@ -1669,6 +1670,10 @@ func runHelperAppServer() {
 				}
 				_ = enc.Encode(map[string]any{"id": request.ID, "result": map[string]any{"turn": map[string]any{"id": currentTurn, "status": "inProgress"}}})
 				_ = enc.Encode(map[string]any{"method": "turn/started", "params": map[string]any{"threadId": "thread-test", "turn": map[string]any{"id": currentTurn, "status": "inProgress"}}})
+				if deferredInterruptID != "" {
+					_ = enc.Encode(map[string]any{"id": deferredInterruptID, "error": map[string]any{"code": -32602, "message": "old turn already completed"}})
+					deferredInterruptID = ""
+				}
 				if os.Getenv("GO_WANT_RUDDR_MULTI_TURN_HOLD") != "1" {
 					_ = enc.Encode(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{
 						"threadId": "thread-test",
@@ -1736,6 +1741,15 @@ func runHelperAppServer() {
 			_ = enc.Encode(map[string]any{"method": "item/completed", "params": map[string]any{"item": map[string]any{"id": "message-test", "type": "agentMessage", "text": "STEERED"}}})
 			_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"turn": map[string]any{"id": expectedTurn, "status": "completed"}}})
 		case "turn/interrupt":
+			if request.Params["threadId"] != "thread-test" || request.Params["turnId"] != currentTurn {
+				_ = enc.Encode(map[string]any{"id": request.ID, "error": map[string]any{"code": -32602, "message": "interrupt targeted the wrong turn"}})
+				continue
+			}
+			if os.Getenv("GO_WANT_RUDDR_DEFER_INTERRUPT_ERROR") == "1" {
+				deferredInterruptID = request.ID
+				_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"turn": map[string]any{"id": currentTurn, "status": "completed"}}})
+				continue
+			}
 			if os.Getenv("GO_WANT_RUDDR_INTERRUPT_COMPLETE_FIRST") == "1" {
 				_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"turn": map[string]any{"id": currentTurn, "status": "interrupted"}}})
 			}
