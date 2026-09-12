@@ -1,6 +1,6 @@
 {
   "name": "ruddr",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Thin control plane for Codex, Claude Code, OpenCode, and Pi agent sessions: run, steer, observe, and a live TUI with diffs.",
   "license": "MIT",
   "type": "module",
