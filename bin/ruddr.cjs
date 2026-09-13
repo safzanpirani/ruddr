@@ -6,7 +6,20 @@
 const { spawnSync } = require("node:child_process");
 const { ensureBinary } = require("../scripts/npm-binary.cjs");
 
-ensureBinary({ log: (message) => process.stderr.write(`${message}\n`) })
+const log = (message) => process.stderr.write(`${message}\n`);
+
+// Bun and `--ignore-scripts` skip the postinstall hook, so the delegate skill
+// would never be installed. Do it here the one time the launcher provisions
+// the binary itself. Failures only warn: `ruddr skill install` still works.
+function installSkill(binary) {
+  if (process.argv[2] === "skill") return;
+  const result = spawnSync(binary, ["skill", "install"], { stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0)
+    log(`ruddr: could not install the ruddr-delegate skill; run \`ruddr skill install\` later${result.stderr ? `: ${String(result.stderr).trim()}` : ""}`);
+  else log(`ruddr: ${String(result.stdout).trim().split("\n").join("\nruddr: ")}`);
+}
+
+ensureBinary({ log, onProvisioned: installSkill })
   .then((binary) => {
     const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
     if (result.error) throw result.error;

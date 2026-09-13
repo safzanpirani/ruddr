@@ -67,7 +67,9 @@ async function download(url, destination, log) {
 
 /**
  * Returns the path of a usable binary, fetching or building one if needed.
- * Throws with actionable text when neither is possible.
+ * Calls `options.onProvisioned(path)` when this call created the binary, so
+ * callers can run first-install steps. Throws with actionable text when
+ * neither a download nor a local build is possible.
  */
 async function ensureBinary(options = {}) {
   const log = options.log || (() => undefined);
@@ -82,6 +84,7 @@ async function ensureBinary(options = {}) {
   const finish = () => {
     fs.chmodSync(temporary, 0o755);
     fs.renameSync(temporary, destination);
+    if (options.onProvisioned) options.onProvisioned(destination);
     return destination;
   };
 
