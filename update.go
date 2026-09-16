@@ -77,7 +77,7 @@ func updateCommand(args []string) error {
 	fmt.Printf("updating ruddr %s -> %s via %s\n", version, latest, channel.Kind)
 	switch channel.Kind {
 	case "npm":
-		return runPackageManagerUpdate("npm", []string{"install", "-g", "ruddr@" + latest})
+		return runPackageManagerUpdate("npm", npmUpdateArgs(channel.PackageRoot, latest))
 	case "bun":
 		return runPackageManagerUpdate("bun", []string{"add", "-g", "ruddr@" + latest})
 	case "source":
@@ -85,6 +85,44 @@ func updateCommand(args []string) error {
 	default:
 		return replaceExecutable(ctx, executable, latest)
 	}
+}
+
+// npmUpdateArgs builds the npm invocation that replaces the installed package.
+// A bare `npm install -g` writes to npm's configured global prefix, which is not
+// necessarily where this copy lives: the README's user-prefix install puts the
+// package under $HOME/.local while npm still points at /usr, so the update
+// would fail with EACCES (or silently install a second copy). Pinning --prefix
+// to the directory the package was found in keeps the update in place.
+func npmUpdateArgs(packageRoot, latest string) []string {
+	args := []string{"install", "-g"}
+	if prefix := npmPrefixFromPackageRoot(packageRoot); prefix != "" {
+		args = append(args, "--prefix", prefix)
+	}
+	return append(args, "ruddr@"+latest)
+}
+
+// npmPrefixFromPackageRoot inverts npm's global layout: <prefix>/lib/node_modules/<name>
+// on Unix and <prefix>/node_modules/<name> on Windows. It returns "" when the
+// directory does not look like a global npm install.
+func npmPrefixFromPackageRoot(packageRoot string) string {
+	if packageRoot == "" {
+		return ""
+	}
+	nodeModules := filepath.Dir(packageRoot)
+	if filepath.Base(nodeModules) != "node_modules" {
+		return ""
+	}
+	prefix := filepath.Dir(nodeModules)
+	if runtime.GOOS != "windows" {
+		if filepath.Base(prefix) != "lib" {
+			return ""
+		}
+		prefix = filepath.Dir(prefix)
+	}
+	if prefix == "." || prefix == string(filepath.Separator) {
+		return ""
+	}
+	return prefix
 }
 
 func runPackageManagerUpdate(tool string, args []string) error {

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -78,6 +80,30 @@ func TestDetectInstallChannel(t *testing.T) {
 	writeFile(t, filepath.Join(root, "data", "ruddr", "tui", "index.ts"), "")
 	if got := detectInstallChannel(filepath.Join(root, "bin", "ruddr")); got.Kind != "source" {
 		t.Fatalf("source install detected as %q", got.Kind)
+	}
+}
+
+func TestNpmUpdateArgsPinPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix global layout")
+	}
+	// The README's user-prefix install: npm install -g --prefix "$HOME/.local" ruddr.
+	root := filepath.Join(string(filepath.Separator), "home", "me", ".local", "lib", "node_modules", "ruddr")
+	want := []string{"install", "-g", "--prefix", filepath.Join(string(filepath.Separator), "home", "me", ".local"), "ruddr@0.4.2"}
+	if got := npmUpdateArgs(root, "0.4.2"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("npmUpdateArgs = %q, want %q", got, want)
+	}
+	if got := npmPrefixFromPackageRoot(filepath.Join(string(filepath.Separator), "usr", "lib", "node_modules", "ruddr")); got != "/usr" {
+		t.Fatalf("system prefix = %q, want /usr", got)
+	}
+}
+
+func TestNpmUpdateArgsWithoutPackageRoot(t *testing.T) {
+	want := []string{"install", "-g", "ruddr@0.4.2"}
+	for _, root := range []string{"", "/opt/ruddr", "/opt/node_modules/ruddr", "/lib/node_modules/ruddr"} {
+		if got := npmUpdateArgs(root, "0.4.2"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("npmUpdateArgs(%q) = %q, want %q", root, got, want)
+		}
 	}
 }
 
