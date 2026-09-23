@@ -343,6 +343,12 @@ export class OpenCodeRuddrAdapter extends BaseAdapter {
   }
 }
 
+export class OpenCodeAPIError extends Error {
+  constructor(readonly status: number, detail: string) {
+    super(`OpenCode API ${status}: ${detail}`);
+  }
+}
+
 export class HTTPBackend implements OpenCodeBackend {
   private process?: OpenCodeProcess;
   private baseURL?: string;
@@ -384,14 +390,8 @@ export class HTTPBackend implements OpenCodeBackend {
   }
 
   async wait(sessionID: string): Promise<OpenCodeSnapshot> {
-    await this.request(`/api/session/${encodeURIComponent(sessionID)}/wait`, {
-      method: "POST",
-      timeoutMs: 0,
-    });
-    const result = record(
-      await this.request(`/api/session/${encodeURIComponent(sessionID)}/export`),
-      "export response",
-    );
+    await this.requestSessionRoute(sessionID, "wait", { method: "POST", timeoutMs: 0 });
+    const result = record(await this.requestSessionRoute(sessionID, "export"), "export response");
     const data = record(result.data, "export data");
     const info = record(data.info, "session info");
     return {
@@ -473,6 +473,22 @@ export class HTTPBackend implements OpenCodeBackend {
     })();
   }
 
+  // OpenCode 2.0.15 moved these routes under /api/experimental; earlier 2.0
+  // releases serve them under /api/session.
+  private async requestSessionRoute(
+    sessionID: string,
+    route: "wait" | "export",
+    options: { method?: string; timeoutMs?: number } = {},
+  ): Promise<unknown> {
+    const session = encodeURIComponent(sessionID);
+    try {
+      return await this.request(`/api/experimental/session/${session}/${route}`, options);
+    } catch (error) {
+      if (!(error instanceof OpenCodeAPIError) || error.status !== 404) throw error;
+      return await this.request(`/api/session/${session}/${route}`, options);
+    }
+  }
+
   private async request(
     pathname: string,
     options: { method?: string; body?: unknown; timeoutMs?: number } = {},
@@ -499,7 +515,7 @@ export class HTTPBackend implements OpenCodeBackend {
       });
       if (!response.ok) {
         const detail = (await response.text()).trim();
-        throw new Error(`OpenCode API ${response.status}: ${detail || response.statusText}`);
+        throw new OpenCodeAPIError(response.status, detail || response.statusText);
       }
       if (response.status === 204) return null;
       return await response.json();

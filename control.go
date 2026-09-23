@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -29,8 +30,8 @@ func (r *controller) startControlServer() error {
 	if err != nil {
 		return fmt.Errorf("inspect control socket parent: %w", err)
 	}
-	if parent.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("control socket parent %s must be owner-only, mode is %o", filepath.Dir(path), parent.Mode().Perm())
+	if err := checkSocketParentMode(filepath.Dir(path), parent.Mode(), runtime.GOOS); err != nil {
+		return err
 	}
 	if err := removeStaleSocket(path); err != nil {
 		return err
@@ -46,6 +47,19 @@ func (r *controller) startControlServer() error {
 	}
 	r.listener = listener
 	go r.acceptControl()
+	return nil
+}
+
+// checkSocketParentMode rejects a socket parent that other users can reach.
+// Windows synthesizes 0777 for every directory because ACLs, not mode bits,
+// control access there, so the check applies only to Unix-like systems.
+func checkSocketParentMode(dir string, mode os.FileMode, goos string) error {
+	if goos == "windows" {
+		return nil
+	}
+	if mode.Perm()&0o077 != 0 {
+		return fmt.Errorf("control socket parent %s must be owner-only, mode is %o", dir, mode.Perm())
+	}
 	return nil
 }
 

@@ -169,6 +169,42 @@ test("OpenCode HTTP requests time out and server announcements stay on loopback"
   await backend.close();
 });
 
+test("OpenCode waits on experimental session routes and falls back to legacy routes", async () => {
+  for (const legacy of [false, true]) {
+    const paths: string[] = [];
+    const fetcher = (async (input: string | URL | Request) => {
+      const pathname = new URL(String(input)).pathname;
+      paths.push(pathname);
+      if (pathname.startsWith("/api/experimental/") === legacy) return new Response("", { status: 404 });
+      if (pathname.endsWith("/wait")) return new Response(null, { status: 204 });
+      return Response.json({ data: { info: { outcome: "success", cost: 0.5 }, messages: [{ id: "m1" }] } });
+    }) as typeof fetch;
+    const backend = new HTTPBackend(1_000, fetcher);
+    Object.assign(backend, { baseURL: "http://127.0.0.1:4096", password: "test" });
+    const snapshot = await backend.wait("ses_test");
+    expect(snapshot.outcome).toBe("success");
+    expect(snapshot.messages).toEqual([{ id: "m1" }]);
+    const experimental = ["/api/experimental/session/ses_test/wait", "/api/experimental/session/ses_test/export"];
+    expect(paths).toEqual(legacy
+      ? [experimental[0], "/api/session/ses_test/wait", experimental[1], "/api/session/ses_test/export"]
+      : experimental);
+    await backend.close();
+  }
+});
+
+test("OpenCode does not retry session routes after a non-404 failure", async () => {
+  const paths: string[] = [];
+  const fetcher = (async (input: string | URL | Request) => {
+    paths.push(new URL(String(input)).pathname);
+    return new Response("boom", { status: 500 });
+  }) as typeof fetch;
+  const backend = new HTTPBackend(1_000, fetcher);
+  Object.assign(backend, { baseURL: "http://127.0.0.1:4096", password: "test" });
+  await expect(backend.wait("ses_test")).rejects.toThrow("OpenCode API 500: boom");
+  expect(paths).toEqual(["/api/experimental/session/ses_test/wait"]);
+  await backend.close();
+});
+
 test("OpenCode keeps response bodies bounded by timeout and shutdown", async () => {
   for (const closeEarly of [false, true]) {
     let bodyStarted!: () => void;

@@ -20,6 +20,19 @@ import (
 	"time"
 )
 
+func TestSocketParentModeCheckIgnoresSyntheticWindowsModes(t *testing.T) {
+	if err := checkSocketParentMode("state", os.ModeDir|0o700, "linux"); err != nil {
+		t.Fatalf("owner-only Unix parent rejected: %v", err)
+	}
+	err := checkSocketParentMode("state", os.ModeDir|0o755, "darwin")
+	if err == nil || !strings.Contains(err.Error(), "must be owner-only, mode is 755") {
+		t.Fatalf("group-readable Unix parent error = %v", err)
+	}
+	if err := checkSocketParentMode("state", os.ModeDir|0o777, "windows"); err != nil {
+		t.Fatalf("Windows parent with synthetic 0777 mode rejected: %v", err)
+	}
+}
+
 func TestControlSocketLocationIsPrivateAndLengthSafe(t *testing.T) {
 	stateDir, err := os.MkdirTemp("/tmp", "rr-")
 	if err != nil {

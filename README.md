@@ -160,7 +160,10 @@ Requires Go 1.24 and Bun 1.4 or newer. Codex runs require a CLI with
 `codex app-server` and `turn/steer` support; that command surface is verified
 against `codex-cli 0.145.0`. Claude runs use the pinned official Claude Agent
 SDK and the caller's normal Claude Code authentication. OpenCode runs require
-the `opencode2` or `opencode-next` executable.
+the `opencode2` or `opencode-next` executable and are verified against
+OpenCode 2.0.15. The adapter uses the `/api/experimental/session` wait and
+export routes that 2.0.15 introduced, and falls back to the older
+`/api/session` routes on a 404.
 
 Pi runs require the `pi` executable with RPC mode. The adapters inherit each
 CLI's normal authentication environment.
