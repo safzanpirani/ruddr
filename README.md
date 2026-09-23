@@ -75,6 +75,10 @@ Early working prototype. Each provider protocol evolves quickly. Reverify
 Ruddr after provider upgrades. OpenCode support targets the 2.0 preview CLI
 through `opencode2` or `opencode-next`. Ruddr does not support OpenCode 1 yet.
 
+Native Windows runs work as of 0.4.3 without access control of their own; see the
+[Windows access note](#windows-access). Use WSL, Linux, or macOS
+when other accounts share the machine.
+
 Adding a provider means implementing one adapter behind the existing
 `--provider` flag. The state directory, control socket, steering commands, and
 TUI are provider-agnostic already.
@@ -518,6 +522,15 @@ Ruddr creates a random owner-only temporary parent and records it in state.
 The raw events, trace, and output can contain prompt, command, and completion
 content. Persisted errors in `state.json` are generic; details remain in the
 private trace and stderr logs.
+
+<a id="windows-access"></a>On native Windows, access to these files depends on
+NTFS ACLs, and Ruddr does not set them. Go reports every Windows directory as
+mode `0777`, so Ruddr skips the owner-only check on the socket parent there.
+Run artifacts and the control socket inherit the ACL of the state directory's
+parent. Other software can widen that ACL; the Codex Windows sandbox, for
+example, grants its own groups access to `%TEMP%`. Inspect the parent with
+`icacls` before storing sensitive runs there. Issue #6 tracks named-pipe
+transport and explicit ACLs.
 
 Output appends avoid rewriting long transcripts. A reported partial write is
 rolled back to the previous file length; an abrupt process or machine crash can
