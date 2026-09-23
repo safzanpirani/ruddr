@@ -123,3 +123,19 @@ While replaying a Rudder tree click in a detached tmux PTY, tmux send-keys deliv
 
 Pushing an annotated vX.Y.Z tag to safzanpirani/ruddr fired the Release workflow twice for the same tag (runs 34481919306 and 34481917607, identical 13:19:28 push event). The first published npm and the GitHub release; the second raced it and failed with npm E403 'cannot publish over the previously published versions: 0.4.0', leaving a red failed run on a successful release. Consider a concurrency group keyed on the tag in .github/workflows/release.yml.
 
+## 9f8d10 · 2026-09-23T18:32:03.561Z — claude-code — claude-opus-5-5
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **About:** `ruddr`
+- **Tags:** `misleading-error`
+
+In 'ruddr status --json' the idle field means the run was started with --idle, not that the session is waiting. Polling .idle returned true during status=starting, so 'ruddr prompt' failed with 'session is not idle'. Poll status == "idle" instead. Consider renaming it idleMode or documenting it next to the status values.
+
+## 1f8877 · 2026-09-23T18:32:03.584Z — claude-code — claude-opus-5-5
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **About:** `npm`
+- **Tags:** `stale-cache`
+
+Right after the release workflow published ruddr@0.4.3, npm install -g ruddr@0.4.3 on a Windows host kept failing with notarget even after the registry served 0.4.3, because that host's npm cached the first miss. Adding --prefer-online fixed it. Release smoke steps should install with --prefer-online.
+
