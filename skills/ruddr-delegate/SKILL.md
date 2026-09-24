@@ -24,7 +24,7 @@ not installed).
   --effort low`.
 - `--provider claude` runs Claude Code through Ruddr's adapter. Use it when
   the user says "claude", or for a clean-context second Claude. Default to
-  `--model claude-opus-5 --effort medium`.
+  `--model claude-opus-5-5 --effort medium`.
 - `--provider opencode` runs OpenCode 2 and `--provider pi` runs Pi, both on
   the models their own config exposes (the default is
   `openrouter/deepseek/deepseek-v4-flash-vision-exp`). Use them when the user
@@ -111,13 +111,14 @@ ruddr run \
   --sandbox workspace-write
 ```
 
-Swap the first line for `--provider claude --model claude-opus-5 --effort
+Swap the first line for `--provider claude --model claude-opus-5-5 --effort
 medium`, `--provider opencode`, or `--provider pi` as chosen above.
 
 - Launch with the harness's background facility — a foreground tool call gets
   killed at the tool timeout, taking the controller with it. If the harness
-  has no background mode, detach explicitly:
-  `nohup ruddr run ... > run.log 2>&1 < /dev/null &`.
+  has no background mode, add `--detach`: `ruddr run --detach ...` starts the
+  controller in its own session and returns once the run is live, or exits
+  non-zero with the startup error.
 - `--sandbox workspace-write` is the safe default. Escalate to
   `danger-full-access` only when the task genuinely needs network or
   out-of-workspace access and the user's policy allows it; use `read-only`
@@ -127,6 +128,37 @@ medium`, `--provider opencode`, or `--provider pi` as chosen above.
   `ruddr prompt --state-dir DIR "next task"`; end the session with
   `ruddr stop --state-dir DIR`. Prompt (new turn) and steer (redirect the
   current turn) are different commands — never substitute one for the other.
+
+## Run on another machine
+
+Prefix any command with `--remote SSH_TARGET` (an `ssh` host alias such as
+`ampere`) to run the session on that machine. Use it when the user names a
+host, or when the work belongs on a box with the repo, GPU, or provider login
+that this machine lacks.
+
+```bash
+ruddr --remote ampere run --provider codex --model gpt-6-astra --effort low \
+  --cwd '~/src/app' --sandbox workspace-write \
+  --prompt-file .scratch/<task-slug>/brief.md \
+  --state-dir '~/.scratch/ruddr/<task-slug>/run'
+ruddr --remote ampere peek --state-dir '~/.scratch/ruddr/<task-slug>/run' -n 25
+ruddr --remote ampere steer --state-dir '~/.scratch/ruddr/<task-slug>/run' "<update>"
+ruddr --remote ampere wait --state-dir '~/.scratch/ruddr/<task-slug>/run' --timeout 5m
+```
+
+- `--cwd` and `--state-dir` are remote paths; `--cwd` is required. Quote
+  `'~/…'` so the local shell does not expand it to the local home.
+- `--prompt-file` and `--message-file` are local files; Ruddr streams their
+  contents to the remote. The brief must describe the remote checkout, not
+  this one.
+- Remote `run` always detaches and returns once the run is live, so a normal
+  foreground tool call is fine. Keep `wait` bounded as below.
+- The remote machine uses its own provider login and its own Ruddr, which
+  must be the same release as the local one. If `run` fails with
+  `flag provided but not defined: -detach`, the remote Ruddr is too old: tell
+  the user and suggest `ruddr --remote HOST update`.
+- Verify the result on the remote host (`ruddr --remote HOST status --json`,
+  then read the diff over SSH); local files are not changed.
 
 ## Monitor and steer
 

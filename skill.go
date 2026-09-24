@@ -41,7 +41,7 @@ func skillCommand(args []string) error {
 func skillInstallCommand(args []string) error {
 	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
 	var dirs stringList
-	fs.Var(&dirs, "dir", "skills directory to install into; repeatable (default: ~/.claude/skills and ~/.agents/skills)")
+	fs.Var(&dirs, "dir", "skills directory to install into; repeatable (default: ~/.claude/skills, ~/.agents/skills, and ~/.codex/skills when Codex is installed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -56,6 +56,10 @@ func skillInstallCommand(args []string) error {
 			return err
 		}
 	}
+	return installDelegateSkillInto(targets)
+}
+
+func installDelegateSkillInto(targets []string) error {
 	var failures []string
 	for _, dir := range targets {
 		path, err := installDelegateSkill(dir)
@@ -71,15 +75,21 @@ func skillInstallCommand(args []string) error {
 	return nil
 }
 
+// defaultSkillDirectories covers Claude Code, the shared ~/.agents location,
+// and Codex when it is installed.
 func defaultSkillDirectories() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	return []string{
+	dirs := []string{
 		filepath.Join(home, ".claude", "skills"),
 		filepath.Join(home, ".agents", "skills"),
-	}, nil
+	}
+	if info, err := os.Stat(filepath.Join(home, ".codex")); err == nil && info.IsDir() {
+		dirs = append(dirs, filepath.Join(home, ".codex", "skills"))
+	}
+	return dirs, nil
 }
 
 // installDelegateSkill writes the skill into <dir>/ruddr-delegate/SKILL.md,
@@ -133,7 +143,8 @@ func printSkillUsage() {
   %[1]s skill install [--dir DIR ...]   copy the ruddr-delegate skill into agent skill directories
   %[1]s skill show                      print the skill
 
-Without --dir the skill is installed into ~/.claude/skills and ~/.agents/skills.
-The npm postinstall hook and scripts/install-local.sh run skill install for you.
+Without --dir the skill is installed into ~/.claude/skills, ~/.agents/skills,
+and ~/.codex/skills when ~/.codex exists. ruddr update, the npm postinstall
+hook, and scripts/install-local.sh run skill install for you.
 `, name)
 }

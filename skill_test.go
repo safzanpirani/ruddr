@@ -85,3 +85,26 @@ func TestConcurrentSkillInstall(t *testing.T) {
 		t.Fatalf("temporary files leaked: %v, %v", entries, err)
 	}
 }
+
+func TestDefaultSkillDirectoriesIncludeCodexOnlyWhenInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dirs, err := defaultSkillDirectories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("dirs without Codex = %q", dirs)
+	}
+	if err := os.Mkdir(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err = defaultSkillDirectories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 3 || dirs[2] != filepath.Join(home, ".codex", "skills") {
+		t.Fatalf("dirs with Codex = %q", dirs)
+	}
+}

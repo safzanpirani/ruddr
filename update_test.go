@@ -213,3 +213,35 @@ func TestFutureUpdateCheckIsStale(t *testing.T) {
 		t.Fatal("future cache must not suppress update checks")
 	}
 }
+
+// An up-to-date binary still resyncs the skill, so a stale or edited copy is
+// replaced by `ruddr update` alone.
+func TestUpToDateUpdateRefreshesInstalledSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(registryDirectoryEnvironment, filepath.Join(t.TempDir(), "runs"))
+	stale := filepath.Join(home, ".claude", "skills", delegateSkillName, "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := updateHTTPClient
+	t.Cleanup(func() { updateHTTPClient = original })
+	updateHTTPClient = &http.Client{Transport: updateTestTransport(func(request *http.Request) (*http.Response, error) {
+		header := http.Header{}
+		header.Set("Location", "https://github.com/"+updateRepository+"/releases/tag/v"+version)
+		return &http.Response{StatusCode: http.StatusFound, Header: header, Body: http.NoBody, Request: request}, nil
+	})}
+	if err := updateCommand(nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{stale, filepath.Join(home, ".agents", "skills", delegateSkillName, "SKILL.md")} {
+		raw, err := os.ReadFile(path)
+		if err != nil || string(raw) != delegateSkill {
+			t.Fatalf("%s was not refreshed: %v", path, err)
+		}
+	}
+}

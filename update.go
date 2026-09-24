@@ -63,6 +63,8 @@ func updateCommand(args []string) error {
 	_ = writeUpdateCheck(updateCheck{CheckedAt: time.Now(), Latest: latest, Current: version})
 	if compareVersions(latest, version) <= 0 {
 		fmt.Printf("ruddr %s is up to date\n", version)
+		// Still sync the skill: it may predate this binary or have been edited.
+		refreshInstalledSkill("")
 		return nil
 	}
 	if *checkOnly {
@@ -77,13 +79,44 @@ func updateCommand(args []string) error {
 	fmt.Printf("updating ruddr %s -> %s via %s\n", version, latest, channel.Kind)
 	switch channel.Kind {
 	case "npm":
-		return runPackageManagerUpdate("npm", []string{"install", "-g", "ruddr@" + latest})
+		err = runPackageManagerUpdate("npm", []string{"install", "-g", "ruddr@" + latest})
 	case "bun":
-		return runPackageManagerUpdate("bun", []string{"add", "-g", "ruddr@" + latest})
+		err = runPackageManagerUpdate("bun", []string{"add", "-g", "ruddr@" + latest})
 	case "source":
+		refreshInstalledSkill("")
 		return errors.New("this Ruddr was installed from a source checkout; run `git pull` there and rerun scripts/install-local.sh")
 	default:
-		return replaceExecutable(ctx, executable, latest)
+		err = replaceExecutable(ctx, executable, latest)
+	}
+	if err != nil {
+		return err
+	}
+	// The new binary carries the current skill text. Package-manager
+	// postinstall hooks can be disabled, so do not rely on them.
+	refreshInstalledSkill(executable)
+	return nil
+}
+
+// refreshInstalledSkill reinstalls the delegate skill into the default agent
+// skill directories. With an executable it asks that binary to do it, so an
+// update installs the new release's skill rather than this binary's copy. A
+// failure is reported but does not fail the update.
+func refreshInstalledSkill(executable string) {
+	if executable == "" {
+		targets, err := defaultSkillDirectories()
+		if err == nil {
+			err = installDelegateSkillInto(targets)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ruddr: skill install failed: %v\n", err)
+		}
+		return
+	}
+	refresh := exec.Command(executable, "skill", "install")
+	refresh.Stdout = os.Stdout
+	refresh.Stderr = os.Stderr
+	if err := refresh.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "ruddr: skill install after update failed: %v\n", err)
 	}
 }
 
@@ -180,13 +213,6 @@ func replaceExecutable(ctx context.Context, executable, latest string) error {
 		return err
 	}
 	fmt.Printf("ruddr %s installed at %s\n", latest, executable)
-	// The new binary carries the current skill text.
-	refresh := exec.Command(executable, "skill", "install")
-	refresh.Stdout = os.Stdout
-	refresh.Stderr = os.Stderr
-	if err := refresh.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "ruddr: skill install after update failed: %v\n", err)
-	}
 	return nil
 }
 

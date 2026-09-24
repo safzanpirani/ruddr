@@ -6,7 +6,7 @@ func TestModelCatalogDefaults(t *testing.T) {
 	if got := defaultModel(providerCodex); got != "gpt-6-astra" {
 		t.Fatalf("codex default = %q", got)
 	}
-	if got := defaultModel(providerClaude); got != "claude-opus-5" {
+	if got := defaultModel(providerClaude); got != "claude-opus-5-5" {
 		t.Fatalf("claude default = %q", got)
 	}
 	defaults := map[string]int{}
