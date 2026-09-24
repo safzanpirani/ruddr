@@ -1419,6 +1419,11 @@ describe("promptable TUI helpers", () => {
     const options = modelPickerOptions(FALLBACK_MODELS);
     expect(options[0].value).toBe("codex/gpt-6-astra");
     expect(options[0].name).toContain("*");
+    expect(options.filter((option) => option.value.startsWith("codex/gpt-6-")).map((option) => option.value)).toEqual([
+      "codex/gpt-6-astra",
+      "codex/gpt-6-sol",
+      "codex/gpt-6-luna",
+    ]);
     const fable51 = options.find((option) => option.value === "claude/claude-fable-5-1");
     const opencode = options.find((option) => option.model.provider === "opencode");
     const pi = options.find((option) => option.model.provider === "pi");
