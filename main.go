@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +24,10 @@ func main() {
 	}
 	defer stop()
 	if err := runCLIContext(ctx, os.Args[1:]); err != nil {
+		var remoteExit exitStatusError
+		if errors.As(err, &remoteExit) {
+			os.Exit(remoteExit.code)
+		}
 		fmt.Fprintln(os.Stderr, "ruddr:", err)
 		os.Exit(1)
 	}
@@ -36,6 +41,12 @@ func runCLIContext(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		printUsage()
 		return errors.New("a command is required")
+	}
+	if target, rest, found, err := splitRemoteFlag(args); found {
+		if err != nil {
+			return err
+		}
+		return remoteCommand(target, rest)
 	}
 	switch args[0] {
 	case "run":
@@ -105,6 +116,8 @@ func runCommandContext(ctx context.Context, args []string) error {
 	fs.DurationVar(&cfg.TurnTimeout, "turn-timeout", time.Hour, "maximum active turn duration, applied per turn; zero disables the watchdog")
 	fs.BoolVar(&cfg.Idle, "idle", false, "stay alive after a turn completes and accept prompt commands on the control socket")
 	fs.DurationVar(&cfg.IdleTimeout, "idle-timeout", 4*time.Hour, "exit after this long idle; zero disables")
+	var detach bool
+	fs.BoolVar(&detach, "detach", false, "start the controller in the background and return once it is running")
 	cfg.RegisterRun = true
 	flagArgs := args
 	var childArgs []string
@@ -130,6 +143,21 @@ func runCommandContext(ctx context.Context, args []string) error {
 	if err := configureProviderDefaults(&cfg, childArgs); err != nil {
 		return err
 	}
+	if cfg.PromptFile == "-" {
+		promptFile, err := writeStdinPrompt(cfg.StateDir, os.Stdin)
+		if err != nil {
+			return err
+		}
+		cfg.PromptFile = promptFile
+	}
+	if detach {
+		state, err := startDetachedRun(cfg.StateDir, detachedChildArgs(args, cfg.PromptFile), detachStartupWindow)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("detached run: state-dir=%s pid=%d status=%s\n", state.StateDir, state.PID, state.Status)
+		return nil
+	}
 	return runControllerContext(ctx, cfg)
 }
 
@@ -149,7 +177,7 @@ func steerCommand(args []string) error {
 	}
 	var message string
 	if messageFile != "" {
-		raw, err := os.ReadFile(messageFile)
+		raw, err := readMessageFile(messageFile)
 		if err != nil {
 			return err
 		}
@@ -201,7 +229,7 @@ func promptCommand(args []string) error {
 	}
 	var message string
 	if messageFile != "" {
-		raw, err := os.ReadFile(messageFile)
+		raw, err := readMessageFile(messageFile)
 		if err != nil {
 			return err
 		}
@@ -232,6 +260,15 @@ func promptCommand(args []string) error {
 	}
 	fmt.Printf("started turn %s\n", response.State.TurnID)
 	return nil
+}
+
+// readMessageFile reads steer or prompt text; "-" reads stdin, which is how
+// --remote forwards a local message file.
+func readMessageFile(path string) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(os.Stdin)
+	}
+	return os.ReadFile(path)
 }
 
 func stopCommand(args []string) error {
@@ -419,6 +456,16 @@ Usage:
   %[1]s update [--check]                        (install the latest release)
   %[1]s skill install [--dir DIR]               (install the ruddr-delegate agent skill)
   %[1]s version
+  %[1]s --remote SSH_TARGET COMMAND [args]      (run any command on another machine)
+
+run --detach starts the controller in the background and returns once it is
+running. --prompt-file - and --message-file - read the text from stdin.
+
+--remote runs ruddr on SSH_TARGET through ssh and passes output and exit status
+through. Paths are remote paths. Local --prompt-file and --message-file
+contents travel over stdin, run always starts detached and needs --cwd, and tui
+gets a terminal. Set RUDDR_REMOTE_RUDDR to the remote ruddr path when it is not
+on the remote PATH; RUDDR_SSH overrides the ssh executable.
 
 Ruddr checks GitHub for a newer release at most once a day and mentions it in
 the TUI and after version; set RUDDR_NO_UPDATE_CHECK=1 to disable the check.

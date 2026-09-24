@@ -35,3 +35,14 @@ func terminateProcessTree(cmd *exec.Cmd, _ bool) {
 func windowsTaskkillArgs(pid int) []string {
 	return []string{"/PID", strconv.Itoa(pid), "/T", "/F"}
 }
+
+const (
+	windowsDetachedProcess       = 0x00000008
+	windowsCreateNewProcessGroup = 0x00000200
+)
+
+// configureDetachedProcess detaches the child from the launching console so it
+// survives that console closing.
+func configureDetachedProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windowsDetachedProcess | windowsCreateNewProcessGroup}
+}

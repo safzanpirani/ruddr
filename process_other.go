@@ -27,3 +27,5 @@ func terminateProcessTree(cmd *exec.Cmd, force bool) {
 		_ = cmd.Process.Kill()
 	}
 }
+
+func configureDetachedProcess(cmd *exec.Cmd) {}
