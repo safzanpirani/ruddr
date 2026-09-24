@@ -230,5 +230,25 @@ visibility, add collaborators, publish releases, or push tags unless the user
 asks. Never commit private broker URLs, secret-file contents, session
 transcripts, or local run artifacts.
 
+### Cutting a release
+
+Release only when the user asks. A release is a version bump plus a tag push:
+
+1. Commit the work in logical commits and run the full verification above.
+2. Bump `version` in `main.go` and `"version"` in `package.json` together,
+   and commit that alone as `Release X.Y.Z`.
+3. Push `main`, then tag `vX.Y.Z` and push the tag. The `Release` workflow
+   builds every platform, attaches binaries and `checksums.txt` to the GitHub
+   release, and publishes the npm package with provenance.
+4. Watch it with `gh run watch <id> --exit-status`, and confirm the five
+   binaries on `gh release view vX.Y.Z`.
+5. npm lags the publish by several minutes. The publish log's `+ ruddr@X.Y.Z`
+   line is the proof that it succeeded; `npm view ruddr version --prefer-online`
+   shows the new version only once processing finishes. Install on another
+   machine with `npm install -g ruddr@X.Y.Z --prefer-online`, and expect
+   `notarget` until then.
+6. Update the machines that run Ruddr (`ruddr update`, or the npm command
+   above), and confirm that `ruddr version` and the installed skill match.
+
 Before handing off, report the files changed, exact verification commands and
 results, remaining limitations, and whether changes are committed or pushed.

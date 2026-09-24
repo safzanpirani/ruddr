@@ -77,7 +77,9 @@ through `opencode2` or `opencode-next`. Ruddr does not support OpenCode 1 yet.
 
 Native Windows runs work as of 0.4.3 without access control of their own; see the
 [Windows access note](#windows-access). Use WSL, Linux, or macOS
-when other accounts share the machine.
+when other accounts share the machine. As of 0.4.5, detached runs and
+TUI-started sessions survive the end of an SSH connection to a Windows host,
+and `--remote` drives hosts whose SSH shell is PowerShell.
 
 Adding a provider means implementing one adapter behind the existing
 `--provider` flag. The state directory, control socket, steering commands, and
