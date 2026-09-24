@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { launchSession } from "./session-launch";
+import { detachedRunArguments, launchSession } from "./session-launch";
 import { PromptSubmission, sendControlPrompt } from "./prompt";
 
 const directories: string[] = [];
@@ -101,4 +101,25 @@ test("control prompt uses a private file, propagates rejection, and removes the 
     return [script, path];
   })).rejects.toThrow("turn changed");
   expect(await Bun.file(file).exists()).toBe(false);
+});
+
+test("TUI launches of ruddr run are detached so they outlive the terminal", () => {
+  expect(detachedRunArguments(["run", "--provider", "codex", "--idle"]))
+    .toEqual(["run", "--detach", "--provider", "codex", "--idle"]);
+  expect(detachedRunArguments(["run", "--detach", "--idle"])).toEqual(["run", "--detach", "--idle"]);
+  expect(detachedRunArguments(["/path/fake.ts", "x"])).toEqual(["/path/fake.ts", "x"]);
+});
+
+test("a detaching launcher that exits 0 counts as launched", async () => {
+  const { cwd, script } = await fixture(`
+    const directory = Bun.argv[2];
+    await Bun.write(directory + "/state.json", JSON.stringify({status: "starting"}));
+    process.exit(0);
+  `);
+  const directory = await launchSession({
+    ruddr: process.execPath, cwd, message: "start",
+    argumentsForFiles: (_, dir) => [script, dir],
+    onSpawn: () => {}, startupWindowMs: 5_000,
+  });
+  expect(directory).toContain("ruddr-tui");
 });

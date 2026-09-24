@@ -37,12 +37,23 @@ func windowsTaskkillArgs(pid int) []string {
 }
 
 const (
-	windowsDetachedProcess       = 0x00000008
-	windowsCreateNewProcessGroup = 0x00000200
+	windowsDetachedProcess        = 0x00000008
+	windowsCreateNewProcessGroup  = 0x00000200
+	windowsCreateBreakawayFromJob = 0x01000000
 )
 
 // configureDetachedProcess detaches the child from the launching console so it
-// survives that console closing.
-func configureDetachedProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windowsDetachedProcess | windowsCreateNewProcessGroup}
+// survives that console closing. Windows OpenSSH runs each session in a job
+// object that kills its members on disconnect, so the child also leaves the
+// job when the job allows it.
+func configureDetachedProcess(cmd *exec.Cmd, breakaway bool) {
+	flags := uint32(windowsDetachedProcess | windowsCreateNewProcessGroup)
+	if breakaway {
+		flags |= windowsCreateBreakawayFromJob
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
 }
+
+// detachSupportsBreakaway reports whether a failed start is worth retrying
+// without leaving the job; a job that forbids breakaway rejects the flag.
+const detachSupportsBreakaway = true

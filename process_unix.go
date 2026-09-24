@@ -35,6 +35,8 @@ func terminateProcessTree(cmd *exec.Cmd, force bool) {
 
 // configureDetachedProcess starts the child in a new session so it survives
 // the launching terminal or SSH connection hanging up.
-func configureDetachedProcess(cmd *exec.Cmd) {
+func configureDetachedProcess(cmd *exec.Cmd, _ bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
+
+const detachSupportsBreakaway = false

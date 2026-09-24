@@ -79,24 +79,31 @@ func startDetachedRun(stateDir string, childArgs []string, window time.Duration)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return runState{}, err
 	}
+	// Append: the TUI creates this log before launching `run --detach` and
+	// captures the launcher's own stderr in it. The controller still refuses
+	// a state directory that holds an earlier run.
 	stderrPath := filepath.Join(stateDir, launchStderrFileName)
-	stderr, err := os.OpenFile(stderrPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	stderr, err := os.OpenFile(stderrPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return runState{}, fmt.Errorf("state directory already contains %s; use a new --state-dir", launchStderrFileName)
+		return runState{}, err
+	}
+	start := func(breakaway bool) (*exec.Cmd, error) {
+		cmd, err := detachedRunCommand(childArgs)
+		if err != nil {
+			return nil, err
 		}
-		return runState{}, err
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = stderr
+		configureDetachedProcess(cmd, breakaway)
+		return cmd, cmd.Start()
 	}
-	cmd, err := detachedRunCommand(childArgs)
-	if err != nil {
-		stderr.Close()
-		return runState{}, err
+	cmd, startErr := start(detachSupportsBreakaway)
+	if startErr != nil && detachSupportsBreakaway {
+		// The launching job forbids breakaway. The run then survives a closed
+		// console but not the end of an SSH session.
+		cmd, startErr = start(false)
 	}
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = stderr
-	configureDetachedProcess(cmd)
-	startErr := cmd.Start()
 	// The child owns its duplicate of the log handle now.
 	stderr.Close()
 	if startErr != nil {

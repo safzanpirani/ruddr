@@ -2,17 +2,26 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
 	remoteSSHEnvironment   = "RUDDR_SSH"
 	remoteRuddrEnvironment = "RUDDR_REMOTE_RUDDR"
+	remoteShellEnvironment = "RUDDR_REMOTE_SHELL"
+	remoteShellPOSIX       = "posix"
+	remoteShellPowerShell  = "powershell"
+	// Prints "Core" or "Desktop" in PowerShell, ".PSEdition" in a POSIX shell,
+	// and the text unchanged in cmd.exe.
+	remoteShellProbe = "echo $PSVersionTable.PSEdition"
 	// Non-interactive SSH shells often skip the profile that puts user-level
 	// installs on PATH.
 	remotePathPrefix = `PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"; export PATH; `
@@ -137,12 +146,130 @@ func shellQuote(word string) string {
 	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 }
 
-func remoteSSHArgs(target string, plan remotePlan, ruddr string) []string {
+// remotePowerShellCommand renders argv for a remote PowerShell, the default
+// OpenSSH shell on many Windows hosts. It uses only single quotes, because
+// Windows OpenSSH does not preserve double quotes in the command string.
+// Stop turns a missing ruddr into a nonzero exit.
+func remotePowerShellCommand(ruddr string, args []string) string {
+	var builder strings.Builder
+	builder.WriteString("$ErrorActionPreference = 'Stop'; & ")
+	builder.WriteString(powerShellWord(ruddr))
+	for _, arg := range args {
+		builder.WriteByte(' ')
+		builder.WriteString(powerShellWord(arg))
+	}
+	builder.WriteString("; exit $LASTEXITCODE")
+	return builder.String()
+}
+
+// powerShellWord quotes one argument. PowerShell does not expand ~ in native
+// command arguments, so a leading ~/ or ~\ becomes $HOME.
+func powerShellWord(word string) string {
+	for _, prefix := range []string{"~/", "~\\"} {
+		if rest, ok := strings.CutPrefix(word, prefix); ok {
+			if rest == "" {
+				return "$HOME"
+			}
+			return "($HOME + " + powerShellQuote("\\"+rest) + ")"
+		}
+	}
+	return powerShellQuote(word)
+}
+
+func powerShellQuote(word string) string {
+	return "'" + strings.ReplaceAll(word, "'", "''") + "'"
+}
+
+func remoteSSHArgs(target string, plan remotePlan, ruddr, shell string) []string {
 	ttyFlag := "-T"
 	if plan.tty {
 		ttyFlag = "-t"
 	}
-	return []string{ttyFlag, "--", target, remoteShellCommand(ruddr, plan.args)}
+	command := remoteShellCommand(ruddr, plan.args)
+	if shell == remoteShellPowerShell {
+		command = remotePowerShellCommand(ruddr, plan.args)
+	}
+	return []string{ttyFlag, "--", target, command}
+}
+
+// classifyRemoteShell maps the probe's output to a supported shell.
+func classifyRemoteShell(output string) (string, error) {
+	switch strings.TrimSpace(output) {
+	case "Core", "Desktop":
+		return remoteShellPowerShell, nil
+	case "", ".PSEdition":
+		return remoteShellPOSIX, nil
+	case remoteShellProbe[len("echo "):]:
+		return "", errors.New("the remote default shell is cmd.exe; set the OpenSSH DefaultShell to PowerShell, or set " + remoteShellEnvironment + "=powershell if commands run under PowerShell anyway")
+	default:
+		return "", fmt.Errorf("cannot tell the remote shell from %q; set %s to posix or powershell", strings.TrimSpace(output), remoteShellEnvironment)
+	}
+}
+
+func remoteShellCachePath() (string, error) {
+	runs, err := runRegistryDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(runs), "remote-shells.json"), nil
+}
+
+// resolveRemoteShell returns the target's shell from the environment override,
+// the per-target cache, or one probe over ssh whose answer is cached.
+func resolveRemoteShell(sshPath, target string) (string, error) {
+	if configured := os.Getenv(remoteShellEnvironment); configured != "" {
+		if configured != remoteShellPOSIX && configured != remoteShellPowerShell {
+			return "", fmt.Errorf("%s must be posix or powershell, not %q", remoteShellEnvironment, configured)
+		}
+		return configured, nil
+	}
+	cache := map[string]string{}
+	cachePath, cacheErr := remoteShellCachePath()
+	if cacheErr == nil {
+		if raw, err := os.ReadFile(cachePath); err == nil {
+			_ = json.Unmarshal(raw, &cache)
+		}
+		if shell := cache[target]; shell == remoteShellPOSIX || shell == remoteShellPowerShell {
+			return shell, nil
+		}
+	}
+	probe := exec.Command(sshPath, "-T", "--", target, remoteShellProbe)
+	probe.Stderr = os.Stderr
+	output, err := runWithTimeout(probe, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("probe the remote shell on %s: %w", target, err)
+	}
+	shell, err := classifyRemoteShell(string(output))
+	if err != nil {
+		return "", err
+	}
+	if cacheErr == nil {
+		cache[target] = shell
+		if raw, err := json.MarshalIndent(cache, "", "  "); err == nil {
+			if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err == nil {
+				_ = writePrivateFile(cachePath, append(raw, '\n'))
+			}
+		}
+	}
+	return shell, nil
+}
+
+func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return stdout.Bytes(), err
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-done
+		return nil, fmt.Errorf("timed out after %s", timeout)
+	}
 }
 
 func remoteCommand(target string, args []string) error {
@@ -165,7 +292,11 @@ func remoteCommand(target string, args []string) error {
 	if ruddr == "" {
 		ruddr = "ruddr"
 	}
-	cmd := exec.Command(sshPath, remoteSSHArgs(target, plan, ruddr)...)
+	shell, err := resolveRemoteShell(sshPath, target)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(sshPath, remoteSSHArgs(target, plan, ruddr, shell)...)
 	switch {
 	case plan.tty:
 		cmd.Stdin = os.Stdin

@@ -28,4 +28,6 @@ func terminateProcessTree(cmd *exec.Cmd, force bool) {
 	}
 }
 
-func configureDetachedProcess(cmd *exec.Cmd) {}
+func configureDetachedProcess(cmd *exec.Cmd, _ bool) {}
+
+const detachSupportsBreakaway = false

@@ -98,11 +98,11 @@ func TestRemoteShellCommandQuotesArguments(t *testing.T) {
 	if got != want {
 		t.Fatalf("command =\n%s\nwant\n%s", got, want)
 	}
-	args := remoteSSHArgs("ampere", remotePlan{args: []string{"status"}}, "ruddr")
+	args := remoteSSHArgs("ampere", remotePlan{args: []string{"status"}}, "ruddr", remoteShellPOSIX)
 	if args[0] != "-T" || args[1] != "--" || args[2] != "ampere" {
 		t.Fatalf("ssh args = %q", args)
 	}
-	if remoteSSHArgs("ampere", remotePlan{args: []string{"tui"}, tty: true}, "ruddr")[0] != "-t" {
+	if remoteSSHArgs("ampere", remotePlan{args: []string{"tui"}, tty: true}, "ruddr", remoteShellPOSIX)[0] != "-t" {
 		t.Fatal("tui must request a remote terminal")
 	}
 }
@@ -128,6 +128,7 @@ exec sh -c "$4"
 `)
 	t.Setenv(remoteSSHEnvironment, fakeSSH)
 	t.Setenv(remoteRuddrEnvironment, fakeRuddr)
+	t.Setenv(remoteShellEnvironment, remoteShellPOSIX)
 
 	messagePath := filepath.Join(dir, "message.md")
 	if err := os.WriteFile(messagePath, []byte("don't touch main.go"), 0o600); err != nil {
@@ -158,5 +159,61 @@ func assertFileEquals(t *testing.T, path, want string) {
 	}
 	if string(raw) != want {
 		t.Fatalf("%s = %q, want %q", filepath.Base(path), raw, want)
+	}
+}
+
+func TestRemotePowerShellCommandQuotesArguments(t *testing.T) {
+	got := remotePowerShellCommand(`C:\tools\ruddr.exe`, []string{"steer", "--state-dir", "~/runs/it's", `a "b"; $x`, "~/"})
+	want := `$ErrorActionPreference = 'Stop'; & 'C:\tools\ruddr.exe' 'steer' '--state-dir' ($HOME + '\runs/it''s') 'a "b"; $x' $HOME; exit $LASTEXITCODE`
+	if got != want {
+		t.Fatalf("command =\n%s\nwant\n%s", got, want)
+	}
+	args := remoteSSHArgs("main", remotePlan{args: []string{"status"}}, "ruddr", remoteShellPowerShell)
+	if !strings.HasPrefix(args[3], "$ErrorActionPreference") {
+		t.Fatalf("powershell target rendered %q", args[3])
+	}
+}
+
+func TestClassifyRemoteShell(t *testing.T) {
+	for output, want := range map[string]string{
+		"Core\r\n":     remoteShellPowerShell,
+		"Desktop\n":    remoteShellPowerShell,
+		".PSEdition\n": remoteShellPOSIX,
+		"":             remoteShellPOSIX,
+	} {
+		got, err := classifyRemoteShell(output)
+		if err != nil || got != want {
+			t.Fatalf("classify(%q) = %q, %v; want %q", output, got, err, want)
+		}
+	}
+	if _, err := classifyRemoteShell("$PSVersionTable.PSEdition\r\n"); err == nil || !strings.Contains(err.Error(), "cmd.exe") {
+		t.Fatalf("cmd.exe probe err = %v", err)
+	}
+}
+
+// The probe runs once per target; later commands read the cached answer.
+func TestResolveRemoteShellProbesOnceAndCaches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script as the fake ssh")
+	}
+	dir := t.TempDir()
+	t.Setenv(registryDirectoryEnvironment, filepath.Join(dir, "state", "runs"))
+	t.Setenv(remoteShellEnvironment, "")
+	calls := filepath.Join(dir, "calls")
+	fakeSSH := filepath.Join(dir, "ssh")
+	writeExecutable(t, fakeSSH, `#!/bin/sh
+echo probe >> "`+calls+`"
+echo Core
+`)
+	for range 2 {
+		shell, err := resolveRemoteShell(fakeSSH, "main")
+		if err != nil || shell != remoteShellPowerShell {
+			t.Fatalf("shell = %q, %v", shell, err)
+		}
+	}
+	assertFileEquals(t, calls, "probe\n")
+	t.Setenv(remoteShellEnvironment, "fish")
+	if _, err := resolveRemoteShell(fakeSSH, "main"); err == nil {
+		t.Fatal("accepted an unsupported RUDDR_REMOTE_SHELL")
 	}
 }
