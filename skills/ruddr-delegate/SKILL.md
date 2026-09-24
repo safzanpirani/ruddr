@@ -33,7 +33,9 @@ not installed).
   `workspace-write`; they rely on the provider's own permission system, so
   prefer codex or claude for anything touching files outside the workspace.
 
-`ruddr models --json` lists every valid model and effort per provider. Honor
+`ruddr models --json` lists every model and effort per provider, including
+any the user added with `ruddr models add`; `ruddr run` without `--model`
+uses the listed default. Honor
 an explicit user choice; raise the effort to `high` only for genuinely subtle
 problems. Pass `--model` explicitly so the run is reproducible from
 `state.json`.
@@ -147,7 +149,8 @@ ruddr --remote ampere wait --state-dir '~/.scratch/ruddr/<task-slug>/run' --time
 ```
 
 - `--cwd` and `--state-dir` are remote paths; `--cwd` is required. Quote
-  `'~/…'` so the local shell does not expand it to the local home.
+  `'~/…'` so the local shell does not expand it to the local home. Windows
+  hosts work too when their SSH shell is PowerShell.
 - `--prompt-file` and `--message-file` are local files; Ruddr streams their
   contents to the remote. The brief must describe the remote checkout, not
   this one.

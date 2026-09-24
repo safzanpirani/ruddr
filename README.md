@@ -248,7 +248,9 @@ Run it in the background from an agent harness so the harness can continue
 reading user messages and issue steering commands. `--detach` does this without
 harness support. It starts the controller in its own session, writes the
 child's early stderr to `launch.stderr.log`, and returns once the run reports
-`active`, `idle`, or `completed`. A controller that fails during startup makes
+`active`, `idle`, or `completed`. On Windows it also leaves the OpenSSH
+session's job object, which would otherwise kill the run when the SSH
+connection closes. A controller that fails during startup makes
 `run --detach` exit non-zero with that stderr. `--prompt-file -` reads the
 prompt from stdin and stores it as `prompt.md` (`0600`) inside the state
 directory; `steer` and `prompt` accept `--message-file -` the same way.
@@ -352,8 +354,39 @@ Rules:
   context window, and cost when the provider reports one). Prompt text still
   never reaches state.json.
 
-`ruddr models [--json]` prints the model catalog (providers, models, default
-per provider) that the TUI's picker uses.
+### Models
+
+`ruddr models [--json]` prints the model catalog: each provider's models and
+its default. The TUI's picker uses it, and `ruddr run` without `--model` uses
+the default.
+
+Ruddr ships a short built-in list. Add the models you actually use, change a
+default, or hide one you never pick; Ruddr does not import every model a
+provider knows about. `opencode models` and similar provider commands list the
+IDs to choose from.
+
+```bash
+ruddr models add opencode opencode/deepseek-v4-flash --label "DeepSeek Flash" --default
+ruddr models add codex gpt-7-preview --efforts low,medium,high
+ruddr models default claude claude-sonnet-5
+ruddr models remove codex gpt-5.6-luna      # hides a built-in model
+ruddr models path                           # where the file lives
+```
+
+The changes live in `~/.config/ruddr/models.json` (`$XDG_CONFIG_HOME` is
+honored; `RUDDR_MODELS_FILE` overrides the path). You can edit it by hand:
+
+```json
+{
+  "models": [
+    { "provider": "opencode", "id": "opencode/deepseek-v4-flash", "label": "DeepSeek Flash", "default": true },
+    { "provider": "codex", "id": "gpt-5.6-luna", "hidden": true }
+  ]
+}
+```
+
+An invalid file is an error rather than being ignored, so a typo cannot
+silently run a different default model.
 
 ## Observe and control
 
@@ -564,9 +597,16 @@ polling forever or returning an opaque socket error.
 
 `--remote SSH_TARGET` runs any Ruddr command on another machine over SSH. The
 target is anything `ssh` accepts, such as a host alias from `~/.ssh/config`.
-The remote machine needs a POSIX login shell and Ruddr on `PATH`, or in
-`~/.local/bin`; set `RUDDR_REMOTE_RUDDR` to its path otherwise. Remote `run`
+The remote machine needs Ruddr on `PATH` (a POSIX host also finds it in
+`~/.local/bin`); set `RUDDR_REMOTE_RUDDR` to its path otherwise. Remote `run`
 needs the same Ruddr release on both ends, because it relies on `--detach`.
+
+Ruddr works with a POSIX login shell or with PowerShell, the usual OpenSSH
+default shell on Windows. The first command to a target runs one probe to
+tell them apart and caches the answer in `~/.local/state/ruddr/remote-shells.json`.
+Set `RUDDR_REMOTE_SHELL=posix` or `powershell` to skip the probe. A Windows
+host whose default shell is still `cmd.exe` is refused with a pointer to the
+OpenSSH `DefaultShell` setting.
 
 ```bash
 ruddr --remote ampere run --provider codex --cwd '~/src/app' \
@@ -585,7 +625,8 @@ ruddr --remote ampere tui
 - `run` always starts detached and requires `--cwd`, so the session outlives
   the SSH connection. Follow it with `peek`, `wait`, or the TUI.
 - `tui` runs on the remote machine under `ssh -t`. From a phone, its width
-  selects the mobile layout.
+  selects the mobile layout. Sessions it starts run detached, so they keep
+  going when the connection drops.
 - Output and the exit status come back unchanged. Authentication stays on the
   remote machine, with that machine's provider login.
 

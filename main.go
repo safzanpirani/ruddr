@@ -448,7 +448,7 @@ Usage:
   %[1]s steer --state-dir DIR "new direction"
   %[1]s prompt --state-dir DIR "next task"      (idle sessions started with --idle)
   %[1]s stop --state-dir DIR                    (gracefully end an idle session)
-  %[1]s models [--json]
+  %[1]s models [--json]                         (list; add|default|remove PROVIDER ID edit it)
   %[1]s status --state-dir DIR [--json]
   %[1]s peek --state-dir DIR [-n 25]
   %[1]s interrupt --state-dir DIR [--expected-turn-id ID]
@@ -462,10 +462,15 @@ run --detach starts the controller in the background and returns once it is
 running. --prompt-file - and --message-file - read the text from stdin.
 
 --remote runs ruddr on SSH_TARGET through ssh and passes output and exit status
-through. Paths are remote paths. Local --prompt-file and --message-file
-contents travel over stdin, run always starts detached and needs --cwd, and tui
-gets a terminal. Set RUDDR_REMOTE_RUDDR to the remote ruddr path when it is not
-on the remote PATH; RUDDR_SSH overrides the ssh executable.
+through. Paths are remote paths, and POSIX and PowerShell remote shells both
+work. Local --prompt-file and --message-file contents travel over stdin, run
+always starts detached and needs --cwd, and tui gets a terminal. Set
+RUDDR_REMOTE_RUDDR to the remote ruddr path when it is not on the remote PATH;
+RUDDR_REMOTE_SHELL=posix|powershell skips the shell probe; RUDDR_SSH overrides
+the ssh executable.
+
+models add|default|remove edit ~/.config/ruddr/models.json, which adds models,
+changes provider defaults, or hides built-in models.
 
 Ruddr checks GitHub for a newer release at most once a day and mentions it in
 the TUI and after version; set RUDDR_NO_UPDATE_CHECK=1 to disable the check.

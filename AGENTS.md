@@ -146,9 +146,11 @@ waiting to be asked:
    to drive Ruddr. Update it for any change an agent would act on: launch
    flags, defaults, models, remote use, waiting, or steering. The binary
    embeds the working-tree copy.
-4. **The model catalog.** When a default model changes, update `models.go`, the
-   `FALLBACK_MODELS` copy in `tui/core.ts`, `models_test.go`, and every skill
-   that names the model.
+4. **The model catalog.** When a built-in default changes, update `models.go`,
+   the `FALLBACK_MODELS` copy in `tui/core.ts`, `models_test.go`, and every
+   skill that names the model. Users add or override models in
+   `~/.config/ruddr/models.json` through `ruddr models add|default|remove`.
+   Keep the built-in list short, and do not bulk-import provider model lists.
 5. **Skills installed on this machine.** Run `go build -o ruddr . && ./ruddr
    skill install` so `~/.claude/skills`, `~/.agents/skills`, and
    `~/.codex/skills` get the new delegate skill. Other personal skills on this
@@ -194,7 +196,12 @@ check, because that starts real provider runs.
 ## Remote and detached runs
 
 `--remote` must stay a thin `ssh` passthrough: no remote-side daemon and no
-credential handling. Paths after `--remote` are remote paths, and remote `run`
+credential handling. It renders the command for either a POSIX shell or
+PowerShell, based on a cached per-target probe. On Windows, `--detach` must
+keep `CREATE_BREAKAWAY_FROM_JOB`: OpenSSH kills every process in a session's job
+when the connection closes. The TUI launches sessions through `run --detach`
+for the same reason. Test Windows behavior on a real Windows host over raw
+`ssh`, one session per step; a reused shell hides session teardown. Paths after `--remote` are remote paths, and remote `run`
 depends on `--detach`, so both ends need the same release. Test remote changes
 with the fake `ssh` in `remote_test.go`. A real host check such as `ruddr
 --remote HOST status` is useful but read-only; do not start remote runs or
