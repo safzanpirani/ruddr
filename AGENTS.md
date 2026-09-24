@@ -15,8 +15,13 @@ or repository business logic.
 
 ## Repository map
 
-- `main.go` — CLI dispatch and argument parsing for `run`, `steer`, `status`,
-  `peek`, `interrupt`, and `wait`.
+- `main.go` — CLI dispatch, top-level usage text, and argument parsing for
+  `run`, `steer`, `prompt`, `stop`, `status`, `peek`, `interrupt`, and `wait`.
+- `remote.go` — `--remote SSH_TARGET` passthrough: runs any command through
+  `ssh`, streams local prompt/message files over stdin, forces `run --detach`,
+  and propagates the remote exit status.
+- `detach.go` — `run --detach` (background controller in its own session,
+  startup wait, `launch.stderr.log`) and `--prompt-file -` stdin prompts.
 - `runner.go` — long-lived app-server controller, handshake, thread
   start/resume/fork, turn execution, JSON-RPC correlation, event handling,
   watchdog, logs, and shutdown.
@@ -26,8 +31,20 @@ or repository business logic.
   rendering, socket-path selection, and private file helpers.
 - `thread_commands.go` — short-lived app-server sessions for thread discovery,
   search, read, turn listing, fork, naming, archive, and unarchive.
+- `provider.go`, `models.go` — provider selection and the model catalog. The
+  catalog is the source of truth for per-provider default models.
+- `skill.go`, `skills/ruddr-delegate/SKILL.md` — the delegate skill, embedded
+  in the binary and installed by `ruddr skill install`.
+- `update.go` — release checks and `ruddr update`, which also reinstalls the
+  skill.
+- `tui_command.go`, `tui/` — the Bun/OpenTUI TUI. `tui/index.ts` builds the
+  layout, including the mobile layout; `tui/core.ts` holds pure logic,
+  argument parsing, and a fallback copy of the model catalog.
+- `adapter/`, `claude/`, `opencode/`, `pi/` — Bun app-server adapters that let
+  non-Codex providers speak the Codex app-server protocol.
 - `process_unix.go`, `process_windows.go`, `process_other.go` — platform process
-  setup and process-tree termination.
+  setup, detached-process setup, and process-tree termination.
+- `scripts/` — the local installer, npm launcher, and npm postinstall hook.
 - `runner_test.go` — unit and integration-style tests using the in-process fake
   app-server. Extend this fake when adding protocol behavior.
 
@@ -113,6 +130,75 @@ The binary is ignored; remove or leave it untracked only if `.gitignore`
 continues to cover it. For documentation-only changes, at minimum run
 `git diff --check` and verify every command against `./ruddr --help` or the
 relevant subcommand parser.
+
+## Keep every surface in sync
+
+A change to the CLI or TUI shape is not finished until every place that
+describes it matches. That includes a new or renamed command, flag, default,
+model, output format, or TUI control. Update these in the same change, without
+waiting to be asked:
+
+1. **Usage text.** `printUsage` in `main.go`, `printTUIUsage` in
+   `tui_command.go`, `printSkillUsage` in `skill.go`, and any subcommand help.
+2. **README.md.** The section for the feature, plus the Agent setup guide's
+   operating manual when agent-facing behavior changes.
+3. **The embedded skill.** `skills/ruddr-delegate/SKILL.md` teaches agents how
+   to drive Ruddr. Update it for any change an agent would act on: launch
+   flags, defaults, models, remote use, waiting, or steering. The binary
+   embeds the working-tree copy.
+4. **The model catalog.** When a default model changes, update `models.go`, the
+   `FALLBACK_MODELS` copy in `tui/core.ts`, `models_test.go`, and every skill
+   that names the model.
+5. **Skills installed on this machine.** Run `go build -o ruddr . && ./ruddr
+   skill install` so `~/.claude/skills`, `~/.agents/skills`, and
+   `~/.codex/skills` get the new delegate skill. Other personal skills on this
+   machine also drive Ruddr, such as the review/solve `*-auto` skills. Search
+   the skill directories for `ruddr` and bring each one in line. Each such skill
+   has one canonical copy; edit it, copy it over the others, and confirm the
+   hashes match. Do not change a skill's behavior without the user's approval;
+   updating command names, flags, and defaults is in scope.
+6. **Distribution.** `ruddr update` reinstalls the skill after every update
+   path, including when Ruddr is already current, and the npm postinstall and
+   `scripts/install-local.sh` do the same. Keep that true when changing
+   install or update code, and cover it with a test.
+
+Report which of these surfaces you updated. A local `skill install` of an
+uncommitted edit only changes this machine. Other machines get it only after
+the change is committed and released.
+
+## TUI changes
+
+Install dependencies first (`bun install --frozen-lockfile --ignore-scripts`).
+Then run `bun test` and `bunx tsc -p tsconfig.json --noEmit`. Tests do not
+cover layout, so render the TUI before calling a visual change done:
+
+```bash
+go build -o ruddr .
+tmux new-session -d -s ruddr-check -x 46 -y 34 "RUDDR_NO_UPDATE_CHECK=1 ./ruddr tui"
+tmux capture-pane -p -e -t ruddr-check    # -e keeps colors
+```
+
+Check both a phone width (at or below 64 columns, the mobile layout) and a
+desktop width. To test touch targets, send SGR mouse events with a pause
+between press and release, because back-to-back sends get coalesced:
+
+```bash
+tmux send-keys -t ruddr-check -l $'\e[<0;COL;ROWM'; sleep 0.2
+tmux send-keys -t ruddr-check -l $'\e[<0;COL;ROWm'
+```
+
+Keep mobile controls large enough to tap. Action-bar buttons span three rows
+and take the tap anywhere on the box. Do not submit prompts during a visual
+check, because that starts real provider runs.
+
+## Remote and detached runs
+
+`--remote` must stay a thin `ssh` passthrough: no remote-side daemon and no
+credential handling. Paths after `--remote` are remote paths, and remote `run`
+depends on `--detach`, so both ends need the same release. Test remote changes
+with the fake `ssh` in `remote_test.go`. A real host check such as `ruddr
+--remote HOST status` is useful but read-only; do not start remote runs or
+install binaries on shared hosts without asking.
 
 ## Testing expectations
 

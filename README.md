@@ -149,6 +149,11 @@ the release checksums, and a source checkout installed with
 `scripts/install-local.sh` is told to pull and rerun the installer, since its
 TUI assets live apart from the binary.
 
+Every `ruddr update` also reinstalls the `ruddr-delegate` skill into the default
+skill directories, including when Ruddr is already up to date. After an upgrade
+the new binary writes its own copy, so the skill always matches the installed
+release even when a package manager skipped its postinstall hook.
+
 Releases are cut by pushing a `vX.Y.Z` tag that matches the `version`
 constant in `main.go`. The workflow builds every platform, attaches the
 binaries and checksums to a GitHub release, and publishes the npm package.
@@ -240,7 +245,13 @@ configuration and plugins, and Pi loads project-local resources after approval.
 Those resources can execute code outside the adapters' tool permission rules.
 
 Run it in the background from an agent harness so the harness can continue
-reading user messages and issue steering commands.
+reading user messages and issue steering commands. `--detach` does this without
+harness support. It starts the controller in its own session, writes the
+child's early stderr to `launch.stderr.log`, and returns once the run reports
+`active`, `idle`, or `completed`. A controller that fails during startup makes
+`run --detach` exit non-zero with that stderr. `--prompt-file -` reads the
+prompt from stdin and stores it as `prompt.md` (`0600`) inside the state
+directory; `steer` and `prompt` accept `--message-file -` the same way.
 
 `--turn-timeout` defaults to one hour and stops a silently hung turn and its
 child process group. Set it to `0` only when an unbounded run is intentional.
@@ -397,7 +408,9 @@ On narrow terminals the TUI switches to a mobile layout on its own: a single
 column with the sessions list as an overlay, no details panel, and a tappable
 action bar (`≡ sessions`, `✎ prompt`, `■ stop`, `⋯ more`) in place of the key
 hints, so a phone SSH client such as Blink or Termius can drive every action
-by touch. The switch happens at or below 64 columns and reverses when the
+by touch. Each button is three rows tall and a quarter of the width, and a tap
+anywhere on it counts; the stop button dims when the selected session cannot
+be stopped. The artifact tabs get extra padding for the same reason. The switch happens at or below 64 columns and reverses when the
 window grows; set `mobileWidthThreshold` in `tui.json` to change the width, or
 pass `--mobile` (or `RUDDR_TUI_MOBILE=1`) to force it at any size. Beta mode shows one session's borderless conversation and keeps the
 sessions list behind a `Tab` overlay. `Enter` or `Esc` closes that overlay.
@@ -546,6 +559,35 @@ does not disappear.
 If a process is killed without cleanup, `status` renders a non-terminal state
 as `stale`, while `wait`, `steer`, and `interrupt` fail promptly instead of
 polling forever or returning an opaque socket error.
+
+## Run on another machine
+
+`--remote SSH_TARGET` runs any Ruddr command on another machine over SSH. The
+target is anything `ssh` accepts, such as a host alias from `~/.ssh/config`.
+The remote machine needs a POSIX login shell and Ruddr on `PATH`, or in
+`~/.local/bin`; set `RUDDR_REMOTE_RUDDR` to its path otherwise. Remote `run`
+needs the same Ruddr release on both ends, because it relies on `--detach`.
+
+```bash
+ruddr --remote ampere run --provider codex --cwd '~/src/app' \
+  --prompt-file brief.md --state-dir '~/runs/fix-login'
+ruddr --remote ampere peek --state-dir '~/runs/fix-login' -n 25
+ruddr --remote ampere steer --state-dir '~/runs/fix-login' "keep the API stable"
+ruddr --remote ampere wait --state-dir '~/runs/fix-login' --timeout 10m
+ruddr --remote ampere tui
+```
+
+- Paths are remote paths. Quote `~/…` so your local shell leaves it alone;
+  Ruddr passes a leading `~/` through unquoted so the remote shell expands it.
+  Relative paths resolve against the remote home directory.
+- `--prompt-file` and `--message-file` name local files. Ruddr sends their
+  contents over stdin and the remote side reads them with `-`.
+- `run` always starts detached and requires `--cwd`, so the session outlives
+  the SSH connection. Follow it with `peek`, `wait`, or the TUI.
+- `tui` runs on the remote machine under `ssh -t`. From a phone, its width
+  selects the mobile layout.
+- Output and the exit status come back unchanged. Authentication stays on the
+  remote machine, with that machine's provider login.
 
 ## Layer over codex-auth-broker
 
@@ -700,7 +742,8 @@ Starting runs. Useful `ruddr run` flags:
                                 danger-full-access
    --cwd DIR                    the workspace the provider edits
    --turn-timeout 1h            per-turn watchdog; 0 disables
-Long runs: launch in the background (or your harness's background mode), then
+Long runs: launch in the background (your harness's background mode, or
+`ruddr run --detach ...`, which returns once the run is live), then
 watch with `ruddr peek --state-dir DIR -n 25` and block bounded with
 `ruddr wait --state-dir DIR --timeout 30m`. Never poll in a foreground loop.
 
@@ -756,7 +799,7 @@ package and `scripts/install-local.sh` install it into `~/.claude/skills/` and
 reinstall it or to target another location:
 
 ```bash
-ruddr skill install                      # ~/.claude/skills and ~/.agents/skills
+ruddr skill install                      # ~/.claude, ~/.agents, and ~/.codex (if present)
 ruddr skill install --dir .claude/skills # this project only
 ruddr skill show                         # print the skill
 ```
