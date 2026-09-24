@@ -35,6 +35,7 @@ import {
   contextualHelp,
   dashboardNavigation,
   DEFAULT_MOBILE_WIDTH_THRESHOLD,
+  blendHex,
   layoutForWidth,
   discoverSessions,
   emptyPromptHint,
@@ -533,28 +534,43 @@ async function main(): Promise<void> {
     footerBar.add(footerRight);
 
     // Mobile action bar: the keys a phone cannot press, as tappable buttons.
-    const actionButtons: Array<[TextRenderable, () => void]> = [];
+    // Each button fills a quarter of the width and three rows, so a thumb can
+    // hit it; the whole box takes the tap, not only the label.
+    const ACTION_BAR_ROWS = 3;
+    // Tinted from the accent so buttons read as buttons on every theme; an
+    // unavailable action falls back to the plain panel color.
+    const actionSurface = (enabled = true) =>
+      enabled ? blendHex(palette.background, palette.accent, 0.18) : palette.panel;
+    const actionButtons: Array<{ box: BoxRenderable; label: TextRenderable }> = [];
     const actionBar = new BoxRenderable(renderer, {
       width: "100%",
-      height: 1,
+      height: ACTION_BAR_ROWS,
       flexDirection: "row",
-      justifyContent: "space-around",
       gap: 1,
       visible: false,
     });
     const makeAction = (label: string, run: () => void) => {
-      const button = new TextRenderable(renderer, {
+      const button = new BoxRenderable(renderer, {
+        flexGrow: 1,
+        flexBasis: 0,
+        height: ACTION_BAR_ROWS,
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: actionSurface(),
+      });
+      const text = new TextRenderable(renderer, {
         content: label,
         fg: palette.accent,
         wrapMode: "none",
       });
+      button.add(text);
       button.onMouseDown = (event) => {
         event.preventDefault();
         run();
       };
-      actionButtons.push([button, run]);
+      actionButtons.push({ box: button, label: text });
       actionBar.add(button);
-      return button;
+      return text;
     };
     const actionSessions = makeAction(" ≡ sessions ", () => showSessions());
     const actionPrompt = makeAction(" ✎ prompt ", () => {
@@ -1336,9 +1352,9 @@ async function main(): Promise<void> {
       promptMetaRight.fg = palette.dim;
       followIndicator.fg = palette.warning;
       chatTab.fg = palette.accent;
-      for (const [button] of actionButtons) {
-        button.fg = palette.accent;
-        button.bg = palette.panel;
+      for (const { box, label } of actionButtons) {
+        label.fg = palette.accent;
+        box.backgroundColor = actionSurface();
       }
       sessionsPanel.backgroundColor = palette.background;
       promptPanel.backgroundColor = palette.background;
@@ -1547,6 +1563,7 @@ async function main(): Promise<void> {
       actionBar.visible = mobile;
       // Narrow screens keep only the meter and status under the prompt.
       promptMetaLeft.visible = !mobile;
+      tabsLeft.gap = mobile ? 1 : 2;
       if (view.focus === "sessions") {
         view = { ...view, focus: "artifact" };
         artifactScroll.focus();
@@ -2657,7 +2674,8 @@ async function main(): Promise<void> {
       actionStop.content = " ■ stop ";
       actionStop.fg = stoppable ? palette.danger : palette.dim;
       actionMore.content = " ⋯ more ";
-      for (const [button] of actionButtons) button.bg = palette.panel;
+      for (const { box, label } of actionButtons)
+        box.backgroundColor = actionSurface(label !== actionStop || stoppable);
     }
 
     function renderTabLabel(artifact: Artifact, selected: boolean): StyledText {
@@ -2667,13 +2685,15 @@ async function main(): Promise<void> {
       const name = selected
         ? underline(bold(fg(color)(label)))
         : fg(color)(label);
+      // Mobile pads each tab so the tappable span is wider than the word.
+      const pad = mobile ? " " : "";
       const diffSummary = diffView.summary;
       if (artifact === "diff" && diffSummary && diffSummary.files > 0) {
         const additions = selected ? palette.success : palette.dim;
         const deletions = selected ? palette.danger : palette.dim;
-        return t`${name} ${fg(additions)(`+${diffSummary.additions}`)} ${fg(deletions)(`−${diffSummary.deletions}`)}`;
+        return t`${pad}${name} ${fg(additions)(`+${diffSummary.additions}`)} ${fg(deletions)(`−${diffSummary.deletions}`)}${pad}`;
       }
-      return t`${name}`;
+      return t`${pad}${name}${pad}`;
     }
 
     function renderHelp(help: string): StyledText {
