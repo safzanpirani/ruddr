@@ -30,12 +30,14 @@ func TestConfigureProviderDefaultsFindsClaudeAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(claudeAdapterEntryEnvironment, entry)
+	t.Setenv(modelsFileEnvironment, filepath.Join(t.TempDir(), "models.json"))
 	cfg := runConfig{Provider: providerClaude}
 	if err := configureProviderDefaults(&cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Model != "" {
-		t.Fatalf("Claude model should use provider default, got %q", cfg.Model)
+	// Claude runs use the catalog default, which models.json can change.
+	if want, _ := defaultModel(providerClaude); cfg.Model != want || want == "" {
+		t.Fatalf("Claude model = %q, want catalog default %q", cfg.Model, want)
 	}
 	if len(cfg.ChildCommand) != 3 || cfg.ChildCommand[1] != "run" || cfg.ChildCommand[2] != entry {
 		t.Fatalf("unexpected Claude child: %#v", cfg.ChildCommand)

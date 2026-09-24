@@ -48,7 +48,9 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 	switch provider {
 	case providerCodex:
 		if cfg.Model == "" {
-			cfg.Model = defaultModel(providerCodex)
+			if cfg.Model, err = defaultModel(providerCodex); err != nil {
+				return err
+			}
 		}
 		if len(childArgs) > 0 {
 			cfg.ChildCommand = childArgs
@@ -61,6 +63,11 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 		}
 		if cfg.ClaudePath == "" {
 			cfg.ClaudePath = os.Getenv(claudePathEnvironment)
+		}
+		if cfg.Model == "" {
+			if cfg.Model, err = defaultModel(providerClaude); err != nil {
+				return err
+			}
 		}
 		bunPath, err := exec.LookPath("bun")
 		if err != nil {
@@ -76,7 +83,9 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 			return fmt.Errorf("a command after -- is supported only for Codex; use --%s-path for %s", provider, provider)
 		}
 		if cfg.Model == "" {
-			cfg.Model = defaultModel(provider)
+			if cfg.Model, err = defaultModel(provider); err != nil {
+				return err
+			}
 		}
 		pathEnvironment := opencodePathEnvironment
 		entryEnvironment := opencodeAdapterEntryEnvironment
