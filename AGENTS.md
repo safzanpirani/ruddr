@@ -16,7 +16,17 @@ or repository business logic.
 ## Repository map
 
 - `main.go` — CLI dispatch, top-level usage text, and argument parsing for
-  `run`, `steer`, `prompt`, `stop`, `status`, `peek`, `interrupt`, and `wait`.
+  `run`, `steer`, `prompt`, `stop`, `status`, `peek`, `interrupt`, `wait`, and
+  `result`. `run` picks a default state directory when `--state-dir` is absent.
+- `group.go` — multi-run mode for `status`, `peek`, `wait`, `stop`, and
+  `interrupt`: repeated `--state-dir`, `--root` discovery, the run table, the
+  group wait (`--any`, `--turn`), and control broadcast.
+- `result.go` — `ruddr result`: the last agent message of each run's latest
+  turn, read from `events.jsonl`.
+- `exitcode.go` — the exit-code contract (1 failed, 2 usage, 3 still running,
+  4 stale) and the mapping from command errors.
+- `registry.go` — the private global run registry the TUI reads.
+- `output.go` — append-only private writes to `output.md`.
 - `remote.go` — `--remote SSH_TARGET` passthrough: runs any command through
   `ssh`, streams local prompt/message files over stdin, forces `run --detach`,
   and propagates the remote exit status.
@@ -32,7 +42,9 @@ or repository business logic.
 - `thread_commands.go` — short-lived app-server sessions for thread discovery,
   search, read, turn listing, fork, naming, archive, and unarchive.
 - `provider.go`, `models.go` — provider selection and the model catalog. The
-  catalog is the source of truth for per-provider default models.
+  catalog is the source of truth for per-provider default models. A Codex
+  model's `config` map and `run --config` become `-c KEY=VALUE` flags on the
+  default `codex app-server` command.
 - `skill.go`, `skills/ruddr-delegate/SKILL.md` — the delegate skill, embedded
   in the binary and installed by `ruddr skill install`.
 - `update.go` — release checks and `ruddr update`, which also reinstalls the
@@ -46,7 +58,9 @@ or repository business logic.
   setup, detached-process setup, and process-tree termination.
 - `scripts/` — the local installer, npm launcher, and npm postinstall hook.
 - `runner_test.go` — unit and integration-style tests using the in-process fake
-  app-server. Extend this fake when adding protocol behavior.
+  app-server. Extend this fake when adding protocol behavior. `group_test.go`
+  and `friction_test.go` cover multi-run commands, results, config overrides,
+  default state directories, and exit codes.
 
 ## Non-negotiable invariants
 
@@ -70,6 +84,11 @@ or repository business logic.
 - Preserve every completed `agentMessage` in `output.md` in arrival order.
 - Treat a dead controller with non-terminal persisted state as `stale`; wait and
   control commands must fail promptly rather than poll forever.
+- Exit codes are an API that agents branch on: 0 success, 1 failed, 2 usage,
+  3 still running, 4 stale. Keep them stable and document any new one in
+  `printUsage`, the README, and the skill.
+- A default state directory lives under `CWD/.scratch/ruddr`, which carries its
+  own `.gitignore` so run files never reach a sub-agent's `git status`.
 
 ## Thread semantics
 
@@ -216,7 +235,8 @@ install binaries on shared hosts without asking.
 - For run lifecycle tests, assert both the returned error and persisted terminal
   state. Where relevant, also assert socket cleanup and child termination.
 - Preserve coverage for fresh, resume, fork, steer, interrupt, watchdog, stale
-  state, blocked writes, temporary accept errors, redaction, and ordered output.
+  state, blocked writes, temporary accept errors, redaction, ordered output,
+  multi-run waits, and exit codes.
 - Duration flags use Go duration syntax (`3600s`, `20m`, `1h`); bare integers
   must remain invalid.
 - Keep tests deterministic and offline. A live Codex dogfood run is useful
