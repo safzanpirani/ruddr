@@ -143,3 +143,12 @@ In 'ruddr status --json' the idle field means the run was started with --idle, n
 
 Right after the release workflow published ruddr@0.4.3, npm install -g ruddr@0.4.3 on a Windows host kept failing with notarget even after the registry served 0.4.3, because that host's npm cached the first miss. Adding --prefer-online fixed it. Release smoke steps should install with --prefer-online.
 
+## 55881a · 2026-09-28T07:49:09.191Z — claude-code — claude-opus-5-5
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **About:** `dejavu`
+- **Tags:** `tooling`
+- **Resolved:** 2026-09-28T07:57:26.137Z — Local codex exec auth returns 'workspace routing discovery unauthorized (401)'. dejavu 7d96cd7 now reports that API error. The local dejavu build routes queries through the tailnet Responses broker with gpt-6-luna.
+
+dejavu query on a Claude transcript failed with 'codex exec failed (exit 1); check codex login status and access to gpt-5.6-luna'. dejavu find worked; I fell back to extracting commands from the jsonl with python.
+
