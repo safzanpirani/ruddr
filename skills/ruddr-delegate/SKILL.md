@@ -130,6 +130,13 @@ medium`, `--provider opencode`, or `--provider pi` as chosen above.
   `ruddr prompt --state-dir DIR "next task"`; end the session with
   `ruddr stop --state-dir DIR`. Prompt (new turn) and steer (redirect the
   current turn) are different commands — never substitute one for the other.
+  Before prompting, wait for `.status == "idle"` in `ruddr status --json`.
+  The boolean `.idle` field only means the run was started with `--idle`, and
+  it is already true while the session is still starting.
+- A Codex launch that fails at `thread/start` with a model or feature error
+  usually comes from `~/.codex/config.toml`. Override the key for this run by
+  ending the command with `-- codex app-server --listen stdio:// -c KEY=VALUE`,
+  for example `-c features.SOME_FEATURE=false`.
 
 ## Run on another machine
 

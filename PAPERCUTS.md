@@ -113,6 +113,7 @@ While proving Rudder's live diff tab with --state-dir, the TUI still prioritized
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **About:** `tmux`
 - **Tags:** `tooling`
+- **Resolved:** 2026-09-28T05:52:15.269Z — AGENTS.md TUI changes section documents sending SGR press and release with a 0.2s pause so tmux delivers them as mouse events.
 
 While replaying a Rudder tree click in a detached tmux PTY, tmux send-keys delivered the SGR mouse sequence as keyboard input instead of a mouse event. The pane capture could not validate mouse hit-testing; use a real attached client or a dedicated mouse-event harness for this proof.
 
@@ -120,6 +121,7 @@ While replaying a Rudder tree click in a detached tmux PTY, tmux send-keys deliv
 
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **Tags:** `tooling`
+- **Resolved:** 2026-09-28T05:51:55.838Z — release.yml has a per-tag concurrency group and the npm publish step exits 0 when the version is already published. Releases 0.4.1-0.4.5 each ran once, green.
 
 Pushing an annotated vX.Y.Z tag to safzanpirani/ruddr fired the Release workflow twice for the same tag (runs 34481919306 and 34481917607, identical 13:19:28 push event). The first published npm and the GitHub release; the second raced it and failed with npm E403 'cannot publish over the previously published versions: 0.4.0', leaving a red failed run on a successful release. Consider a concurrency group keyed on the tag in .github/workflows/release.yml.
 
@@ -128,6 +130,7 @@ Pushing an annotated vX.Y.Z tag to safzanpirani/ruddr fired the Release workflow
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **About:** `ruddr`
 - **Tags:** `misleading-error`
+- **Resolved:** 2026-09-28T05:52:15.287Z — Kept the field name for state.json compatibility. README (idle section and agent manual), the ruddr-delegate skill, and the runState field comment now say to poll status == "idle"; the idle boolean only records --idle.
 
 In 'ruddr status --json' the idle field means the run was started with --idle, not that the session is waiting. Polling .idle returned true during status=starting, so 'ruddr prompt' failed with 'session is not idle'. Poll status == "idle" instead. Consider renaming it idleMode or documenting it next to the status values.
 
@@ -136,6 +139,7 @@ In 'ruddr status --json' the idle field means the run was started with --idle, n
 - **Directory:** `/Users/safzan/Development/projects/codex-rudder`
 - **About:** `npm`
 - **Tags:** `stale-cache`
+- **Resolved:** 2026-09-28T05:52:15.251Z — AGENTS.md release step 5 installs with --prefer-online and explains the notarget window.
 
 Right after the release workflow published ruddr@0.4.3, npm install -g ruddr@0.4.3 on a Windows host kept failing with notarget even after the registry served 0.4.3, because that host's npm cached the first miss. Adding --prefer-online fixed it. Release smoke steps should install with --prefer-online.
 

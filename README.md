@@ -355,6 +355,9 @@ Rules:
 - state.json gains `idle`, `turns`, and `tokenUsage` (cumulative counts,
   context window, and cost when the provider reports one). Prompt text still
   never reaches state.json.
+- The `idle` field records that the run was started with `--idle`. It stays
+  `true` while the session is `starting` or `active`. Poll `status == "idle"`
+  to know when `prompt` will be accepted.
 
 ### Models
 
@@ -697,6 +700,15 @@ Ruddr currently depends on:
 - `thread/resume` and `thread/fork`
 - `thread/name/set`, `thread/archive`, and `thread/unarchive`
 - `turn/start`
+The same mechanism overrides `~/.codex/config.toml` for one run. A setting
+the chosen model does not support fails the run at `thread/start`; pass the
+default command with a `-c` override to turn it off:
+
+```bash
+./ruddr run --model gpt-6-astra --cwd "$PWD" --prompt-file task.md \
+  -- codex app-server --listen stdio:// -c features.SOME_FEATURE=false
+```
+
 - `turn/steer`
 - `turn/interrupt`
 - `turn/started`, `item/*`, and `turn/completed` notifications
@@ -803,8 +815,10 @@ alive after each turn instead of exiting:
    ruddr stop   --state-dir DIR                graceful shutdown
    --idle-timeout 4h                            auto-exit when unused
 status "idle" means ready for the next prompt; "active" means a turn is
-running (steer, don't prompt). Prompt and steer are different commands with
-different semantics — never substitute one for the other. Use idle mode when
+running (steer, don't prompt). Poll the status field. The boolean `idle`
+field only says the run was started with --idle. Prompt and steer are
+different commands with different semantics — never substitute one for the
+other. Use idle mode when
 you expect follow-up turns: it keeps one process and one thread instead of
 spawning a fresh run per message.
 
@@ -819,6 +833,9 @@ fork a thread whose turn is still active.
 
 Watching everything at once. `ruddr tui` shows a dashboard of live and
 recent sessions with a prompt box: type to steer an active turn, prompt an
+A Codex run that fails at thread/start over a model or feature setting takes
+it from ~/.codex/config.toml. Override it for that run by ending the command
+with `-- codex app-server --listen stdio:// -c KEY=VALUE`.
 idle one, or continue a finished thread; `n` starts a new session, `m` picks
 the model, `x x` stops. `ruddr tui --beta` switches to a chat-first layout.
 

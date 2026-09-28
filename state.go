@@ -38,7 +38,7 @@ type runState struct {
 	OutputPath  string      `json:"outputPath"`
 	StderrPath  string      `json:"stderrPath"`
 	Steers      int         `json:"steers"`
-	Idle        bool        `json:"idle,omitempty"`
+	Idle        bool        `json:"idle,omitempty"` // started with --idle; Status "idle" means ready for a prompt
 	Turns       int         `json:"turns,omitempty"`
 	TokenUsage  *tokenUsage `json:"tokenUsage,omitempty"`
 	StartedAt   time.Time   `json:"startedAt"`
