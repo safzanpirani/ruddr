@@ -309,15 +309,20 @@ func waitForRuns(w io.Writer, refs []runRef, deadline time.Time, opts waitOption
 				}
 				fmt.Fprintf(w, "finished: %s\n", strings.Join(names, ", "))
 			}
-			failed := 0
+			failed, stale := 0, 0
 			for _, i := range judged {
 				if !runSucceeded(states[i]) {
 					failed++
 				}
+				if states[i].Status == "stale" || states[i].Status == "unreadable" {
+					stale++
+				}
 			}
 			switch {
 			case !allSettled && !(opts.Any && len(finished) > 0):
-				return fmt.Errorf("wait timed out: %d of %d runs still running", len(refs)-settledCount, len(refs))
+				return withExitCode(exitRunning, fmt.Errorf("wait timed out: %d of %d runs still running", len(refs)-settledCount, len(refs)))
+			case stale > 0:
+				return withExitCode(exitStale, fmt.Errorf("%d of %d runs did not complete; %d stale", failed, len(judged), stale))
 			case failed > 0:
 				return fmt.Errorf("%d of %d runs did not complete", failed, len(judged))
 			}

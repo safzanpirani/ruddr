@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -23,7 +24,9 @@ type providerModel struct {
 	ContextWindow int64    `json:"contextWindow,omitempty"`
 	Default       bool     `json:"default,omitempty"`
 	Available     bool     `json:"available"`
-	Note          string   `json:"note,omitempty"`
+	// Config holds Codex config overrides applied when a run uses this model.
+	Config map[string]string `json:"config,omitempty"`
+	Note   string            `json:"note,omitempty"`
 	// Source is "config" for entries added or changed by models.json.
 	Source string `json:"source,omitempty"`
 }
@@ -38,6 +41,9 @@ type modelEntry struct {
 	ContextWindow int64    `json:"contextWindow,omitempty"`
 	Default       bool     `json:"default,omitempty"`
 	Hidden        bool     `json:"hidden,omitempty"`
+	// Config is passed to codex app-server as -c KEY=VALUE for runs that use
+	// this model, for settings in ~/.codex/config.toml the model rejects.
+	Config map[string]string `json:"config,omitempty"`
 }
 
 type modelsFile struct {
@@ -120,6 +126,14 @@ func readModelsFile() (modelsFile, string, error) {
 		if strings.TrimSpace(entry.ID) == "" {
 			return modelsFile{}, path, fmt.Errorf("%s: models[%d]: id is required", path, index)
 		}
+		if len(entry.Config) > 0 && entry.Provider != providerCodex {
+			return modelsFile{}, path, fmt.Errorf("%s: models[%d]: config applies only to codex models", path, index)
+		}
+		for key := range entry.Config {
+			if strings.TrimSpace(key) == "" || strings.Contains(key, "=") {
+				return modelsFile{}, path, fmt.Errorf("%s: models[%d]: invalid config key %q", path, index, key)
+			}
+		}
 		if entry.Default && entry.Hidden {
 			return modelsFile{}, path, fmt.Errorf("%s: models[%d]: a hidden model cannot be the default", path, index)
 		}
@@ -177,6 +191,12 @@ func mergeModelCatalog(builtin []providerModel, entries []modelEntry) []provider
 		if entry.ContextWindow > 0 {
 			model.ContextWindow = entry.ContextWindow
 		}
+		if len(entry.Config) > 0 {
+			model.Config = map[string]string{}
+			for key, value := range entry.Config {
+				model.Config[key] = value
+			}
+		}
 		if entry.Default {
 			for other := range catalog {
 				if catalog[other].Provider == entry.Provider {
@@ -218,7 +238,7 @@ func modelsCommand(args []string) error {
 	var asJSON bool
 	fs.BoolVar(&asJSON, "json", false, "print the catalog as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	if len(fs.Args()) > 0 {
 		return fmt.Errorf("unknown models subcommand %q; expected add, default, remove, or path", fs.Arg(0))
@@ -254,15 +274,19 @@ func modelsEditCommand(action string, args []string) error {
 	fs := flag.NewFlagSet("models "+action, flag.ContinueOnError)
 	var label, efforts string
 	var makeDefault bool
+	var setConfig configOverrides
+	var unsetConfig stringList
 	if action == "add" {
 		fs.StringVar(&label, "label", "", "display name")
 		fs.StringVar(&efforts, "efforts", "", "comma-separated reasoning efforts the model accepts")
 		fs.BoolVar(&makeDefault, "default", false, "make it the provider default")
+		fs.Var(&setConfig, "config", "Codex config override KEY=VALUE for runs on this model (repeatable)")
+		fs.Var(&unsetConfig, "unset-config", "remove a Codex config override KEY (repeatable)")
 	}
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
-			return err
+			return usageError(err)
 		}
 		if fs.NArg() == 0 {
 			break
@@ -276,6 +300,9 @@ func modelsEditCommand(action string, args []string) error {
 	provider, id := positional[0], positional[1]
 	if _, err := normalizeProvider(provider); err != nil || provider == "" {
 		return fmt.Errorf("unsupported provider %q; expected codex, claude, opencode, or pi", provider)
+	}
+	if (len(setConfig) > 0 || len(unsetConfig) > 0) && provider != providerCodex {
+		return usageError(errors.New("--config applies only to codex models"))
 	}
 	file, path, err := readModelsFile()
 	if err != nil {
@@ -323,6 +350,19 @@ func modelsEditCommand(action string, args []string) error {
 				}
 			}
 		}
+		for _, override := range setConfig {
+			key, value, _ := strings.Cut(override, "=")
+			if entry.Config == nil {
+				entry.Config = map[string]string{}
+			}
+			entry.Config[key] = value
+		}
+		for _, key := range unsetConfig {
+			delete(entry.Config, key)
+		}
+		if len(entry.Config) == 0 {
+			entry.Config = nil
+		}
 		if makeDefault {
 			clearDefaults()
 			file.Models[index].Default = true
@@ -369,4 +409,43 @@ func modelsEditCommand(action string, args []string) error {
 	}
 	fmt.Printf("%s (%s)\n", message, path)
 	return nil
+}
+
+// configOverrides is a repeatable KEY=VALUE flag for Codex config overrides.
+type configOverrides []string
+
+func (c *configOverrides) String() string { return strings.Join(*c, ",") }
+
+func (c *configOverrides) Set(value string) error {
+	key, _, found := strings.Cut(value, "=")
+	if !found || strings.TrimSpace(key) == "" {
+		return fmt.Errorf("config override %q must be KEY=VALUE", value)
+	}
+	*c = append(*c, value)
+	return nil
+}
+
+// modelCodexConfig returns the catalog's config overrides for a Codex model
+// as sorted KEY=VALUE strings, so the child command is deterministic.
+func modelCodexConfig(model string) ([]string, error) {
+	catalog, err := loadModelCatalog()
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range catalog {
+		if entry.Provider != providerCodex || entry.ID != model || len(entry.Config) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(entry.Config))
+		for key := range entry.Config {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		overrides := make([]string, len(keys))
+		for i, key := range keys {
+			overrides[i] = key + "=" + entry.Config[key]
+		}
+		return overrides, nil
+	}
+	return nil, nil
 }

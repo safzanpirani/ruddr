@@ -49,7 +49,10 @@ type runConfig struct {
 	Idle              bool
 	IdleTimeout       time.Duration
 	ChildCommand      []string
-	RegisterRun       bool
+	// CodexConfig holds KEY=VALUE overrides from --config, passed to the
+	// default codex app-server command as -c flags after the model's own.
+	CodexConfig []string
+	RegisterRun bool
 	// The internal seams keep lifecycle regression tests fast and deterministic.
 	IdleTurnStartTimeout time.Duration
 	InterruptTimeout     time.Duration

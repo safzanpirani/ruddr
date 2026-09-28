@@ -198,6 +198,35 @@ $EDITOR .scratch/ruddr-demo/prompt.md
 
 `--provider` defaults to `codex`, so existing commands do not need to change.
 
+`--state-dir` is optional. Without it, Ruddr creates
+`.scratch/ruddr/<time>-<id>` under `--cwd`, prints the path (`run --detach`
+prints it on stdout, a foreground run on stderr), and writes a `.gitignore`
+into `.scratch/ruddr` so run files stay out of `git status`. Pass
+`--state-dir` when you want to choose the location.
+
+`--config KEY=VALUE` (repeatable) overrides a `~/.codex/config.toml` setting
+for one Codex run. A run fails at `thread/start` when that file enables a
+feature the chosen model rejects:
+
+```bash
+./ruddr run --prompt-file task.md --model gpt-6-sol \
+  --config features.token_budget.use_history_notes_extension=false
+```
+
+`--config` works with the default `codex app-server` command. With a custom
+command after `--`, add `-c KEY=VALUE` to that command instead.
+
+Commands exit with distinct codes, so scripts can branch without parsing
+text:
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | a run failed or was interrupted, or any other error |
+| 2 | bad usage: an unknown flag or a missing required argument |
+| 3 | still running: `wait` timed out, or `result` was asked of an unfinished run |
+| 4 | stale: a controller died without persisting a terminal state |
+
 Run Claude Code through the same control plane:
 
 ```bash
@@ -376,6 +405,7 @@ IDs to choose from.
 ```bash
 ruddr models add opencode opencode/deepseek-v4-flash --label "DeepSeek Flash" --default
 ruddr models add codex gpt-7-preview --efforts low,medium,high
+ruddr models add codex gpt-6-sol --config features.token_budget.use_history_notes_extension=false
 ruddr models default claude claude-sonnet-5
 ruddr models remove codex gpt-5.6-luna      # hides a built-in model
 ruddr models path                           # where the file lives
@@ -388,10 +418,17 @@ honored; `RUDDR_MODELS_FILE` overrides the path). You can edit it by hand:
 {
   "models": [
     { "provider": "opencode", "id": "opencode/deepseek-v4-flash", "label": "DeepSeek Flash", "default": true },
-    { "provider": "codex", "id": "gpt-5.6-luna", "hidden": true }
+    { "provider": "codex", "id": "gpt-5.6-luna", "hidden": true },
+    { "provider": "codex", "id": "gpt-6-sol",
+      "config": { "features.token_budget.use_history_notes_extension": "false" } }
   ]
 }
 ```
+
+A Codex model's `config` map is passed to `codex app-server` as `-c KEY=VALUE`
+for every run on that model, including runs the TUI starts. Use it for a
+`~/.codex/config.toml` setting that model rejects. `--unset-config KEY`
+removes an entry, and `run --config` adds overrides after the model's own.
 
 An invalid file is an error rather than being ignored, so a typo cannot
 silently run a different default model.
@@ -835,8 +872,9 @@ PART 1 — INSTALL AND VERIFY
 
 PART 2 — HOW TO OPERATE RUDDR
 
-Core model. One `ruddr run` owns one provider session. You choose a
---state-dir; everything about the run lands there:
+Core model. One `ruddr run` owns one provider session. Its --state-dir holds
+everything about the run; without the flag Ruddr creates
+.scratch/ruddr/<time>-<id> under --cwd and prints the path:
    state.json      status, thread/turn IDs, token usage — never prompt text
    events.jsonl    every raw provider event, append-only
    trace.log       human-readable activity trace
@@ -852,9 +890,12 @@ Starting runs. Useful `ruddr run` flags:
                                 danger-full-access
    --cwd DIR                    the workspace the provider edits
    --turn-timeout 1h            per-turn watchdog; 0 disables
+   --config KEY=VALUE           Codex config override for this run
 A Codex run that fails at thread/start over a model or feature setting takes
-it from ~/.codex/config.toml. Override it for that run by ending the command
-with `-- codex app-server --listen stdio:// -c KEY=VALUE`.
+it from ~/.codex/config.toml. Override it with --config KEY=VALUE, or once for
+every run on that model with `ruddr models add codex MODEL --config KEY=VALUE`.
+Exit codes: 0 success, 1 run failed, 2 bad usage, 3 still running (wait timed
+out), 4 stale (controller died). Branch on them instead of parsing text.
 Long runs: launch in the background (your harness's background mode, or
 `ruddr run --detach ...`, which returns once the run is live), then
 watch with `ruddr peek --state-dir DIR -n 25` and block bounded with

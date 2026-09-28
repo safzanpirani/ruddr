@@ -134,9 +134,14 @@ medium`, `--provider opencode`, or `--provider pi` as chosen above.
   The boolean `.idle` field only means the run was started with `--idle`, and
   it is already true while the session is still starting.
 - A Codex launch that fails at `thread/start` with a model or feature error
-  usually comes from `~/.codex/config.toml`. Override the key for this run by
-  ending the command with `-- codex app-server --listen stdio:// -c KEY=VALUE`,
-  for example `-c features.SOME_FEATURE=false`.
+  usually comes from `~/.codex/config.toml`. Override the key for this run
+  with `--config KEY=VALUE`, for example `--config features.SOME_FEATURE=false`.
+  If the same model keeps failing, tell the user about `ruddr models add codex
+  MODEL --config KEY=VALUE`, which applies it to every run on that model.
+- `--state-dir` is optional. Without it Ruddr creates
+  `.scratch/ruddr/<time>-<id>` under `--cwd` and prints the path. Pass it
+  explicitly when the brief sits next to the run, as above, so both are easy
+  to find.
 
 ## Run on another machine
 
@@ -208,8 +213,10 @@ foreground `wait --timeout 1h` is killed by a two-minute tool limit, which
 looks like a failed hand-off while the run is still going. Either run the
 wait through the harness's background facility, or wait in slices of a few
 minutes with a `status --json` read between them. Keep doing the parent's own
-work between slices. `result` prints the last agent message of the latest
-turn and fails unless the run completed. Trust `output.md` only when status is
+work between slices. A `wait` that exits 3 timed out with the run still
+going, so wait again; exit 4 means the controller died, and exit 1 means the
+run failed. `result` prints the last agent message of the latest turn and
+fails unless the run completed. Trust `output.md` only when status is
 `completed`; on `failed`/`interrupted`/`stale` report the error field
 instead — partial output is not a successful handoff. Then verify independently: run the verify
 command(s) yourself and cross-check claimed edits against the pre-run
@@ -262,7 +269,8 @@ ruddr interrupt --root .scratch/<swarm>           # abort every active turn
 ```
 
 The group `wait` prints the table and exits zero only when every run
-completed. Wait in bounded slices, as for a single run. To handle runs as they
+completed. Exit codes mean the same for one run or a group: 1 a run failed,
+2 bad usage, 3 still running at the timeout, 4 a controller died (stale). Wait in bounded slices, as for a single run. To handle runs as they
 land, loop `wait --any`: each call returns when the next still-running run
 finishes and prints `finished: NAME`. With `--idle` agents, add `--turn` so
 the wait returns when every turn has ended. Steer one agent through its own

@@ -53,7 +53,7 @@ func threadCommand(args []string) error {
 	fs.StringVar(&beforeTurn, "before-turn", "", "fork before this turn")
 	fs.StringVar(&throughTurn, "through-turn", "", "fork through this turn")
 	if err := fs.Parse(flagArgs); err != nil {
-		return err
+		return usageError(err)
 	}
 	positionals := fs.Args()
 

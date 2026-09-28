@@ -21,7 +21,7 @@ const delegateSkillName = "ruddr-delegate"
 func skillCommand(args []string) error {
 	if len(args) == 0 {
 		printSkillUsage()
-		return errors.New("a skill subcommand is required")
+		return usageError(errors.New("a skill subcommand is required"))
 	}
 	switch args[0] {
 	case "install":
@@ -43,7 +43,7 @@ func skillInstallCommand(args []string) error {
 	var dirs stringList
 	fs.Var(&dirs, "dir", "skills directory to install into; repeatable (default: ~/.claude/skills, ~/.agents/skills, and ~/.codex/skills when Codex is installed)")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	if len(fs.Args()) > 0 {
 		return fmt.Errorf("unexpected skill install arguments %q", strings.Join(fs.Args(), " "))

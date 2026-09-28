@@ -49,7 +49,7 @@ func updateCommand(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	checkOnly := fs.Bool("check", false, "report whether a newer release exists without installing it")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	if len(fs.Args()) > 0 {
 		return fmt.Errorf("unexpected update arguments %q", strings.Join(fs.Args(), " "))

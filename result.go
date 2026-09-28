@@ -28,13 +28,13 @@ func resultCommand(args []string) error {
 	group.register(fs)
 	fs.BoolVar(&asJSON, "json", false, "print a JSON array of results")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	stateDir, single := group.single()
 	var refs []runRef
 	if single {
 		if stateDir == "" {
-			return errors.New("--state-dir is required")
+			return usageError(errors.New("--state-dir is required"))
 		}
 		refs = []runRef{{Name: stateDir, StateDir: stateDir}}
 	} else {
@@ -44,12 +44,27 @@ func resultCommand(args []string) error {
 		}
 	}
 	results := make([]runResult, len(refs))
-	failed := 0
+	failed, running, stale := 0, 0, 0
 	for i, ref := range refs {
 		results[i] = collectResult(ref)
-		if results[i].Error != "" {
-			failed++
+		if results[i].Error == "" {
+			continue
 		}
+		failed++
+		switch results[i].Status {
+		case "active", "starting", "stopping":
+			running++
+		case "stale", "unreadable":
+			stale++
+		}
+	}
+	// A run still going outranks a dead one, which outranks a failed one.
+	code := exitFailed
+	switch {
+	case running > 0:
+		code = exitRunning
+	case stale > 0:
+		code = exitStale
 	}
 	if asJSON {
 		if err := printJSON(results); err != nil {
@@ -64,9 +79,9 @@ func resultCommand(args []string) error {
 	}
 	switch {
 	case single && results[0].Error != "":
-		return errors.New(results[0].Error)
+		return withExitCode(code, errors.New(results[0].Error))
 	case failed > 0:
-		return fmt.Errorf("%d of %d runs did not complete", failed, len(results))
+		return withExitCode(code, fmt.Errorf("%d of %d runs did not complete", failed, len(results)))
 	}
 	return nil
 }

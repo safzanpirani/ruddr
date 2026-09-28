@@ -45,6 +45,9 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 	}
 	cfg.Provider = provider
 
+	if provider != providerCodex && len(cfg.CodexConfig) > 0 {
+		return usageError(errors.New("--config applies only to --provider codex"))
+	}
 	switch provider {
 	case providerCodex:
 		if cfg.Model == "" {
@@ -53,9 +56,19 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 			}
 		}
 		if len(childArgs) > 0 {
+			if len(cfg.CodexConfig) > 0 {
+				return usageError(errors.New("--config applies to the default codex app-server command; add -c KEY=VALUE to the command after -- instead"))
+			}
 			cfg.ChildCommand = childArgs
 		} else {
 			cfg.ChildCommand = []string{"codex", "app-server", "--listen", "stdio://"}
+			overrides, err := modelCodexConfig(cfg.Model)
+			if err != nil {
+				return err
+			}
+			for _, override := range append(overrides, cfg.CodexConfig...) {
+				cfg.ChildCommand = append(cfg.ChildCommand, "-c", override)
+			}
 		}
 	case providerClaude:
 		if len(childArgs) > 0 {

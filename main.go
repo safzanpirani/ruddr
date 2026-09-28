@@ -28,8 +28,11 @@ func main() {
 		if errors.As(err, &remoteExit) {
 			os.Exit(remoteExit.code)
 		}
-		fmt.Fprintln(os.Stderr, "ruddr:", err)
-		os.Exit(1)
+		code := exitCodeFor(err)
+		if code != 0 {
+			fmt.Fprintln(os.Stderr, "ruddr:", err)
+		}
+		os.Exit(code)
 	}
 }
 
@@ -40,7 +43,7 @@ func runCLI(args []string) error {
 func runCLIContext(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		printUsage()
-		return errors.New("a command is required")
+		return usageError(errors.New("a command is required"))
 	}
 	if target, rest, found, err := splitRemoteFlag(args); found {
 		if err != nil {
@@ -102,7 +105,7 @@ func runCommandContext(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.Provider, "provider", providerCodex, "provider: codex, claude, opencode, or pi")
 	fs.StringVar(&cfg.CWD, "cwd", cwd, "working directory for the provider session")
 	fs.StringVar(&cfg.PromptFile, "prompt-file", "", "file containing the initial task")
-	fs.StringVar(&cfg.StateDir, "state-dir", "", "directory for state, trace, and output")
+	fs.StringVar(&cfg.StateDir, "state-dir", "", "directory for state, trace, and output (default CWD/.scratch/ruddr/<time>-<id>)")
 	fs.StringVar(&cfg.Model, "model", "", "provider model; Codex defaults to gpt-6-astra")
 	fs.StringVar(&cfg.Effort, "effort", "", "reasoning effort override")
 	fs.StringVar(&cfg.Sandbox, "sandbox", "workspace-write", "read-only, workspace-write, or danger-full-access")
@@ -120,6 +123,7 @@ func runCommandContext(ctx context.Context, args []string) error {
 	fs.DurationVar(&cfg.IdleTimeout, "idle-timeout", 4*time.Hour, "exit after this long idle; zero disables")
 	var detach bool
 	fs.BoolVar(&detach, "detach", false, "start the controller in the background and return once it is running")
+	fs.Var((*configOverrides)(&cfg.CodexConfig), "config", "Codex config override KEY=VALUE for this run (repeatable)")
 	cfg.RegisterRun = true
 	flagArgs := args
 	var childArgs []string
@@ -131,19 +135,27 @@ func runCommandContext(ctx context.Context, args []string) error {
 		}
 	}
 	if err := fs.Parse(flagArgs); err != nil {
-		return err
+		return usageError(err)
 	}
 	if len(fs.Args()) > 0 {
 		return fmt.Errorf("unexpected run arguments %q; put a custom Codex app-server command after --", strings.Join(fs.Args(), " "))
 	}
 	if cfg.PromptFile == "" {
-		return errors.New("--prompt-file is required")
-	}
-	if cfg.StateDir == "" {
-		return errors.New("--state-dir is required")
+		return usageError(errors.New("--prompt-file is required"))
 	}
 	if err := configureProviderDefaults(&cfg, childArgs); err != nil {
 		return err
+	}
+	if cfg.StateDir == "" {
+		dir, err := defaultStateDir(cfg.CWD, time.Now())
+		if err != nil {
+			return fmt.Errorf("choose a state directory: %w", err)
+		}
+		cfg.StateDir = dir
+		args = setFlagValue(args, "state-dir", dir)
+		if !detach {
+			fmt.Fprintf(os.Stderr, "ruddr: state-dir=%s\n", dir)
+		}
 	}
 	if cfg.PromptFile == "-" {
 		promptFile, err := writeStdinPrompt(cfg.StateDir, os.Stdin)
@@ -172,10 +184,10 @@ func steerCommand(args []string) error {
 	fs.StringVar(&expectedTurnID, "expected-turn-id", "", "reject the steer if the active turn changed")
 	fs.DurationVar(&timeout, "timeout", 30*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	if stateDir == "" {
-		return errors.New("--state-dir is required")
+		return usageError(errors.New("--state-dir is required"))
 	}
 	var message string
 	if messageFile != "" {
@@ -188,7 +200,7 @@ func steerCommand(args []string) error {
 		message = strings.TrimSpace(strings.Join(fs.Args(), " "))
 	}
 	if message == "" {
-		return errors.New("steering text is required")
+		return usageError(errors.New("steering text is required"))
 	}
 	state, err := readState(stateDir)
 	if err != nil {
@@ -224,10 +236,10 @@ func promptCommand(args []string) error {
 	fs.StringVar(&messageFile, "message-file", "", "read prompt text from this file")
 	fs.DurationVar(&timeout, "timeout", 60*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	if stateDir == "" {
-		return errors.New("--state-dir is required")
+		return usageError(errors.New("--state-dir is required"))
 	}
 	var message string
 	if messageFile != "" {
@@ -240,7 +252,7 @@ func promptCommand(args []string) error {
 		message = strings.TrimSpace(strings.Join(fs.Args(), " "))
 	}
 	if message == "" {
-		return errors.New("prompt text is required")
+		return usageError(errors.New("prompt text is required"))
 	}
 	state, err := readState(stateDir)
 	if err != nil {
@@ -280,7 +292,7 @@ func stopCommand(args []string) error {
 	group.register(fs)
 	fs.DurationVar(&timeout, "timeout", 30*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	stateDir, single := group.single()
 	if !single {
@@ -291,7 +303,7 @@ func stopCommand(args []string) error {
 		return broadcastControl(os.Stdout, refs, "shutdown", "idle", timeout)
 	}
 	if stateDir == "" {
-		return errors.New("--state-dir is required")
+		return usageError(errors.New("--state-dir is required"))
 	}
 	response, err := sendControl(stateDir, controlRequest{Command: "shutdown"}, timeout)
 	if err != nil {
@@ -311,7 +323,7 @@ func statusCommand(args []string) error {
 	group.register(fs)
 	fs.BoolVar(&asJSON, "json", false, "print full state as JSON (an array for several runs)")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	stateDir, single := group.single()
 	if !single {
@@ -343,7 +355,7 @@ func peekCommand(args []string) error {
 	group.register(fs)
 	fs.IntVar(&count, "n", 25, "number of trace lines (5 per run with several runs)")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	stateDir, single := group.single()
 	if !single {
@@ -379,7 +391,7 @@ func interruptCommand(args []string) error {
 	fs.StringVar(&expectedTurnID, "expected-turn-id", "", "reject the interrupt if the active turn changed")
 	fs.DurationVar(&timeout, "timeout", defaultInterruptOperationTimeout+5*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	stateDir, single := group.single()
 	if !single {
@@ -424,7 +436,7 @@ func waitCommand(args []string) error {
 	fs.BoolVar(&opts.Any, "any", false, "with several runs, return when the next running one finishes")
 	fs.BoolVar(&opts.Turn, "turn", false, "return when the current turn ends; an idle session counts as done")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return usageError(err)
 	}
 	if timeout < 0 {
 		return errors.New("--timeout must be zero or positive")
@@ -473,10 +485,10 @@ func waitForRunState(stateDir string, deadline time.Time, turn bool, alive func(
 			if finalErr == nil && terminalStatus(final.Status) {
 				return reportWaitResult(final)
 			}
-			return fmt.Errorf("Ruddr pid %d is not running; state is stale at status=%s", state.PID, state.Status)
+			return withExitCode(exitStale, fmt.Errorf("Ruddr pid %d is not running; state is stale at status=%s", state.PID, state.Status))
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return errors.New("wait timed out")
+			return withExitCode(exitRunning, errors.New("wait timed out"))
 		}
 		<-ticker.C
 	}
@@ -510,7 +522,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Ruddr - live steering for coding agents
 
 Usage:
-  %[1]s run [--provider codex|claude|opencode|pi] --prompt-file FILE --state-dir DIR [options]
+  %[1]s run [--provider codex|claude|opencode|pi] --prompt-file FILE [--state-dir DIR] [options]
          [-- APP_SERVER_COMMAND...]
   %[1]s thread list|search|read|turns|fork|name|archive|unarchive [options]
   %[1]s tui [--root DIR] [--state-dir DIR] [--all] [--theme NAME]
@@ -548,8 +560,18 @@ RUDDR_REMOTE_RUDDR to the remote ruddr path when it is not on the remote PATH;
 RUDDR_REMOTE_SHELL=posix|powershell skips the shell probe; RUDDR_SSH overrides
 the ssh executable.
 
+run without --state-dir uses CWD/.scratch/ruddr/<time>-<id>, which ignores
+itself in Git, and prints the path. run --config KEY=VALUE (repeatable) passes
+a Codex config override to the default codex app-server command.
+
 models add|default|remove edit ~/.config/ruddr/models.json, which adds models,
-changes provider defaults, or hides built-in models.
+changes provider defaults, or hides built-in models. models add codex ID
+--config KEY=VALUE stores an override that every run on that model applies;
+--unset-config KEY removes it.
+
+Exit codes: 0 success, 1 a run failed or another error, 2 bad usage, 3 still
+running (wait timed out, or result on an unfinished run), 4 a controller died
+and left stale state.
 
 Ruddr checks GitHub for a newer release at most once a day and mentions it in
 the TUI and after version; set RUDDR_NO_UPDATE_CHECK=1 to disable the check.

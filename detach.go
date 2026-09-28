@@ -223,6 +223,21 @@ func replaceFlagValue(args []string, name, replacement string) ([]string, string
 	return out, "", false
 }
 
+// setFlagValue replaces a flag's value, or adds the flag before any "--"
+// child command when it is absent.
+func setFlagValue(args []string, name, value string) []string {
+	if out, _, found := replaceFlagValue(args, name, value); found {
+		return out
+	}
+	marker := indexOf(args, "--")
+	if marker < 0 {
+		marker = len(args)
+	}
+	out := append([]string(nil), args[:marker]...)
+	out = append(out, "--"+name, value)
+	return append(out, args[marker:]...)
+}
+
 func hasFlag(args []string, name string) bool {
 	for _, arg := range args {
 		if arg == "--" {

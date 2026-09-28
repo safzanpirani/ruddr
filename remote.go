@@ -78,7 +78,7 @@ func planRemote(args []string, localStdin io.Reader) (remotePlan, error) {
 			return remotePlan{}, errors.New("--cwd is required with --remote; the local directory does not exist on the remote host")
 		}
 		if !hasFlag(rest, "prompt-file") {
-			return remotePlan{}, errors.New("--prompt-file is required")
+			return remotePlan{}, usageError(errors.New("--prompt-file is required"))
 		}
 		rewritten, promptFile, _ := replaceFlagValue(rest, "prompt-file", "-")
 		payload, err := readLocalPayload(promptFile, localStdin)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,7 +210,7 @@ func persistState(path string, state runState) error {
 
 func readState(stateDir string) (runState, error) {
 	if stateDir == "" {
-		return runState{}, errors.New("--state-dir is required")
+		return runState{}, usageError(errors.New("--state-dir is required"))
 	}
 	raw, err := os.ReadFile(filepath.Join(stateDir, stateFileName))
 	if err != nil {
@@ -320,4 +322,29 @@ func tailLines(path string, count int) ([]string, error) {
 		lines[i] = ring[(start+i)%count]
 	}
 	return lines, nil
+}
+
+// defaultStateDir picks a fresh state directory for a run started without
+// --state-dir: CWD/.scratch/ruddr/<time>-<random>. The .scratch/ruddr
+// directory ignores itself, so run files never show up in the workspace's
+// git status.
+func defaultStateDir(cwd string, now time.Time) (string, error) {
+	base, err := filepath.Abs(filepath.Join(cwd, ".scratch", "ruddr"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	ignore := filepath.Join(base, ".gitignore")
+	if _, err := os.Stat(ignore); errors.Is(err, os.ErrNotExist) {
+		if err := writePrivateFile(ignore, []byte("*\n")); err != nil {
+			return "", err
+		}
+	}
+	suffix := make([]byte, 3)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", err
+	}
+	return filepath.Join(base, now.Format("20060102-150405")+"-"+hex.EncodeToString(suffix)), nil
 }
