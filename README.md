@@ -408,6 +408,40 @@ If that turn has changed, Ruddr rejects the command. Without the flag, the CLI
 captures the current turn ID before sending the control request. Delayed
 interrupt failures also leave later turns running.
 
+### Several runs at once
+
+`status`, `wait`, `stop`, and `interrupt` accept `--state-dir` more than once,
+and `--root DIR` selects every run below `DIR` (up to four levels deep). Give a
+swarm one directory, such as `.scratch/swarm/<agent>/run`, and address it as a
+group:
+
+```bash
+./ruddr status --root .scratch/swarm            # one row per run
+./ruddr status --root .scratch/swarm --json     # JSON array of state.json
+./ruddr wait   --root .scratch/swarm --timeout 30m
+./ruddr wait   --root .scratch/swarm --any      # return when the first finishes
+./ruddr interrupt --root .scratch/swarm         # stop every active turn
+./ruddr stop   --root .scratch/swarm            # end every idle session
+```
+
+```text
+NAME      STATUS     PROVIDER  MODEL            TURNS  TOKENS  ELAPSED  ERROR
+api/run   completed  codex     gpt-6-astra      1      84.2K   6m12s
+tests/run failed     codex     gpt-6-astra      1      12.1K   2m3s     turn failed; see trace.log
+ui/run    active     claude    claude-opus-5-5  -      -       9m40s
+```
+
+The group `wait` prints that table and exits zero only when every run
+completed; `--any` returns once one run finishes. A run whose controller died
+shows as `stale`. `interrupt` acts only on `active` runs, and `stop` only on
+`idle` ones; the rest are reported as skipped. `--expected-turn-id` needs a
+single run. With one `--state-dir` and no `--root`, every command keeps its
+single-run output.
+
+Ruddr does not isolate a swarm's workspaces. Give each writing agent its own
+Git worktree as its `--cwd`, or split the files so no two agents edit the same
+one.
+
 For a live fullscreen view of several runs, install the CLI and its TUI assets
 once, then launch the dashboard from any directory:
 
@@ -666,6 +700,15 @@ ruddr
 Ruddr never reads or persists the broker secret or Codex OAuth tokens. The
 bridge consumes those and presents the same app-server JSON-RPC stream.
 
+The same mechanism overrides `~/.codex/config.toml` for one run. A setting
+the chosen model does not support fails the run at `thread/start`; pass the
+default command with a `-c` override to turn it off:
+
+```bash
+./ruddr run --model gpt-6-astra --cwd "$PWD" --prompt-file task.md \
+  -- codex app-server --listen stdio:// -c features.SOME_FEATURE=false
+```
+
 ## Why not `codex exec resume`?
 
 Resume adds a later turn after the current one completes. `turn/steer` appends
@@ -700,15 +743,6 @@ Ruddr currently depends on:
 - `thread/resume` and `thread/fork`
 - `thread/name/set`, `thread/archive`, and `thread/unarchive`
 - `turn/start`
-The same mechanism overrides `~/.codex/config.toml` for one run. A setting
-the chosen model does not support fails the run at `thread/start`; pass the
-default command with a `-c` override to turn it off:
-
-```bash
-./ruddr run --model gpt-6-astra --cwd "$PWD" --prompt-file task.md \
-  -- codex app-server --listen stdio:// -c features.SOME_FEATURE=false
-```
-
 - `turn/steer`
 - `turn/interrupt`
 - `turn/started`, `item/*`, and `turn/completed` notifications
@@ -797,6 +831,9 @@ Starting runs. Useful `ruddr run` flags:
                                 danger-full-access
    --cwd DIR                    the workspace the provider edits
    --turn-timeout 1h            per-turn watchdog; 0 disables
+A Codex run that fails at thread/start over a model or feature setting takes
+it from ~/.codex/config.toml. Override it for that run by ending the command
+with `-- codex app-server --listen stdio:// -c KEY=VALUE`.
 Long runs: launch in the background (your harness's background mode, or
 `ruddr run --detach ...`, which returns once the run is live), then
 watch with `ruddr peek --state-dir DIR -n 25` and block bounded with
@@ -831,11 +868,20 @@ Continuing past work. Threads persist in the provider's own store:
 Verify a candidate thread's cwd and content before resuming; never resume or
 fork a thread whose turn is still active.
 
+Swarms. For several independent tasks, start one run per task under a shared
+directory, each with its own brief and state dir:
+   .scratch/SWARM/<agent>/brief.md   .scratch/SWARM/<agent>/run
+Give every agent that edits files its own Git worktree as --cwd
+(`git worktree add ../repo-<agent> -b swarm/<agent>`); Ruddr does not isolate
+workspaces. Then address the group with --root:
+   ruddr status    --root .scratch/SWARM [--json]   one row per run
+   ruddr wait      --root .scratch/SWARM --timeout 30m [--any]
+   ruddr interrupt --root .scratch/SWARM            abort every active turn
+The group wait exits zero only when every run completed. Read each run's
+output.md, verify the work yourself, and merge the worktrees one at a time.
+
 Watching everything at once. `ruddr tui` shows a dashboard of live and
 recent sessions with a prompt box: type to steer an active turn, prompt an
-A Codex run that fails at thread/start over a model or feature setting takes
-it from ~/.codex/config.toml. Override it for that run by ending the command
-with `-- codex app-server --listen stdio:// -c KEY=VALUE`.
 idle one, or continue a finished thread; `n` starts a new session, `m` picks
 the model, `x x` stops. `ruddr tui --beta` switches to a chat-first layout.
 

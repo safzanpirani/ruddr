@@ -273,12 +273,20 @@ func readMessageFile(path string) ([]byte, error) {
 
 func stopCommand(args []string) error {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
-	var stateDir string
+	var group groupSelection
 	var timeout time.Duration
-	fs.StringVar(&stateDir, "state-dir", "", "Ruddr run state directory")
+	group.register(fs)
 	fs.DurationVar(&timeout, "timeout", 30*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	stateDir, single := group.single()
+	if !single {
+		refs, err := group.resolve()
+		if err != nil {
+			return err
+		}
+		return broadcastControl(os.Stdout, refs, "shutdown", "idle", timeout)
 	}
 	if stateDir == "" {
 		return errors.New("--state-dir is required")
@@ -296,12 +304,20 @@ func stopCommand(args []string) error {
 
 func statusCommand(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	var stateDir string
+	var group groupSelection
 	var asJSON bool
-	fs.StringVar(&stateDir, "state-dir", "", "Ruddr run state directory")
-	fs.BoolVar(&asJSON, "json", false, "print full state as JSON")
+	group.register(fs)
+	fs.BoolVar(&asJSON, "json", false, "print full state as JSON (an array for several runs)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	stateDir, single := group.single()
+	if !single {
+		refs, err := group.resolve()
+		if err != nil {
+			return err
+		}
+		return groupStatus(refs, asJSON)
 	}
 	state, err := readState(stateDir)
 	if err != nil {
@@ -343,13 +359,25 @@ func peekCommand(args []string) error {
 
 func interruptCommand(args []string) error {
 	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
-	var stateDir, expectedTurnID string
+	var group groupSelection
+	var expectedTurnID string
 	var timeout time.Duration
-	fs.StringVar(&stateDir, "state-dir", "", "Ruddr run state directory")
+	group.register(fs)
 	fs.StringVar(&expectedTurnID, "expected-turn-id", "", "reject the interrupt if the active turn changed")
 	fs.DurationVar(&timeout, "timeout", defaultInterruptOperationTimeout+5*time.Second, "control request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	stateDir, single := group.single()
+	if !single {
+		if expectedTurnID != "" {
+			return errors.New("--expected-turn-id applies to one run; drop it or name a single --state-dir")
+		}
+		refs, err := group.resolve()
+		if err != nil {
+			return err
+		}
+		return broadcastControl(os.Stdout, refs, "interrupt", "active", timeout)
 	}
 	state, err := readState(stateDir)
 	if err != nil {
@@ -375,10 +403,12 @@ func interruptCommand(args []string) error {
 
 func waitCommand(args []string) error {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
-	var stateDir string
+	var group groupSelection
 	var timeout time.Duration
-	fs.StringVar(&stateDir, "state-dir", "", "Ruddr run state directory")
+	var anyRun bool
+	group.register(fs)
 	fs.DurationVar(&timeout, "timeout", 0, "maximum wait; zero means no limit")
+	fs.BoolVar(&anyRun, "any", false, "with several runs, return when the first one finishes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -388,6 +418,14 @@ func waitCommand(args []string) error {
 	deadline := time.Time{}
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)
+	}
+	stateDir, single := group.single()
+	if !single {
+		refs, err := group.resolve()
+		if err != nil {
+			return err
+		}
+		return waitForRuns(os.Stdout, refs, deadline, anyRun, processAlive, 250*time.Millisecond)
 	}
 	return waitForTerminalState(stateDir, deadline, processAlive, 250*time.Millisecond)
 }
@@ -447,12 +485,12 @@ Usage:
   %[1]s tui [--root DIR] [--state-dir DIR] [--all] [--theme NAME]
   %[1]s steer --state-dir DIR "new direction"
   %[1]s prompt --state-dir DIR "next task"      (idle sessions started with --idle)
-  %[1]s stop --state-dir DIR                    (gracefully end an idle session)
+  %[1]s stop RUNS                               (gracefully end idle sessions)
   %[1]s models [--json]                         (list; add|default|remove PROVIDER ID edit it)
-  %[1]s status --state-dir DIR [--json]
+  %[1]s status RUNS [--json]
   %[1]s peek --state-dir DIR [-n 25]
-  %[1]s interrupt --state-dir DIR [--expected-turn-id ID]
-  %[1]s wait --state-dir DIR [--timeout 10m]
+  %[1]s interrupt RUNS [--expected-turn-id ID]
+  %[1]s wait RUNS [--timeout 10m] [--any]
   %[1]s update [--check]                        (install the latest release)
   %[1]s skill install [--dir DIR]               (install the ruddr-delegate agent skill)
   %[1]s version
@@ -460,6 +498,11 @@ Usage:
 
 run --detach starts the controller in the background and returns once it is
 running. --prompt-file - and --message-file - read the text from stdin.
+
+RUNS is --state-dir DIR, repeatable, and/or --root DIR, which selects every run
+below DIR. With several runs, status prints a table (a JSON array with --json),
+wait returns when all finish (--any: the first) and fails unless all completed,
+stop ends the idle ones, and interrupt stops the active turns.
 
 --remote runs ruddr on SSH_TARGET through ssh and passes output and exit status
 through. Paths are remote paths, and POSIX and PowerShell remote shells both

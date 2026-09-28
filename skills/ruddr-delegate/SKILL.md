@@ -1,6 +1,6 @@
 ---
 name: ruddr-delegate
-description: Delegate a hard, stuck, or context-heavy implementation task to a live-steerable Codex or Claude Code session managed by Ruddr, so a sub-agent investigates, edits, and verifies the current workspace end to end while the parent agent keeps working and can steer mid-turn. Use when the user asks to hand work to codex/claude/a sub-agent, when a bug or feature has resisted a couple of attempts, or when long autonomous work should run outside the parent agent's context.
+description: Delegate a hard, stuck, or context-heavy implementation task to a live-steerable Codex or Claude Code session managed by Ruddr, so a sub-agent investigates, edits, and verifies the current workspace end to end while the parent agent keeps working and can steer mid-turn. Use when the user asks to hand work to codex/claude/a sub-agent, when a bug or feature has resisted a couple of attempts, or when long autonomous work should run outside the parent agent's context. Also covers fanning several independent tasks out to a swarm of parallel sub-agents.
 metadata:
   short-description: Delegate work to a steerable Ruddr sub-agent
 ---
@@ -213,6 +213,53 @@ is not a successful handoff. Then verify independently: run the verify
 command(s) yourself and cross-check claimed edits against the pre-run
 baseline. Report the run/output paths, the Handoff report, the verification
 evidence, and whether changes are local, committed, or pushed.
+
+## Run a swarm
+
+Fan out only when the work splits into tasks that do not depend on each other's
+results, such as separate modules, separate bugs, or competing attempts at one
+problem. Keep one tightly coupled change in a single run. Every agent spends
+quota, so state the count and providers to the user before launching more than
+two or three.
+
+Give the swarm one directory, with a brief and a state dir per agent:
+
+```text
+.scratch/<swarm>/<agent>/brief.md
+.scratch/<swarm>/<agent>/run
+```
+
+Ruddr does not isolate workspaces. Two agents that edit the same checkout will
+overwrite each other's work and read each other's half-finished changes. Give
+every agent that writes files its own Git worktree and pass it as `--cwd`.
+Read-only agents can share the parent checkout.
+
+```bash
+git worktree add ../<repo>-<agent> -b swarm/<agent>
+ruddr run --detach --cwd ../<repo>-<agent> \
+  --prompt-file .scratch/<swarm>/<agent>/brief.md \
+  --state-dir .scratch/<swarm>/<agent>/run \
+  --provider codex --model gpt-6-astra --effort low --sandbox workspace-write
+```
+
+Each brief must stand alone, name the files that agent owns, and say that
+other agents are editing other parts of the project. Then address the whole
+group with `--root`:
+
+```bash
+ruddr status --root .scratch/<swarm>              # one row per run
+ruddr wait   --root .scratch/<swarm> --timeout 10m
+ruddr wait   --root .scratch/<swarm> --any --timeout 10m   # first to finish
+ruddr interrupt --root .scratch/<swarm>           # abort every active turn
+```
+
+The group `wait` prints the table and exits zero only when every run
+completed. Wait in bounded slices, as for a single run. Steer or peek one agent
+through its own `--state-dir`. When the runs finish, verify each agent's work
+on its own, then merge the worktree branches one at a time and run the tests
+after each merge. Remove each worktree with `git worktree remove` once its
+branch is merged or abandoned. Report every agent's status, including the
+ones that failed.
 
 ## Continue past work
 
