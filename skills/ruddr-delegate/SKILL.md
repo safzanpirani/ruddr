@@ -200,6 +200,7 @@ with a brief that says what it already learned.
 ```bash
 ruddr wait --state-dir .scratch/<task-slug>/run --timeout 10m
 ruddr status --state-dir .scratch/<task-slug>/run --json
+ruddr result --state-dir .scratch/<task-slug>/run   # the final answer
 ```
 
 Always bound the wait, and never let it outlive the harness's tool timeout: a
@@ -207,9 +208,10 @@ foreground `wait --timeout 1h` is killed by a two-minute tool limit, which
 looks like a failed hand-off while the run is still going. Either run the
 wait through the harness's background facility, or wait in slices of a few
 minutes with a `status --json` read between them. Keep doing the parent's own
-work between slices. Trust `output.md` only when status is `completed`; on
-`failed`/`interrupted`/`stale` report the error field instead — partial output
-is not a successful handoff. Then verify independently: run the verify
+work between slices. `result` prints the last agent message of the latest
+turn and fails unless the run completed. Trust `output.md` only when status is
+`completed`; on `failed`/`interrupted`/`stale` report the error field
+instead — partial output is not a successful handoff. Then verify independently: run the verify
 command(s) yourself and cross-check claimed edits against the pre-run
 baseline. Report the run/output paths, the Handoff report, the verification
 evidence, and whether changes are local, committed, or pushed.
@@ -242,24 +244,36 @@ ruddr run --detach --cwd ../<repo>-<agent> \
   --provider codex --model gpt-6-astra --effort low --sandbox workspace-write
 ```
 
+Each `run --detach` blocks until its run is live. With several agents, launch
+them in parallel with `&` and one shell `wait`, then check `status --root`
+for any that failed to start.
+
 Each brief must stand alone, name the files that agent owns, and say that
 other agents are editing other parts of the project. Then address the whole
 group with `--root`:
 
 ```bash
 ruddr status --root .scratch/<swarm>              # one row per run
+ruddr peek   --root .scratch/<swarm>              # last trace lines of each
 ruddr wait   --root .scratch/<swarm> --timeout 10m
-ruddr wait   --root .scratch/<swarm> --any --timeout 10m   # first to finish
+ruddr wait   --root .scratch/<swarm> --any --timeout 10m   # next to finish
+ruddr result --root .scratch/<swarm>              # each run's final answer
 ruddr interrupt --root .scratch/<swarm>           # abort every active turn
 ```
 
 The group `wait` prints the table and exits zero only when every run
-completed. Wait in bounded slices, as for a single run. Steer or peek one agent
-through its own `--state-dir`. When the runs finish, verify each agent's work
-on its own, then merge the worktree branches one at a time and run the tests
-after each merge. Remove each worktree with `git worktree remove` once its
-branch is merged or abandoned. Report every agent's status, including the
-ones that failed.
+completed. Wait in bounded slices, as for a single run. To handle runs as they
+land, loop `wait --any`: each call returns when the next still-running run
+finishes and prints `finished: NAME`. With `--idle` agents, add `--turn` so
+the wait returns when every turn has ended. Steer one agent through its own
+`--state-dir`. Tell the user they can watch with `ruddr tui --root
+.scratch/<swarm>`.
+
+When the runs finish, read the answers with `ruddr result --root`, verify each
+agent's work on its own, then merge the worktree branches one at a time and
+run the tests after each merge. Remove each worktree with `git worktree
+remove` once its branch is merged or abandoned. Report every agent's status,
+including the ones that failed.
 
 ## Continue past work
 

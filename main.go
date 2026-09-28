@@ -71,6 +71,8 @@ func runCLIContext(ctx context.Context, args []string) error {
 		return interruptCommand(args[1:])
 	case "wait":
 		return waitCommand(args[1:])
+	case "result":
+		return resultCommand(args[1:])
 	case "update":
 		return updateCommand(args[1:])
 	case "skill":
@@ -336,12 +338,23 @@ func statusCommand(args []string) error {
 
 func peekCommand(args []string) error {
 	fs := flag.NewFlagSet("peek", flag.ContinueOnError)
-	var stateDir string
+	var group groupSelection
 	var count int
-	fs.StringVar(&stateDir, "state-dir", "", "Ruddr run state directory")
-	fs.IntVar(&count, "n", 25, "number of trace lines")
+	group.register(fs)
+	fs.IntVar(&count, "n", 25, "number of trace lines (5 per run with several runs)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	stateDir, single := group.single()
+	if !single {
+		refs, err := group.resolve()
+		if err != nil {
+			return err
+		}
+		if !flagWasSet(fs, "n") {
+			count = 5
+		}
+		return groupPeek(os.Stdout, refs, count)
 	}
 	state, err := readState(stateDir)
 	if err != nil {
@@ -405,10 +418,11 @@ func waitCommand(args []string) error {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
 	var group groupSelection
 	var timeout time.Duration
-	var anyRun bool
+	var opts waitOptions
 	group.register(fs)
 	fs.DurationVar(&timeout, "timeout", 0, "maximum wait; zero means no limit")
-	fs.BoolVar(&anyRun, "any", false, "with several runs, return when the first one finishes")
+	fs.BoolVar(&opts.Any, "any", false, "with several runs, return when the next running one finishes")
+	fs.BoolVar(&opts.Turn, "turn", false, "return when the current turn ends; an idle session counts as done")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -425,15 +439,21 @@ func waitCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		return waitForRuns(os.Stdout, refs, deadline, anyRun, processAlive, 250*time.Millisecond)
+		return waitForRuns(os.Stdout, refs, deadline, opts, processAlive, 250*time.Millisecond)
 	}
-	return waitForTerminalState(stateDir, deadline, processAlive, 250*time.Millisecond)
+	return waitForRunState(stateDir, deadline, opts.Turn, processAlive, 250*time.Millisecond)
 }
 
 // waitForTerminalState polls the persisted state until it is terminal, the
 // controller disappears, or the deadline passes. The liveness probe and tick
 // are seams so lifecycle tests stay deterministic.
 func waitForTerminalState(stateDir string, deadline time.Time, alive func(int) bool, tick time.Duration) error {
+	return waitForRunState(stateDir, deadline, false, alive, tick)
+}
+
+// waitForRunState is waitForTerminalState that, with turn set, also returns
+// when an idle session's latest turn has ended.
+func waitForRunState(stateDir string, deadline time.Time, turn bool, alive func(int) bool, tick time.Duration) error {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
@@ -441,7 +461,7 @@ func waitForTerminalState(stateDir string, deadline time.Time, alive func(int) b
 		if err != nil {
 			return err
 		}
-		if terminalStatus(state.Status) {
+		if terminalStatus(state.Status) || (turn && state.Status == "idle") {
 			return reportWaitResult(state)
 		}
 		if !alive(state.PID) {
@@ -464,6 +484,17 @@ func waitForTerminalState(stateDir string, deadline time.Time, alive func(int) b
 
 // reportWaitResult prints the terminal status and maps it to an exit error.
 func reportWaitResult(state runState) error {
+	if state.Status == "idle" {
+		if state.LastTurn == "" {
+			fmt.Println("idle")
+			return nil
+		}
+		fmt.Printf("idle (last turn %s)\n", state.LastTurn)
+		if state.LastTurn != "completed" {
+			return fmt.Errorf("last turn ended with status %s; see trace.log", state.LastTurn)
+		}
+		return nil
+	}
 	fmt.Println(state.Status)
 	if state.Status == "completed" {
 		return nil
@@ -488,9 +519,10 @@ Usage:
   %[1]s stop RUNS                               (gracefully end idle sessions)
   %[1]s models [--json]                         (list; add|default|remove PROVIDER ID edit it)
   %[1]s status RUNS [--json]
-  %[1]s peek --state-dir DIR [-n 25]
+  %[1]s peek RUNS [-n 25]
   %[1]s interrupt RUNS [--expected-turn-id ID]
-  %[1]s wait RUNS [--timeout 10m] [--any]
+  %[1]s wait RUNS [--timeout 10m] [--any] [--turn]
+  %[1]s result RUNS [--json]                     (print each run's final answer)
   %[1]s update [--check]                        (install the latest release)
   %[1]s skill install [--dir DIR]               (install the ruddr-delegate agent skill)
   %[1]s version
@@ -501,8 +533,12 @@ running. --prompt-file - and --message-file - read the text from stdin.
 
 RUNS is --state-dir DIR, repeatable, and/or --root DIR, which selects every run
 below DIR. With several runs, status prints a table (a JSON array with --json),
-wait returns when all finish (--any: the first) and fails unless all completed,
-stop ends the idle ones, and interrupt stops the active turns.
+peek prints the last 5 trace lines of each, wait returns when all finish and
+fails unless all completed, stop ends the idle ones, and interrupt stops the
+active turns. wait --any returns when the next still-running run finishes, so
+repeated calls hand back runs one at a time. wait --turn also counts an idle
+session as done and judges it by its last turn. result prints the last agent
+message of each run's latest turn and fails for runs that did not complete.
 
 --remote runs ruddr on SSH_TARGET through ssh and passes output and exit status
 through. Paths are remote paths, and POSIX and PowerShell remote shells both

@@ -40,6 +40,7 @@ type runState struct {
 	Steers      int         `json:"steers"`
 	Idle        bool        `json:"idle,omitempty"` // started with --idle; Status "idle" means ready for a prompt
 	Turns       int         `json:"turns,omitempty"`
+	LastTurn    string      `json:"lastTurnStatus,omitempty"` // how the latest turn ended; survives the return to idle
 	TokenUsage  *tokenUsage `json:"tokenUsage,omitempty"`
 	StartedAt   time.Time   `json:"startedAt"`
 	UpdatedAt   time.Time   `json:"updatedAt"`

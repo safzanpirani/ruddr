@@ -1231,6 +1231,9 @@ func (r *controller) persistTerminal(status, errText string) {
 		state.Status = status
 		state.Error = redactedStateError(status, errText)
 		state.CompletedAt = time.Now().UTC()
+		if r.lastTurn != "" {
+			state.LastTurn = r.lastTurn
+		}
 		// A completed turn is not a completed idle session. Never expose a
 		// terminal status to waiters or deletion while the session stays open.
 		if r.cfg.Idle && !r.sessionEnded {

@@ -156,6 +156,30 @@ func settledStatus(status string) bool {
 	return terminalStatus(status) || status == "stale" || status == "unreadable"
 }
 
+// turnSettled also counts an idle session as settled: its latest turn ended.
+func turnSettled(state runState, turn bool) bool {
+	return settledStatus(state.Status) || (turn && state.Status == "idle")
+}
+
+// runSucceeded reports whether a settled run finished its work. An idle
+// session succeeded when its latest turn completed; controllers older than
+// lastTurnStatus leave it empty, which counts as success.
+func runSucceeded(state runState) bool {
+	if state.Status == "idle" {
+		return state.LastTurn == "" || state.LastTurn == "completed"
+	}
+	return state.Status == "completed"
+}
+
+// rowError is the ERROR column: the persisted error, or the outcome of an
+// idle session's failed turn, which idle state does not keep as an error.
+func rowError(state runState) string {
+	if state.Error == "" && state.Status == "idle" && !runSucceeded(state) {
+		return "last turn " + state.LastTurn
+	}
+	return state.Error
+}
+
 func printGroupTable(w io.Writer, refs []runRef, states []runState, now time.Time) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "NAME\tSTATUS\tPROVIDER\tMODEL\tTURNS\tTOKENS\tELAPSED\tERROR")
@@ -171,7 +195,7 @@ func printGroupTable(w io.Writer, refs []runRef, states []runState, now time.Tim
 		}
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			ref.Name, state.Status, dash(state.Provider), dash(state.Model), turns, tokens,
-			elapsed(state, now), oneLine(state.Error, 100))
+			elapsed(state, now), oneLine(rowError(state), 100))
 	}
 	table.Flush()
 }
@@ -225,39 +249,77 @@ func groupStatus(refs []runRef, asJSON bool) error {
 	return nil
 }
 
-// waitForRuns polls every run until all of them settle, or the first one
-// does when anyRun is set, or the deadline passes. It prints the final table and
-// fails unless every settled run completed.
-func waitForRuns(w io.Writer, refs []runRef, deadline time.Time, anyRun bool, alive func(int) bool, tick time.Duration) error {
+// waitOptions selects when a group wait returns.
+type waitOptions struct {
+	// Any returns once a run that was still running when the wait began
+	// settles, so repeated calls hand back runs one at a time.
+	Any bool
+	// Turn counts an idle session as settled because its turn ended.
+	Turn bool
+}
+
+// waitForRuns polls every run until all of them settle (or, with Any, until
+// one that was running settles) or the deadline passes. It prints the table
+// and fails unless every run it reports on succeeded.
+func waitForRuns(w io.Writer, refs []runRef, deadline time.Time, opts waitOptions, alive func(int) bool, tick time.Duration) error {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	states := make([]runState, len(refs))
 	settled := make([]bool, len(refs))
+	var alreadySettled []bool
 	for {
 		settledCount := 0
 		for i, ref := range refs {
 			if !settled[i] {
 				states[i] = readGroupState(ref, alive)
-				settled[i] = settledStatus(states[i].Status)
+				settled[i] = turnSettled(states[i], opts.Turn)
 			}
 			if settled[i] {
 				settledCount++
 			}
 		}
+		if alreadySettled == nil {
+			alreadySettled = append([]bool(nil), settled...)
+		}
+		var finished []int
+		for i := range refs {
+			if settled[i] && !alreadySettled[i] {
+				finished = append(finished, i)
+			}
+		}
+		allSettled := settledCount == len(refs)
 		timedOut := !deadline.IsZero() && time.Now().After(deadline)
-		if settledCount == len(refs) || (anyRun && settledCount > 0) || timedOut {
+		if allSettled || (opts.Any && len(finished) > 0) || timedOut {
 			printGroupTable(w, refs, states, time.Now())
+			// --any judges only the runs this wait saw finish; otherwise
+			// every settled run counts.
+			judged := finished
+			if !opts.Any || len(finished) == 0 {
+				judged = nil
+				for i := range refs {
+					if settled[i] {
+						judged = append(judged, i)
+					}
+				}
+			}
+			if opts.Any && len(finished) > 0 {
+				names := make([]string, len(finished))
+				for n, i := range finished {
+					names[n] = refs[i].Name
+				}
+				fmt.Fprintf(w, "finished: %s\n", strings.Join(names, ", "))
+			}
 			failed := 0
-			for i := range refs {
-				if settled[i] && states[i].Status != "completed" {
+			for _, i := range judged {
+				if !runSucceeded(states[i]) {
 					failed++
 				}
 			}
 			switch {
-			case settledCount == 0 || (!anyRun && settledCount < len(refs)):
+			case !allSettled && !(opts.Any && len(finished) > 0):
 				return fmt.Errorf("wait timed out: %d of %d runs still running", len(refs)-settledCount, len(refs))
 			case failed > 0:
-				return fmt.Errorf("%d of %d runs did not complete", failed, len(refs))
+				return fmt.Errorf("%d of %d runs did not complete", failed, len(judged))
 			}
 			return nil
 		}
@@ -302,4 +364,37 @@ func broadcastControl(w io.Writer, refs []runRef, command, wantStatus string, ti
 		fmt.Fprintf(w, "no %s runs to %s\n", wantStatus, verb)
 	}
 	return nil
+}
+
+// groupPeek prints the latest trace lines of every run under a name header.
+func groupPeek(w io.Writer, refs []runRef, count int) error {
+	for i, ref := range refs {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		state := readGroupState(ref, processAlive)
+		fmt.Fprintf(w, "== %s: %s ==\n", ref.Name, state.Status)
+		if state.TracePath == "" {
+			continue
+		}
+		lines, err := tailLines(state.TracePath, count)
+		if err != nil {
+			fmt.Fprintf(w, "(trace unavailable: %v)\n", err)
+			continue
+		}
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+	}
+	return nil
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }

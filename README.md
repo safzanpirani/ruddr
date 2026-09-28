@@ -352,9 +352,12 @@ Rules:
 - `output.md` separates turns with `---`; each prompt attempt is recorded as a
   synthetic `userMessage` item followed by an append-only decision event in
   `events.jsonl`. The TUI hides rejected attempts.
-- state.json gains `idle`, `turns`, and `tokenUsage` (cumulative counts,
-  context window, and cost when the provider reports one). Prompt text still
-  never reaches state.json.
+- state.json gains `idle`, `turns`, `lastTurnStatus`, and `tokenUsage`
+  (cumulative counts, context window, and cost when the provider reports one).
+  `lastTurnStatus` keeps how the latest turn ended after the session returns
+  to `idle`. Prompt text still never reaches state.json.
+- `wait --turn` returns when the current turn ends instead of blocking
+  through idle, and fails when that turn did not complete.
 - The `idle` field records that the run was started with `--idle`. It stays
   `true` while the session is `starting` or `active`. Poll `status == "idle"`
   to know when `prompt` will be accepted.
@@ -410,18 +413,21 @@ interrupt failures also leave later turns running.
 
 ### Several runs at once
 
-`status`, `wait`, `stop`, and `interrupt` accept `--state-dir` more than once,
-and `--root DIR` selects every run below `DIR` (up to four levels deep). Give a
-swarm one directory, such as `.scratch/swarm/<agent>/run`, and address it as a
-group:
+`status`, `peek`, `wait`, `result`, `stop`, and `interrupt` accept
+`--state-dir` more than once, and `--root DIR` selects every run below `DIR`
+(up to four levels deep). Give a swarm one directory, such as
+`.scratch/swarm/<agent>/run`, and address it as a group:
 
 ```bash
 ./ruddr status --root .scratch/swarm            # one row per run
 ./ruddr status --root .scratch/swarm --json     # JSON array of state.json
+./ruddr peek   --root .scratch/swarm            # last 5 trace lines of each run
 ./ruddr wait   --root .scratch/swarm --timeout 30m
-./ruddr wait   --root .scratch/swarm --any      # return when the first finishes
+./ruddr wait   --root .scratch/swarm --any      # return when the next run finishes
+./ruddr result --root .scratch/swarm            # each run's final answer
 ./ruddr interrupt --root .scratch/swarm         # stop every active turn
 ./ruddr stop   --root .scratch/swarm            # end every idle session
+./ruddr tui    --root .scratch/swarm            # watch the swarm live
 ```
 
 ```text
@@ -432,11 +438,26 @@ ui/run    active     claude    claude-opus-5-5  -      -       9m40s
 ```
 
 The group `wait` prints that table and exits zero only when every run
-completed; `--any` returns once one run finishes. A run whose controller died
-shows as `stale`. `interrupt` acts only on `active` runs, and `stop` only on
-`idle` ones; the rest are reported as skipped. `--expected-turn-id` needs a
-single run. With one `--state-dir` and no `--root`, every command keeps its
-single-run output.
+completed. A run whose controller died shows as `stale`.
+
+`wait --any` returns when a run that was still running finishes, prints
+`finished: NAME`, and judges only that run. Runs that had already finished
+do not count, so a loop of `wait --any` hands back runs one at a time. When
+nothing is running, it returns at once.
+
+`wait --turn` also counts an `idle` session as done, which a swarm of
+`--idle` sessions needs after each round of `prompt`. An idle session keeps
+its latest turn's outcome in `lastTurnStatus`, and `--turn` fails when that
+turn did not complete. It works for a single run too.
+
+`result` prints the last agent message of each run's latest turn under a
+`== NAME: STATUS ==` header, or the error for a run that did not complete, and
+exits non-zero if any run failed. With one `--state-dir` it prints only the
+message; `--json` prints an array.
+
+`interrupt` acts only on `active` runs, and `stop` only on `idle` ones; the
+rest are reported as skipped. `--expected-turn-id` needs a single run. With
+one `--state-dir` and no `--root`, every command keeps its single-run output.
 
 Ruddr does not isolate a swarm's workspaces. Give each writing agent its own
 Git worktree as its `--cwd`, or split the files so no two agents edit the same
@@ -875,10 +896,14 @@ Give every agent that edits files its own Git worktree as --cwd
 (`git worktree add ../repo-<agent> -b swarm/<agent>`); Ruddr does not isolate
 workspaces. Then address the group with --root:
    ruddr status    --root .scratch/SWARM [--json]   one row per run
-   ruddr wait      --root .scratch/SWARM --timeout 30m [--any]
+   ruddr peek      --root .scratch/SWARM            last trace lines of each
+   ruddr wait      --root .scratch/SWARM --timeout 30m [--any] [--turn]
+   ruddr result    --root .scratch/SWARM [--json]   each run's final answer
    ruddr interrupt --root .scratch/SWARM            abort every active turn
-The group wait exits zero only when every run completed. Read each run's
-output.md, verify the work yourself, and merge the worktrees one at a time.
+The group wait exits zero only when every run completed. `--any` returns
+when the next still-running run finishes, so loop it to handle runs as they
+land; `--turn` counts idle sessions as done. Read the answers with `result`,
+verify the work yourself, and merge the worktrees one at a time.
 
 Watching everything at once. `ruddr tui` shows a dashboard of live and
 recent sessions with a prompt box: type to steer an active turn, prompt an
