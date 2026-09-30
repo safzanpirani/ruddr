@@ -1,6 +1,6 @@
 ---
 name: ruddr-delegate
-description: Delegate a hard, stuck, or context-heavy implementation task to a live-steerable Codex or Claude Code session managed by Ruddr, so a sub-agent investigates, edits, and verifies the current workspace end to end while the parent agent keeps working and can steer mid-turn. Use when the user asks to hand work to codex/claude/a sub-agent, when a bug or feature has resisted a couple of attempts, or when long autonomous work should run outside the parent agent's context. Also covers fanning several independent tasks out to a swarm of parallel sub-agents.
+description: Delegate a hard, stuck, or context-heavy implementation task to a live-steerable Codex, Claude Code, OpenCode, Pi, or Factory Droid session managed by Ruddr, so a sub-agent investigates, edits, and verifies the current workspace end to end while the parent agent keeps working and can steer mid-turn. Use when the user asks to hand work to codex/claude/droid/a sub-agent, when a bug or feature has resisted a couple of attempts, or when long autonomous work should run outside the parent agent's context. Also covers fanning several independent tasks out to a swarm of parallel sub-agents.
 metadata:
   short-description: Delegate work to a steerable Ruddr sub-agent
 ---
