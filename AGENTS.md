@@ -52,8 +52,10 @@ or repository business logic.
 - `tui_command.go`, `tui/` — the Bun/OpenTUI TUI. `tui/index.ts` builds the
   layout, including the mobile layout; `tui/core.ts` holds pure logic,
   argument parsing, and a fallback copy of the model catalog.
-- `adapter/`, `claude/`, `opencode/`, `pi/` — Bun app-server adapters that let
-  non-Codex providers speak the Codex app-server protocol.
+- `adapter/`, `claude/`, `opencode/`, `pi/`, `droid/` — Bun app-server
+  adapters that let non-Codex providers speak the Codex app-server protocol.
+  `droid/` drives `droid exec` in stream JSON-RPC mode; the README records the
+  droid versions and Factory protocol versions it is verified against.
 - `process_unix.go`, `process_windows.go`, `process_other.go` — platform process
   setup, detached-process setup, and process-tree termination.
 - `scripts/` — the local installer, npm launcher, and npm postinstall hook.
@@ -103,6 +105,9 @@ or repository business logic.
   that turn.
 - Resume and fork are mutually exclusive. The two fork boundary selectors are
   mutually exclusive and invalid without `--fork-thread`.
+- Among the adapter providers, only Droid supports `--fork-thread`. A Droid
+  fork copies the whole session, so the boundary selectors are rejected for
+  it. `validateRunConfig` rejects every fork flag for the other adapters.
 - Conversation forks do not create Git worktrees or roll filesystem state back.
 - Thread subcommands print raw app-server results as formatted JSON. Do not
   replace this with presentation-oriented output; callers depend on complete
