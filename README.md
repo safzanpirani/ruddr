@@ -397,6 +397,13 @@ Rules:
 its default. The TUI's picker uses it, and `ruddr run` without `--model` uses
 the default.
 
+The Codex catalog includes `gpt-6.1-sol`, `gpt-6-sol`, and `gpt-6-luna`.
+All three support `low`, `medium`, `high`, `xhigh`, and `max` reasoning;
+the two Sol models also support `ultra`. Select one with `--model`, for example
+`ruddr run --prompt-file task.md --model gpt-6.1-sol --effort high`.
+The delegate skill defaults to that model and effort; the CLI catalog default
+is `gpt-6-astra`.
+
 Ruddr ships a short built-in list. Add the models you actually use, change a
 default, or hide one you never pick; Ruddr does not import every model a
 provider knows about. `opencode models` and similar provider commands list the
@@ -891,6 +898,9 @@ Starting runs. Useful `ruddr run` flags:
    --cwd DIR                    the workspace the provider edits
    --turn-timeout 1h            per-turn watchdog; 0 disables
    --config KEY=VALUE           Codex config override for this run
+The delegate skill selects --model gpt-6.1-sol --effort high for Codex.
+The catalog also includes gpt-6-sol and gpt-6-luna. A run without --model
+uses the catalog default (gpt-6-astra unless changed in models.json).
 A Codex run that fails at thread/start over a model or feature setting takes
 it from ~/.codex/config.toml. Override it with --config KEY=VALUE, or once for
 every run on that model with `ruddr models add codex MODEL --config KEY=VALUE`.

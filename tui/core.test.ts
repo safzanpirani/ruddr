@@ -1439,6 +1439,20 @@ describe("promptable TUI helpers", () => {
     expect(parsed[0].id).toBe("gpt-x");
   });
 
+  test("offers GPT-6 Sol and Luna models with their supported efforts", () => {
+    const options = modelPickerOptions(parseModelCatalog("not json"));
+    for (const [id, label, efforts] of [
+      ["gpt-6.1-sol", "GPT-6.1-Sol", ["low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["gpt-6-sol", "GPT-6-Sol", ["low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["gpt-6-luna", "GPT-6-Luna", ["low", "medium", "high", "xhigh", "max"]],
+    ] as const) {
+      const option = options.find((item) => item.value === `codex/${id}`);
+      expect(option?.name).toBe(label);
+      expect(option?.disabled).toBe(false);
+      expect(option?.model.efforts).toEqual([...efforts]);
+    }
+  });
+
   test("new session arguments always run idle", () => {
     const args = newSessionRunArguments({
       provider: "claude",

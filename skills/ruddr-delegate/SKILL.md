@@ -20,8 +20,8 @@ not installed).
 
 - `--provider codex` (the default) runs a Codex app-server session. Use it
   when the user says "codex", or when work should run on the Codex quota
-  instead of the parent agent's. Default to `--model gpt-6-astra
-  --effort low`.
+  instead of the parent agent's. Default to `--model gpt-6.1-sol
+  --effort high`.
 - `--provider claude` runs Claude Code through Ruddr's adapter. Use it when
   the user says "claude", or for a clean-context second Claude. Default to
   `--model claude-opus-5-5 --effort medium`.
@@ -35,10 +35,11 @@ not installed).
 
 `ruddr models --json` lists every model and effort per provider, including
 any the user added with `ruddr models add`; `ruddr run` without `--model`
-uses the listed default. Honor
-an explicit user choice; raise the effort to `high` only for genuinely subtle
-problems. Pass `--model` explicitly so the run is reproducible from
-`state.json`.
+uses the listed default. This skill selects `gpt-6.1-sol` at `high` effort
+for Codex runs. The built-in catalog also includes `gpt-6-sol` and
+`gpt-6-luna`; use `ruddr models --json` for their supported efforts. Honor
+an explicit user choice. Pass `--model` explicitly so the run is reproducible
+from `state.json`.
 
 Claude only: if the bare `claude` binary cannot reach its credentials from a
 detached process, pass the wrapper that works interactively via
@@ -106,7 +107,7 @@ At the very end, print a **"Handoff report"**:
 
 ```bash
 ruddr run \
-  --provider codex --model gpt-6-astra --effort low \
+  --provider codex --model gpt-6.1-sol --effort high \
   --cwd "$PWD" \
   --prompt-file .scratch/<task-slug>/brief.md \
   --state-dir .scratch/<task-slug>/run \
@@ -151,7 +152,7 @@ host, or when the work belongs on a box with the repo, GPU, or provider login
 that this machine lacks.
 
 ```bash
-ruddr --remote ampere run --provider codex --model gpt-6-astra --effort low \
+ruddr --remote ampere run --provider codex --model gpt-6.1-sol --effort high \
   --cwd '~/src/app' --sandbox workspace-write \
   --prompt-file .scratch/<task-slug>/brief.md \
   --state-dir '~/.scratch/ruddr/<task-slug>/run'
@@ -248,7 +249,7 @@ git worktree add ../<repo>-<agent> -b swarm/<agent>
 ruddr run --detach --cwd ../<repo>-<agent> \
   --prompt-file .scratch/<swarm>/<agent>/brief.md \
   --state-dir .scratch/<swarm>/<agent>/run \
-  --provider codex --model gpt-6-astra --effort low --sandbox workspace-write
+  --provider codex --model gpt-6.1-sol --effort high --sandbox workspace-write
 ```
 
 Each `run --detach` blocks until its run is live. With several agents, launch

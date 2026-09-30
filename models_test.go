@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,27 @@ func TestModelCatalogDefaults(t *testing.T) {
 	}
 	if !sawClaudeFable51 {
 		t.Fatal("catalog is missing Claude Fable 5.1")
+	}
+}
+
+func TestGPT6SolAndLunaCatalog(t *testing.T) {
+	want := map[string][]string{
+		"gpt-6.1-sol": {"low", "medium", "high", "xhigh", "max", "ultra"},
+		"gpt-6-sol":   {"low", "medium", "high", "xhigh", "max", "ultra"},
+		"gpt-6-luna":  {"low", "medium", "high", "xhigh", "max"},
+	}
+	for _, model := range modelCatalog {
+		efforts, ok := want[model.ID]
+		if !ok || model.Provider != providerCodex {
+			continue
+		}
+		if !model.Available || model.Default || !reflect.DeepEqual(model.Efforts, efforts) {
+			t.Fatalf("%s catalog entry = %+v, want available with efforts %v", model.ID, model, efforts)
+		}
+		delete(want, model.ID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("catalog is missing models: %v", want)
 	}
 }
 
