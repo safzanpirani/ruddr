@@ -32,6 +32,14 @@ not installed).
   Neither adapter enforces Ruddr's filesystem containment for
   `workspace-write`; they rely on the provider's own permission system, so
   prefer codex or claude for anything touching files outside the workspace.
+- `--provider droid` runs Factory Droid. Use it when the user says "droid"
+  or "factory". The default model is `glm-5.3-flash` with efforts `low`,
+  `high`, and `max`; `droid exec --help` lists the rest. The sandbox sets
+  Droid's autonomy (`read-only` off, `workspace-write` medium,
+  `danger-full-access` high). Ruddr rejects Droid's permission requests, so a
+  tool call above that level ends the turn as failed. Droid refuses
+  `--ephemeral` and fork turn selectors; `--fork-thread` copies the whole
+  session.
 
 `ruddr models --json` lists every model and effort per provider, including
 any the user added with `ruddr models add`; `ruddr run` without `--model`
@@ -43,8 +51,8 @@ from `state.json`.
 
 Claude only: if the bare `claude` binary cannot reach its credentials from a
 detached process, pass the wrapper that works interactively via
-`--claude-path` or `RUDDR_CLAUDE_PATH`. OpenCode and Pi take `--opencode-path`
-and `--pi-path` the same way. Never put tokens in argv or prompts.
+`--claude-path` or `RUDDR_CLAUDE_PATH`. OpenCode, Pi, and Droid take
+`--opencode-path`, `--pi-path`, and `--droid-path` the same way. Never put tokens in argv or prompts.
 
 ## Build the brief
 
@@ -115,7 +123,8 @@ ruddr run \
 ```
 
 Swap the first line for `--provider claude --model claude-opus-5-5 --effort
-medium`, `--provider opencode`, or `--provider pi` as chosen above.
+medium`, `--provider opencode`, `--provider pi`, or `--provider droid --model
+glm-5.3-flash` as chosen above.
 
 - Launch with the harness's background facility — a foreground tool call gets
   killed at the tool timeout, taking the controller with it. If the harness

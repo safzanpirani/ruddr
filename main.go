@@ -102,7 +102,7 @@ func runCommandContext(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cwd, _ := os.Getwd()
 	var cfg runConfig
-	fs.StringVar(&cfg.Provider, "provider", providerCodex, "provider: codex, claude, opencode, or pi")
+	fs.StringVar(&cfg.Provider, "provider", providerCodex, "provider: codex, claude, opencode, pi, or droid")
 	fs.StringVar(&cfg.CWD, "cwd", cwd, "working directory for the provider session")
 	fs.StringVar(&cfg.PromptFile, "prompt-file", "", "file containing the initial task")
 	fs.StringVar(&cfg.StateDir, "state-dir", "", "directory for state, trace, and output (default CWD/.scratch/ruddr/<time>-<id>)")
@@ -113,6 +113,7 @@ func runCommandContext(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.ClaudePath, "claude-path", "", "Claude Code executable for --provider claude")
 	fs.StringVar(&cfg.OpenCodePath, "opencode-path", "", "OpenCode 2 executable for --provider opencode")
 	fs.StringVar(&cfg.PiPath, "pi-path", "", "Pi executable for --provider pi")
+	fs.StringVar(&cfg.DroidPath, "droid-path", "", "Factory Droid executable for --provider droid")
 	fs.BoolVar(&cfg.Ephemeral, "ephemeral", false, "do not persist the provider session")
 	fs.StringVar(&cfg.ResumeThreadID, "resume-thread", "", "resume this provider thread/session before starting the turn")
 	fs.StringVar(&cfg.ForkThreadID, "fork-thread", "", "fork this thread before starting the turn")
@@ -522,7 +523,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Ruddr - live steering for coding agents
 
 Usage:
-  %[1]s run [--provider codex|claude|opencode|pi] --prompt-file FILE [--state-dir DIR] [options]
+  %[1]s run [--provider codex|claude|opencode|pi|droid] --prompt-file FILE [--state-dir DIR] [options]
          [-- APP_SERVER_COMMAND...]
   %[1]s thread list|search|read|turns|fork|name|archive|unarchive [options]
   %[1]s tui [--root DIR] [--state-dir DIR] [--all] [--theme NAME]

@@ -780,6 +780,37 @@ func TestValidateRunConfigRejectsForkSelectorMisuse(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfigAllowsWholeSessionDroidForks(t *testing.T) {
+	base := runConfig{
+		Provider:       providerDroid,
+		CWD:            t.TempDir(),
+		Model:          "glm-5.3-flash",
+		Sandbox:        "workspace-write",
+		ApprovalPolicy: "never",
+		ChildCommand:   []string{"bun", "run", "droid/app-server.ts"},
+	}
+	fork := base
+	fork.ForkThreadID = "source-session"
+	if err := validateRunConfig(&fork); err != nil {
+		t.Fatalf("droid whole-session fork was rejected: %v", err)
+	}
+	selector := fork
+	selector.ForkThroughTurnID = "turn-a"
+	if err := validateRunConfig(&selector); err == nil || !strings.Contains(err.Error(), "whole session") {
+		t.Fatalf("droid fork selector error = %v", err)
+	}
+	ephemeral := base
+	ephemeral.Ephemeral = true
+	if err := validateRunConfig(&ephemeral); err == nil || !strings.Contains(err.Error(), "--ephemeral") {
+		t.Fatalf("droid ephemeral error = %v", err)
+	}
+	pi := fork
+	pi.Provider = providerPi
+	if err := validateRunConfig(&pi); err == nil || !strings.Contains(err.Error(), "do not yet support --fork-thread") {
+		t.Fatalf("pi fork error = %v", err)
+	}
+}
+
 func TestValidateRunConfigRejectsNegativeTimeouts(t *testing.T) {
 	base := runConfig{
 		CWD:          t.TempDir(),

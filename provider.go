@@ -14,6 +14,7 @@ const (
 	providerClaude   = "claude"
 	providerOpenCode = "opencode"
 	providerPi       = "pi"
+	providerDroid    = "droid"
 
 	claudeAdapterEntryEnvironment         = "RUDDR_CLAUDE_ADAPTER_ENTRY"
 	previousClaudeAdapterEntryEnvironment = "RUDDER_CLAUDE_ADAPTER_ENTRY"
@@ -22,8 +23,10 @@ const (
 	claudePathEnvironment           = "RUDDR_CLAUDE_PATH"
 	opencodePathEnvironment         = "RUDDR_OPENCODE_PATH"
 	piPathEnvironment               = "RUDDR_PI_PATH"
+	droidPathEnvironment            = "RUDDR_DROID_PATH"
 	opencodeAdapterEntryEnvironment = "RUDDR_OPENCODE_ADAPTER_ENTRY"
 	piAdapterEntryEnvironment       = "RUDDR_PI_ADAPTER_ENTRY"
+	droidAdapterEntryEnvironment    = "RUDDR_DROID_ADAPTER_ENTRY"
 )
 
 func normalizeProvider(provider string) (string, error) {
@@ -31,10 +34,10 @@ func normalizeProvider(provider string) (string, error) {
 		return providerCodex, nil
 	}
 	switch provider {
-	case providerCodex, providerClaude, providerOpenCode, providerPi:
+	case providerCodex, providerClaude, providerOpenCode, providerPi, providerDroid:
 		return provider, nil
 	default:
-		return "", fmt.Errorf("unsupported provider %q; expected codex, claude, opencode, or pi", provider)
+		return "", fmt.Errorf("unsupported provider %q; expected codex, claude, opencode, pi, or droid", provider)
 	}
 }
 
@@ -91,7 +94,7 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 			return err
 		}
 		cfg.ChildCommand = []string{bunPath, "run", entry}
-	case providerOpenCode, providerPi:
+	case providerOpenCode, providerPi, providerDroid:
 		if len(childArgs) > 0 {
 			return fmt.Errorf("a command after -- is supported only for Codex; use --%s-path for %s", provider, provider)
 		}
@@ -111,6 +114,13 @@ func configureProviderDefaults(cfg *runConfig, childArgs []string) error {
 			executableNames = []string{"pi"}
 			entryParts = []string{"pi", "app-server.ts"}
 			cfg.ProviderPath = cfg.PiPath
+		}
+		if provider == providerDroid {
+			pathEnvironment = droidPathEnvironment
+			entryEnvironment = droidAdapterEntryEnvironment
+			executableNames = []string{"droid"}
+			entryParts = []string{"droid", "app-server.ts"}
+			cfg.ProviderPath = cfg.DroidPath
 		}
 		if cfg.ProviderPath == "" {
 			cfg.ProviderPath = getenvAny(pathEnvironment, previousName(pathEnvironment))

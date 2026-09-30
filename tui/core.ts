@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 export interface RunState {
   version: number;
-  provider?: "codex" | "claude" | "opencode" | "pi";
+  provider?: "codex" | "claude" | "opencode" | "pi" | "droid";
   pid: number;
   childPid?: number;
   status: string;
@@ -1620,6 +1620,7 @@ export const FALLBACK_MODELS: ModelInfo[] = [
   { provider: "claude", id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", available: true },
   { provider: "opencode", id: "openrouter/deepseek/deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash Vision Exp", default: true, available: true },
   { provider: "pi", id: "openrouter/deepseek/deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash Vision Exp", efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], default: true, available: true },
+  { provider: "droid", id: "glm-5.3-flash", label: "GLM-5.3-Flash", efforts: ["low", "high", "max"], default: true, available: true },
 ];
 
 export interface ModelPickerOption {

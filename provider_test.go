@@ -115,15 +115,17 @@ func TestConfigureProviderDefaultsClaudePathEnvironment(t *testing.T) {
 	}
 }
 
-func TestConfigureProviderDefaultsFindsOpenCodeAndPiAdapters(t *testing.T) {
+func TestConfigureProviderDefaultsFindsBunAdapters(t *testing.T) {
 	for _, test := range []struct {
 		provider         string
 		entryEnvironment string
 		providerPath     string
+		model            string
 		setPath          func(*runConfig, string)
 	}{
-		{providerOpenCode, opencodeAdapterEntryEnvironment, "/opt/opencode2", func(cfg *runConfig, path string) { cfg.OpenCodePath = path }},
-		{providerPi, piAdapterEntryEnvironment, "/opt/pi", func(cfg *runConfig, path string) { cfg.PiPath = path }},
+		{providerOpenCode, opencodeAdapterEntryEnvironment, "/opt/opencode2", "openrouter/deepseek/deepseek-v4-flash-vision-exp", func(cfg *runConfig, path string) { cfg.OpenCodePath = path }},
+		{providerPi, piAdapterEntryEnvironment, "/opt/pi", "openrouter/deepseek/deepseek-v4-flash-vision-exp", func(cfg *runConfig, path string) { cfg.PiPath = path }},
+		{providerDroid, droidAdapterEntryEnvironment, "/opt/droid", "glm-5.3-flash", func(cfg *runConfig, path string) { cfg.DroidPath = path }},
 	} {
 		t.Run(test.provider, func(t *testing.T) {
 			entry := filepath.Join(t.TempDir(), "app-server.ts")
@@ -136,7 +138,7 @@ func TestConfigureProviderDefaultsFindsOpenCodeAndPiAdapters(t *testing.T) {
 			if err := configureProviderDefaults(&cfg, nil); err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Model != "openrouter/deepseek/deepseek-v4-flash-vision-exp" {
+			if cfg.Model != test.model {
 				t.Fatalf("default model = %q", cfg.Model)
 			}
 			if cfg.ProviderPath != test.providerPath {

@@ -3,7 +3,7 @@
 **A control plane for agents that run other agents.**
 
 Ruddr is a small CLI that keeps a live handle on long-running Codex, Claude
-Code, OpenCode 2, and Pi sessions. An orchestrating agent launches a turn in
+Code, OpenCode 2, Pi, and Factory Droid sessions. An orchestrating agent launches a turn in
 the background, reads its progress from plain files, and redirects it mid-flight
 over a local socket — no waiting for it to finish, no killing it and starting
 over. Every command works the same from a human shell, so a person can watch or
@@ -55,6 +55,8 @@ Providers:
   inbox. Steering uses `delivery: "steer"` on the active session.
 - **Pi** — Ruddr runs Pi in JSONL RPC mode. Pi exposes native steering,
   interruption, session persistence, streamed tool events, and usage totals.
+- **Factory Droid** — Ruddr runs `droid exec` in stream JSON-RPC mode. A steer
+  is a user message that Droid queues and reads at its next step.
 
 All providers use the same state directory, commands, and TUI.
 
@@ -126,7 +128,7 @@ npm install -g --prefix "$HOME/.local" ruddr
 ```
 
 The Codex provider needs only the binary. `ruddr tui` and the Claude,
-OpenCode, and Pi providers also need Bun 1.4 or newer on `PATH`.
+OpenCode, Pi, and Droid providers also need Bun 1.4 or newer on `PATH`.
 
 ### Updating
 
@@ -176,8 +178,10 @@ OpenCode 2.0.15. The adapter uses the `/api/experimental/session` wait and
 export routes that 2.0.15 introduced, and falls back to the older
 `/api/session` routes on a 404.
 
-Pi runs require the `pi` executable with RPC mode. The adapters inherit each
-CLI's normal authentication environment.
+Pi runs require the `pi` executable with RPC mode. Droid runs require the
+`droid` executable and are verified against droid 0.228.0, which speaks Factory
+protocol 1.233.0. The adapters inherit each CLI's normal authentication
+environment.
 
 ## Run a task
 
@@ -274,6 +278,26 @@ do not provide Ruddr-enforced filesystem containment for `workspace-write`.
 Run these adapters only in trusted workspaces. OpenCode 2 loads project
 configuration and plugins, and Pi loads project-local resources after approval.
 Those resources can execute code outside the adapters' tool permission rules.
+
+Run Factory Droid the same way:
+
+```bash
+./ruddr run --provider droid --cwd "$PWD" \
+  --prompt-file .scratch/ruddr-demo/prompt.md \
+  --state-dir .scratch/ruddr-demo/droid.run
+```
+
+The default Droid model is `glm-5.3-flash`, with efforts `low`, `high`, and
+`max`. `droid exec --help` lists every model your Factory account offers. Use
+`--droid-path` or `RUDDR_DROID_PATH` to select a Droid executable. The sandbox
+sets Droid's autonomy level: `read-only` runs at `off`, `workspace-write` at
+`medium`, and `danger-full-access` at `high`. Droid enforces these levels
+itself. Ruddr adds no filesystem containment. Ruddr rejects every Droid
+permission request and question. A tool call above the autonomy level
+therefore ends the turn as failed, and the error names the autonomy level.
+Droid sessions always persist, so `--ephemeral` is refused. `--fork-thread`
+copies the whole Droid session. `--fork-before-turn` and `--fork-through-turn`
+are not supported for Droid.
 
 Run it in the background from an agent harness so the harness can continue
 reading user messages and issue steering commands. `--detach` does this without
@@ -603,9 +627,9 @@ messages lead with a `✓`, `›`, `!`, or `×` glyph and clear themselves after
 few seconds. Chat renders agent Markdown (headings, lists, quotes, inline code,
 and fenced code with syntax coloring) and types out the newest message as it
 streams. The text is live: Codex reports partial assistant text as
-`item/agentMessage/delta` and the Claude, OpenCode, and Pi adapters emit the
-same notification, so a message appears while the model writes it rather than
-all at once when the turn ends. Your steers appear in the transcript too.
+`item/agentMessage/delta` and the Claude, OpenCode, Pi, and Droid adapters emit
+the same notification, so a message appears while the model writes it rather
+than all at once when the turn ends. Your steers appear in the transcript too.
 Activity tool rows collapse to one line and expand into a card with
 the command, status, working directory, input, and output. Empty states are
 clickable: they start a session, open the prompt, or retry a failed diff read.
@@ -653,7 +677,8 @@ dependency. The installer places the binary in `~/.local/bin` and the TUI in
 `RUDDR_BIN_DIR` and `XDG_DATA_HOME` overrides. The launcher also finds a TUI
 beside the binary or in the current checkout. For custom development paths, set
 `RUDDR_TUI_ENTRY`, `RUDDR_CLAUDE_ADAPTER_ENTRY`,
-`RUDDR_OPENCODE_ADAPTER_ENTRY`, or `RUDDR_PI_ADAPTER_ENTRY`. Legacy
+`RUDDR_OPENCODE_ADAPTER_ENTRY`, `RUDDR_PI_ADAPTER_ENTRY`, or
+`RUDDR_DROID_ADAPTER_ENTRY`. Legacy
 `CODEX_RUDDER_*` variables and installed assets remain readable.
 
 Run artifacts:
@@ -812,9 +837,9 @@ Ruddr currently depends on:
 - `turn/interrupt`
 - `turn/started`, `item/*`, and `turn/completed` notifications
 
-The Claude, OpenCode 2, and Pi adapters implement the lifecycle subset needed
-by `ruddr run`, `steer`, `prompt`, and `interrupt`. They do not implement the
-general Codex app-server surface. Sessions launched by another process do not
+The Claude, OpenCode 2, Pi, and Droid adapters implement the lifecycle subset
+needed by `ruddr run`, `steer`, `prompt`, and `interrupt`. They do not
+implement the general Codex app-server surface. Sessions launched by another process do not
 become live-observable through Ruddr. Each adapter forwards summarized or
 provider-exposed reasoning. Ruddr does not expose hidden raw chain of thought.
 
@@ -828,7 +853,7 @@ sessions, not just build a binary.
 ````text
 Set up Ruddr (https://github.com/safzanpirani/ruddr) on this machine, verify
 it works, and learn how to operate it. Ruddr runs Codex, Claude Code,
-OpenCode 2, or Pi as an observable, steerable child process. It writes every
+OpenCode 2, Pi, or Factory Droid as an observable, steerable child process. It writes every
 event to
 disk and exposes a control socket so you can redirect or stop a turn while it
 runs. Follow Part 1 in order and stop at the first failure; keep Part 2 as your
@@ -840,7 +865,7 @@ PART 1 — INSTALL AND VERIFY
    - Go 1.24 or newer  (`go version`)
    - Bun 1.4 or newer  (`bun --version`)
    - At least one provider CLI: `codex --version`, `claude --version`,
-     `opencode2 --version`, or `pi --version`.
+     `opencode2 --version`, `pi --version`, or `droid --version`.
 
 2. Clone the repo somewhere sensible and build it:
    git clone https://github.com/safzanpirani/ruddr
@@ -891,7 +916,7 @@ Trust output.md only when `ruddr status --json` says "completed"; on
 be fresh per run. Prompts always come from --prompt-file, never argv.
 
 Starting runs. Useful `ruddr run` flags:
-   --provider codex|claude|opencode|pi   default codex
+   --provider codex|claude|opencode|pi|droid   default codex
    --model / --effort           `ruddr models --json` lists valid combos
    --sandbox                    read-only | workspace-write (default) |
                                 danger-full-access

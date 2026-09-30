@@ -16,6 +16,9 @@ func TestModelCatalogDefaults(t *testing.T) {
 	if got, _ := defaultModel(providerClaude); got != "claude-opus-5-5" {
 		t.Fatalf("claude default = %q", got)
 	}
+	if got, _ := defaultModel(providerDroid); got != "glm-5.3-flash" {
+		t.Fatalf("droid default = %q", got)
+	}
 	defaults := map[string]int{}
 	sawClaudeFable51 := false
 	sawOpencode := false
@@ -46,7 +49,7 @@ func TestModelCatalogDefaults(t *testing.T) {
 			}
 		}
 	}
-	if defaults[providerCodex] != 1 || defaults[providerClaude] != 1 || defaults[providerOpenCode] != 1 || defaults[providerPi] != 1 {
+	if defaults[providerCodex] != 1 || defaults[providerClaude] != 1 || defaults[providerOpenCode] != 1 || defaults[providerPi] != 1 || defaults[providerDroid] != 1 {
 		t.Fatalf("defaults per provider = %#v, want exactly one each", defaults)
 	}
 	if !sawOpencode || !sawPi {

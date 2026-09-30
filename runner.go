@@ -39,6 +39,7 @@ type runConfig struct {
 	ClaudePath        string
 	OpenCodePath      string
 	PiPath            string
+	DroidPath         string
 	ProviderPath      string
 	Ephemeral         bool
 	ResumeThreadID    string
@@ -238,7 +239,14 @@ func validateRunConfig(cfg *runConfig) error {
 		if cfg.ApprovalPolicy != "never" {
 			return fmt.Errorf("%s runs require --approval-policy never because Ruddr has no interactive approval surface", cfg.Provider)
 		}
-		if cfg.ForkThreadID != "" || cfg.ForkBeforeTurnID != "" || cfg.ForkThroughTurnID != "" {
+		if cfg.Provider == providerDroid {
+			if cfg.ForkBeforeTurnID != "" || cfg.ForkThroughTurnID != "" {
+				return errors.New("droid forks copy the whole session; drop --fork-before-turn and --fork-through-turn")
+			}
+			if cfg.Ephemeral {
+				return errors.New("droid sessions always persist; drop --ephemeral")
+			}
+		} else if cfg.ForkThreadID != "" || cfg.ForkBeforeTurnID != "" || cfg.ForkThroughTurnID != "" {
 			return fmt.Errorf("%s runs do not yet support --fork-thread or fork turn selectors; use --resume-thread", cfg.Provider)
 		}
 	}
