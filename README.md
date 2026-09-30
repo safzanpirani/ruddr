@@ -179,8 +179,8 @@ export routes that 2.0.15 introduced, and falls back to the older
 `/api/session` routes on a 404.
 
 Pi runs require the `pi` executable with RPC mode. Droid runs require the
-`droid` executable and are verified against droid 0.228.0, which speaks Factory
-protocol 1.233.0. The adapters inherit each CLI's normal authentication
+`droid` executable and are verified against droid 0.228.0 and 0.230.0, which
+speak Factory protocols 1.233.0 and 1.241.0. The adapters inherit each CLI's normal authentication
 environment.
 
 ## Run a task
