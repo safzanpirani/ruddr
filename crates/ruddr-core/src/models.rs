@@ -164,10 +164,10 @@ fn validate_models_file(file: &ModelsFile) -> Result<()> {
         if entry.default && entry.hidden {
             return Err(Error::failed(format!("models[{index}]: a hidden model cannot be the default")));
         }
-        if entry.default {
-            if let Some(previous) = defaults.insert(&entry.provider, &entry.id) {
-                return Err(Error::failed(format!("{} has two defaults: {previous} and {}", entry.provider, entry.id)));
-            }
+        if entry.default
+            && let Some(previous) = defaults.insert(&entry.provider, &entry.id)
+        {
+            return Err(Error::failed(format!("{} has two defaults: {previous} and {}", entry.provider, entry.id)));
         }
     }
     Ok(())
@@ -272,27 +272,58 @@ pub fn write_models_file(path: &std::path::Path, file: &ModelsFile) -> Result<()
     crate::fsutil::write_private_atomic(path, &raw).context(format!("write {}", path.display()))
 }
 
-/// The result of a models.json edit. The CLI prints `message (path)`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Edit {
-    pub message: String,
-    pub path: PathBuf,
-}
-
-/// `ruddr models add PROVIDER ID [options]`.
+/// `ruddr models add` options.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct AddModel {
-    pub provider: String,
-    pub id: String,
-    /// Replaces the label when non-empty.
-    pub label: String,
+pub struct AddOptions {
+    /// Replaces the label when set.
+    pub label: Option<String>,
     /// Replaces the efforts when set (see [`parse_efforts`]).
     pub efforts: Option<Vec<String>>,
     pub make_default: bool,
-    /// `KEY=VALUE` overrides to add (Codex only).
-    pub set_config: Vec<String>,
-    /// Override keys to remove (Codex only).
+    /// Config overrides to add, as `(KEY, VALUE)` (Codex only).
+    pub set_config: Vec<(String, String)>,
+    /// Config keys to remove (Codex only).
     pub unset_config: Vec<String>,
+}
+
+/// What [`remove`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// A built-in model cannot be deleted, so models.json now hides it.
+    HidBuiltin,
+    /// The models.json entry was deleted.
+    Removed,
+}
+
+/// One line of `ruddr models`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub provider: String,
+    pub id: String,
+    pub default: bool,
+    pub available: bool,
+    pub note: String,
+    /// The entry was added or changed by models.json.
+    pub from_config: bool,
+}
+
+/// The merged catalog as `ruddr models` lists it.
+pub fn rows() -> Result<Vec<Row>> {
+    Ok(load_catalog()?
+        .into_iter()
+        .map(|m| Row { from_config: m.source == "config", provider: m.provider, id: m.id, default: m.default, available: m.available, note: m.note })
+        .collect())
+}
+
+/// The merged catalog as pretty-printed JSON, as `ruddr models --json`
+/// prints it (without a trailing newline).
+pub fn to_json() -> Result<String> {
+    Ok(serde_json::to_string_pretty(&load_catalog()?)?)
+}
+
+/// `$RUDDR_MODELS_FILE`, else `<config dir>/models.json`.
+pub fn file_path() -> PathBuf {
+    models_file_path()
 }
 
 fn edit_provider(provider: &str) -> Result<Provider> {
@@ -313,56 +344,54 @@ fn is_builtin(provider: &str, id: &str) -> bool {
     builtin_catalog().iter().any(|m| m.provider == provider && m.id == id)
 }
 
-/// Adds a model or changes an existing entry, and optionally makes it the
-/// provider default.
-pub fn add_model(add: &AddModel) -> Result<Edit> {
-    let provider = edit_provider(&add.provider)?;
-    edit_id(&add.id)?;
-    if (!add.set_config.is_empty() || !add.unset_config.is_empty()) && provider != Provider::Codex {
+/// Adds a model or changes its models.json entry, and optionally makes it
+/// the provider default.
+pub fn add(provider: &str, id: &str, options: &AddOptions) -> Result<()> {
+    let parsed = edit_provider(provider)?;
+    edit_id(id)?;
+    if (!options.set_config.is_empty() || !options.unset_config.is_empty()) && parsed != Provider::Codex {
         return Err(Error::usage("--config applies only to codex models"));
     }
-    let overrides = add.set_config.iter().map(|o| parse_config_override(o)).collect::<Result<Vec<_>>>()?;
+    if let Some((key, _)) = options.set_config.iter().find(|(key, _)| key.trim().is_empty() || key.contains('=')) {
+        return Err(Error::usage(format!("invalid config key {key:?}")));
+    }
     let (mut file, path) = read_models_file()?;
-    let index = match file.models.iter().position(|e| e.provider == add.provider && e.id == add.id) {
+    let index = match file.models.iter().position(|e| e.provider == provider && e.id == id) {
         Some(index) => index,
         None => {
-            file.models.push(ModelEntry { provider: add.provider.clone(), id: add.id.clone(), ..Default::default() });
+            file.models.push(ModelEntry { provider: provider.into(), id: id.into(), ..Default::default() });
             file.models.len() - 1
         }
     };
-    if add.make_default {
-        for entry in file.models.iter_mut().filter(|e| e.provider == add.provider) {
+    if options.make_default {
+        for entry in file.models.iter_mut().filter(|e| e.provider == provider) {
             entry.default = false;
         }
     }
     let entry = &mut file.models[index];
     entry.hidden = false;
-    if !add.label.is_empty() {
-        entry.label = add.label.clone();
+    if let Some(label) = options.label.as_ref().filter(|l| !l.is_empty()) {
+        entry.label = label.clone();
     }
-    if let Some(efforts) = &add.efforts {
+    if let Some(efforts) = &options.efforts {
         entry.efforts = efforts.clone();
     }
-    for (key, value) in overrides {
-        entry.config.insert(key, value);
+    for (key, value) in &options.set_config {
+        entry.config.insert(key.clone(), value.clone());
     }
-    for key in &add.unset_config {
+    for key in &options.unset_config {
         entry.config.remove(key);
     }
-    if add.make_default {
+    if options.make_default {
         entry.default = true;
     }
     validate_models_file(&file).map_err(|e| e.context(path.display()))?;
-    write_models_file(&path, &file)?;
-    let mut message = format!("added {} {}", add.provider, add.id);
-    if add.make_default {
-        message.push_str(" as the default");
-    }
-    Ok(Edit { message, path })
+    write_models_file(&path, &file)
 }
 
-/// Makes a catalog model the provider default.
-pub fn set_default_model(provider: &str, id: &str) -> Result<Edit> {
+/// Makes a catalog model the provider default. Fails for a model that is not
+/// in the merged catalog.
+pub fn set_default(provider: &str, id: &str) -> Result<()> {
     edit_provider(provider)?;
     edit_id(id)?;
     let (mut file, path) = read_models_file()?;
@@ -379,32 +408,31 @@ pub fn set_default_model(provider: &str, id: &str) -> Result<Edit> {
         Some(entry) => entry.default = true,
         None => file.models.push(ModelEntry { provider: provider.into(), id: id.into(), default: true, ..Default::default() }),
     }
-    write_models_file(&path, &file)?;
-    Ok(Edit { message: format!("{provider} now defaults to {id}"), path })
+    write_models_file(&path, &file)
 }
 
 /// Removes a models.json entry. Built-in models cannot be deleted, only
-/// hidden.
-pub fn remove_model(provider: &str, id: &str) -> Result<Edit> {
+/// hidden. Fails for a model that is neither built in nor in models.json.
+pub fn remove(provider: &str, id: &str) -> Result<Removal> {
     edit_provider(provider)?;
     edit_id(id)?;
     let (mut file, path) = read_models_file()?;
     let index = file.models.iter().position(|e| e.provider == provider && e.id == id);
-    let message = if is_builtin(provider, id) {
+    let removal = if is_builtin(provider, id) {
         let hidden = ModelEntry { provider: provider.into(), id: id.into(), hidden: true, ..Default::default() };
         match index {
             Some(index) => file.models[index] = hidden,
             None => file.models.push(hidden),
         }
-        format!("hid built-in {provider} {id}")
+        Removal::HidBuiltin
     } else if let Some(index) = index {
         file.models.remove(index);
-        format!("removed {provider} {id}")
+        Removal::Removed
     } else {
         return Err(Error::failed(format!("{provider} {id} is not in {}", path.display())));
     };
     write_models_file(&path, &file)?;
-    Ok(Edit { message, path })
+    Ok(removal)
 }
 
 #[cfg(test)]
@@ -463,25 +491,12 @@ pub(crate) mod tests {
     #[test]
     fn edits_add_override_and_hide_models() {
         with_models_file(None, |path| {
-            let added = add_model(&AddModel {
-                provider: "opencode".into(),
-                id: "opencode/deepseek-v4-flash".into(),
-                label: "Zen Flash".into(),
-                make_default: true,
-                ..Default::default()
-            })
-            .unwrap();
-            assert_eq!(added.message, "added opencode opencode/deepseek-v4-flash as the default");
-            assert_eq!(added.path, path);
-            add_model(&AddModel {
-                provider: "codex".into(),
-                id: "gpt-7-preview".into(),
-                efforts: Some(parse_efforts("low, high,")),
-                ..Default::default()
-            })
-            .unwrap();
-            assert_eq!(remove_model("codex", "gpt-5.6-luna").unwrap().message, "hid built-in codex gpt-5.6-luna");
-            assert_eq!(set_default_model("claude", "claude-sonnet-5").unwrap().message, "claude now defaults to claude-sonnet-5");
+            assert_eq!(file_path(), path);
+            let zen = AddOptions { label: Some("Zen Flash".into()), make_default: true, ..Default::default() };
+            add("opencode", "opencode/deepseek-v4-flash", &zen).unwrap();
+            add("codex", "gpt-7-preview", &AddOptions { efforts: Some(parse_efforts("low, high,")), ..Default::default() }).unwrap();
+            assert_eq!(remove("codex", "gpt-5.6-luna").unwrap(), Removal::HidBuiltin);
+            set_default("claude", "claude-sonnet-5").unwrap();
 
             let catalog = load_catalog().unwrap();
             let find = |p: &str, id: &str| catalog.iter().find(|m| m.provider == p && m.id == id).cloned();
@@ -496,10 +511,17 @@ pub(crate) mod tests {
             for provider in Provider::ALL {
                 assert_eq!(catalog.iter().filter(|m| m.provider == provider.as_str() && m.default).count(), 1);
             }
+            let listed = rows().unwrap();
+            let row = listed.iter().find(|r| r.id == "opencode/deepseek-v4-flash").unwrap();
+            assert!(row.from_config && row.default && row.available);
+            assert!(!listed.iter().find(|r| r.id == "gpt-6-astra").unwrap().from_config);
+            let json: Vec<ProviderModel> = serde_json::from_str(&to_json().unwrap()).unwrap();
+            assert_eq!(json, catalog);
 
-            assert_eq!(remove_model("codex", "gpt-7-preview").unwrap().message, "removed codex gpt-7-preview");
-            assert!(set_default_model("codex", "gpt-7-preview").is_err());
-            assert!(remove_model("codex", "gpt-7-preview").is_err());
+            assert_eq!(remove("codex", "gpt-7-preview").unwrap(), Removal::Removed);
+            assert!(set_default("codex", "gpt-7-preview").is_err());
+            assert!(remove("codex", "gpt-7-preview").is_err());
+            assert_eq!(add("bogus", "x", &AddOptions::default()).unwrap_err().exit, crate::Exit::Usage);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -515,24 +537,12 @@ pub(crate) mod tests {
             assert!(codex_config("gpt-6-astra").unwrap().is_empty());
         });
         with_models_file(Some(r#"{"models":[]}"#), |_| {
-            add_model(&AddModel {
-                provider: "codex".into(),
-                id: "gpt-6-sol".into(),
-                set_config: vec!["features.x=false".into(), "y=1".into()],
-                ..Default::default()
-            })
-            .unwrap();
+            let set = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            add("codex", "gpt-6-sol", &AddOptions { set_config: set(&[("features.x", "false"), ("y", "1")]), ..Default::default() }).unwrap();
             assert_eq!(codex_config("gpt-6-sol").unwrap(), ["features.x=false", "y=1"]);
-            add_model(&AddModel { provider: "codex".into(), id: "gpt-6-sol".into(), unset_config: vec!["y".into()], ..Default::default() })
-                .unwrap();
+            add("codex", "gpt-6-sol", &AddOptions { unset_config: vec!["y".into()], ..Default::default() }).unwrap();
             assert_eq!(codex_config("gpt-6-sol").unwrap(), ["features.x=false"]);
-            let error = add_model(&AddModel {
-                provider: "claude".into(),
-                id: "claude-opus-5-5".into(),
-                set_config: vec!["a=b".into()],
-                ..Default::default()
-            })
-            .unwrap_err();
+            let error = add("claude", "claude-opus-5-5", &AddOptions { set_config: set(&[("a", "b")]), ..Default::default() }).unwrap_err();
             assert_eq!(error.exit, crate::Exit::Usage);
         });
         with_models_file(Some(r#"{"models":[{"provider":"claude","id":"claude-opus-5-5","config":{"a":"b"}}]}"#), |_| {
