@@ -77,6 +77,7 @@ pub fn start_detached_run(state_dir: &Path, command: &[OsString], window: Durati
         crate::process::configure_detached(&mut child, breakaway);
         child.spawn()
     };
+    crate::process::keep_std_handles_private();
     let mut started = start(crate::process::DETACH_SUPPORTS_BREAKAWAY);
     if started.is_err() && crate::process::DETACH_SUPPORTS_BREAKAWAY {
         // The launching job forbids breakaway. The run then survives a closed

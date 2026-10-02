@@ -59,6 +59,30 @@ pub fn configure_detached(command: &mut Command, breakaway: bool) {
     let _ = (command, breakaway);
 }
 
+/// Stops this process's own standard handles from leaking into children it
+/// did not hand them to. Windows children inherit every inheritable handle,
+/// and the launcher's stdout and stderr are inheritable pipes when its caller
+/// captures them: a detached controller holding them would keep the caller
+/// reading until the run ends. Children given `Stdio::inherit` still get
+/// them, because the standard library passes a duplicate.
+pub fn keep_std_handles_private() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: GetStdHandle and SetHandleInformation only read and flag
+            // this process's own handle table entries.
+            unsafe {
+                let handle = GetStdHandle(which);
+                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
+    }
+}
+
 /// Signals the child's whole process tree. `force` sends SIGKILL instead of
 /// SIGTERM on Unix; Windows always force-kills the tree. `reaped` says the
 /// child itself was already waited for, so its PID must not be signalled
