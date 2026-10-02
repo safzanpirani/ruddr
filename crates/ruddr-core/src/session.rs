@@ -65,7 +65,7 @@ fn rank(status: Status) -> u8 {
     match status {
         Status::Active => 0,
         Status::Idle => 1,
-        Status::Starting => 2,
+        Status::Starting | Status::Stopping => 2,
         Status::Stale => 4,
         _ => 3,
     }

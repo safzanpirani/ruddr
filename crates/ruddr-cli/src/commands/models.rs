@@ -38,8 +38,6 @@ pub struct AddOptions {
 }
 
 /// What `models remove` did.
-// The integrator's catalog constructs these; until then only tests do.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Removal {
     /// A built-in model was marked hidden in models.json.
@@ -65,38 +63,46 @@ pub trait Catalog {
 }
 
 /// Stands in until the integrator wires `ruddr_core::models` in.
-pub struct Unwired;
+/// The real catalog in `ruddr_core::models`.
+pub struct Core;
 
-impl Unwired {
-    fn missing<T>() -> Result<T> {
-        Err(Error::failed("the model catalog is not wired into this build yet"))
-    }
-}
-
-impl Catalog for Unwired {
+impl Catalog for Core {
     fn file_path(&self) -> Result<PathBuf> {
-        Unwired::missing()
+        Ok(ruddr_core::models::file_path())
     }
     fn rows(&self) -> Result<Vec<Row>> {
-        Unwired::missing()
+        Ok(ruddr_core::models::rows()?
+            .into_iter()
+            .map(|r| Row { provider: r.provider, id: r.id, default: r.default, available: r.available, note: r.note, from_file: r.from_config })
+            .collect())
     }
     fn to_json(&self) -> Result<serde_json::Value> {
-        Unwired::missing()
+        Ok(serde_json::from_str(&ruddr_core::models::to_json()?)?)
     }
-    fn add(&self, _: &str, _: &str, _: &AddOptions) -> Result<()> {
-        Unwired::missing()
+    fn add(&self, provider: &str, id: &str, options: &AddOptions) -> Result<()> {
+        let options = ruddr_core::models::AddOptions {
+            label: options.label.clone(),
+            efforts: options.efforts.clone(),
+            make_default: options.make_default,
+            set_config: options.set_config.clone(),
+            unset_config: options.unset_config.clone(),
+        };
+        ruddr_core::models::add(provider, id, &options)
     }
-    fn set_default(&self, _: &str, _: &str) -> Result<()> {
-        Unwired::missing()
+    fn set_default(&self, provider: &str, id: &str) -> Result<()> {
+        ruddr_core::models::set_default(provider, id)
     }
-    fn remove(&self, _: &str, _: &str) -> Result<Removal> {
-        Unwired::missing()
+    fn remove(&self, provider: &str, id: &str) -> Result<Removal> {
+        Ok(match ruddr_core::models::remove(provider, id)? {
+            ruddr_core::models::Removal::HidBuiltin => Removal::HidBuiltin,
+            ruddr_core::models::Removal::Removed => Removal::Removed,
+        })
     }
 }
 
 pub fn models_command(argv: Vec<String>) -> Result<()> {
     let stdout = std::io::stdout();
-    run(&mut stdout.lock(), &Unwired, argv)
+    run(&mut stdout.lock(), &Core, argv)
 }
 
 pub fn run(out: &mut dyn Write, catalog: &dyn Catalog, argv: Vec<String>) -> Result<()> {
@@ -346,12 +352,5 @@ mod tests {
             run_text(&catalog, &["remove", "opencode", "x/y"]).unwrap(),
             "removed opencode x/y (/cfg/ruddr/models.json)\n"
         );
-    }
-
-    #[test]
-    fn the_stub_fails_plainly() {
-        let mut out = Vec::new();
-        let error = run(&mut out, &Unwired, Vec::new()).unwrap_err();
-        assert!(error.message.contains("not wired"));
     }
 }

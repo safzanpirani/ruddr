@@ -29,7 +29,10 @@ pub enum Command {
     Prompt,
     /// Interrupt the active turn (optionally only `expected_turn_id`).
     Interrupt,
-    /// End an idle session gracefully.
+    /// End an idle session gracefully. Sent as Go's `"shutdown"` so 0.6
+    /// clients still stop runs started by 0.5 controllers; `"stop"` is
+    /// accepted when reading.
+    #[serde(rename = "shutdown", alias = "stop")]
     Stop,
     /// Report the live state without changing anything.
     Status,
@@ -133,6 +136,8 @@ mod tests {
         let request = Request { command: Command::Steer, text: Some("go left".into()), expected_turn_id: Some("t1".into()) };
         assert_eq!(serde_json::to_string(&request).unwrap(), r#"{"command":"steer","text":"go left","expectedTurnId":"t1"}"#);
         let request = Request { command: Command::Stop, text: None, expected_turn_id: None };
-        assert_eq!(serde_json::to_string(&request).unwrap(), r#"{"command":"stop"}"#);
+        assert_eq!(serde_json::to_string(&request).unwrap(), r#"{"command":"shutdown"}"#);
+        let parsed: Request = serde_json::from_str(r#"{"command":"stop"}"#).unwrap();
+        assert_eq!(parsed.command, Command::Stop);
     }
 }

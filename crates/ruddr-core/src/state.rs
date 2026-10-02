@@ -25,6 +25,9 @@ pub enum Status {
     Starting,
     Active,
     Idle,
+    /// An idle session that accepted `stop` and is shutting down (written by
+    /// 0.5 controllers; 0.6 controllers keep it in memory).
+    Stopping,
     Completed,
     Failed,
     Interrupted,
@@ -41,6 +44,7 @@ impl Status {
             Status::Starting => "starting",
             Status::Active => "active",
             Status::Idle => "idle",
+            Status::Stopping => "stopping",
             Status::Completed => "completed",
             Status::Failed => "failed",
             Status::Interrupted => "interrupted",

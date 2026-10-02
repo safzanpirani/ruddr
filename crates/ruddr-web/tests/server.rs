@@ -483,7 +483,7 @@ async fn interrupts_active_turns_and_stops_idle_sessions() {
         f.requests(),
         vec![
             json!({ "command": "interrupt", "expectedTurnId": "turn-1" }),
-            json!({ "command": "stop" })
+            json!({ "command": "shutdown" })
         ]
     );
 }
