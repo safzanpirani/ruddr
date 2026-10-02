@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "0.5.0"
+const version = "0.5.1"
 
 func main() {
 	ctx := context.Background()
