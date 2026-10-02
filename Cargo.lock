@@ -859,9 +859,12 @@ dependencies = [
 name = "ruddr-runner"
 version = "0.6.0"
 dependencies = [
+ "interprocess",
+ "libc",
  "ruddr-core",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

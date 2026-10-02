@@ -9,3 +9,22 @@ license.workspace = true
 ruddr-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+# The control channel is a named pipe on Windows.
+interprocess.workspace = true
+
+# The fake app-server the lifecycle tests drive. Examples build with
+# `cargo test` and never ship.
+[[example]]
+name = "fake_app_server"
+test = false
+
+# A stand-in `ruddr` binary for end-to-end tests of signals and --detach.
+[[example]]
+name = "ruddr_run"
+test = false

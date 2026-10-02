@@ -1,0 +1,224 @@
+//! Provider selection. Codex speaks the app-server protocol natively; Claude
+//! Code, OpenCode, Pi, and Factory Droid run behind `ruddr app-server
+//! --provider NAME`, which the runner starts as its own child. This module
+//! names the providers, validates user input, and finds the provider
+//! executables the adapters drive.
+
+use crate::error::{Error, Result};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Provider {
+    Codex,
+    Claude,
+    OpenCode,
+    Pi,
+    Droid,
+}
+
+impl Provider {
+    /// Every provider, in the order usage text lists them.
+    pub const ALL: [Provider; 5] = [Provider::Codex, Provider::Claude, Provider::OpenCode, Provider::Pi, Provider::Droid];
+
+    /// Parses a provider name. An empty name means Codex, the default.
+    pub fn parse(name: &str) -> Result<Provider> {
+        match name {
+            "" | "codex" => Ok(Provider::Codex),
+            "claude" => Ok(Provider::Claude),
+            "opencode" => Ok(Provider::OpenCode),
+            "pi" => Ok(Provider::Pi),
+            "droid" => Ok(Provider::Droid),
+            other => Err(Error::usage(format!(
+                "unsupported provider {other:?}; expected codex, claude, opencode, pi, or droid"
+            ))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Codex => "codex",
+            Provider::Claude => "claude",
+            Provider::OpenCode => "opencode",
+            Provider::Pi => "pi",
+            Provider::Droid => "droid",
+        }
+    }
+
+    /// Whether the provider runs behind `ruddr app-server --provider NAME`.
+    pub fn is_adapter(self) -> bool {
+        self != Provider::Codex
+    }
+
+    /// Whether `run --fork-thread` works. Droid forks copy the whole session,
+    /// so only Codex accepts the fork boundary selectors.
+    pub fn supports_fork(self) -> bool {
+        matches!(self, Provider::Codex | Provider::Droid)
+    }
+
+    /// The `run` flag that names the provider executable.
+    pub fn path_flag(self) -> Option<&'static str> {
+        match self {
+            Provider::Codex => None,
+            Provider::Claude => Some("claude-path"),
+            Provider::OpenCode => Some("opencode-path"),
+            Provider::Pi => Some("pi-path"),
+            Provider::Droid => Some("droid-path"),
+        }
+    }
+
+    /// The environment variable that names the provider executable when the
+    /// flag is absent.
+    pub fn path_env(self) -> Option<&'static str> {
+        match self {
+            Provider::Codex => None,
+            Provider::Claude => Some("RUDDR_CLAUDE_PATH"),
+            Provider::OpenCode => Some("RUDDR_OPENCODE_PATH"),
+            Provider::Pi => Some("RUDDR_PI_PATH"),
+            Provider::Droid => Some("RUDDR_DROID_PATH"),
+        }
+    }
+
+    /// Executable names searched on `PATH`, in order. Claude has none: the
+    /// adapter finds `claude` itself when no path is given.
+    pub fn executable_names(self) -> &'static [&'static str] {
+        match self {
+            Provider::Codex => &["codex"],
+            Provider::Claude => &[],
+            Provider::OpenCode => &["opencode2", "opencode-next"],
+            Provider::Pi => &["pi"],
+            Provider::Droid => &["droid"],
+        }
+    }
+}
+
+impl std::fmt::Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Provider {
+    type Err = Error;
+    fn from_str(name: &str) -> Result<Provider> {
+        Provider::parse(name)
+    }
+}
+
+/// Maps a `RUDDR_*` variable to the `RUDDER_*` spelling earlier releases
+/// read, so existing shell configuration keeps working.
+pub fn previous_env_name(name: &str) -> String {
+    format!("RUDDER_{}", name.strip_prefix("RUDDR_").unwrap_or(name))
+}
+
+/// The provider executable an adapter run should drive.
+///
+/// The explicit flag wins, then the environment. Claude may resolve to
+/// `None`, which lets the adapter find `claude` itself. OpenCode, Pi, and
+/// Droid also search `PATH` and fail when nothing is found.
+pub fn resolve_executable(provider: Provider, flag: &str) -> Result<Option<String>> {
+    if !flag.is_empty() {
+        return Ok(Some(flag.to_string()));
+    }
+    let Some(env) = provider.path_env() else { return Ok(None) };
+    if provider == Provider::Claude {
+        // Go releases read only RUDDR_CLAUDE_PATH for Claude.
+        return Ok(crate::paths::env_any(&[env]));
+    }
+    if let Some(path) = crate::paths::env_any(&[env, &previous_env_name(env)]) {
+        return Ok(Some(path));
+    }
+    for name in provider.executable_names() {
+        if let Some(path) = look_path(name) {
+            return Ok(Some(path.to_string_lossy().into_owned()));
+        }
+    }
+    Err(Error::failed(format!(
+        "{provider} support requires {} on PATH or {env}",
+        provider.executable_names().join(" or ")
+    )))
+}
+
+/// Finds an executable on `PATH`, like Go's `exec.LookPath`. A name that
+/// contains a path separator is checked as given.
+pub fn look_path(name: &str) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
+        let path = PathBuf::from(name);
+        return executable_candidate(&path);
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        // An empty PATH entry means the current directory, which Go stopped
+        // searching for safety; skip it too.
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if let Some(found) = executable_candidate(&dir.join(name)) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn executable_candidate(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then(|| path.to_path_buf())
+}
+
+#[cfg(not(unix))]
+fn executable_candidate(path: &Path) -> Option<PathBuf> {
+    let is_file = |p: &Path| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false);
+    if path.extension().is_some() && is_file(path) {
+        return Some(path.to_path_buf());
+    }
+    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    for extension in extensions.split(';').filter(|e| !e.is_empty()) {
+        let mut candidate = path.as_os_str().to_owned();
+        candidate.push(extension);
+        let candidate = PathBuf::from(candidate);
+        if is_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_names_providers() {
+        assert_eq!(Provider::parse("").unwrap(), Provider::Codex);
+        for provider in Provider::ALL {
+            assert_eq!(Provider::parse(provider.as_str()).unwrap(), provider);
+        }
+        let error = Provider::parse("other").unwrap_err();
+        assert_eq!(error.exit, crate::Exit::Usage);
+        assert!(error.message.contains("expected codex, claude, opencode, pi, or droid"));
+        assert!(Provider::Droid.supports_fork() && !Provider::Pi.supports_fork());
+    }
+
+    #[test]
+    fn previous_names_keep_working() {
+        assert_eq!(previous_env_name("RUDDR_CLAUDE_PATH"), "RUDDER_CLAUDE_PATH");
+    }
+
+    #[test]
+    fn explicit_paths_win_and_claude_may_stay_unset() {
+        assert_eq!(resolve_executable(Provider::Pi, "/opt/pi").unwrap().as_deref(), Some("/opt/pi"));
+        assert_eq!(resolve_executable(Provider::Codex, "").unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn look_path_finds_executables_only() {
+        assert!(look_path("sh").is_some());
+        assert!(look_path("ruddr-no-such-binary-anywhere").is_none());
+        assert_eq!(look_path("/bin/sh"), Some(PathBuf::from("/bin/sh")));
+    }
+}
