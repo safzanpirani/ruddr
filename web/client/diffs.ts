@@ -33,10 +33,15 @@ export function fileDiffForEdit(edit: FileEdit, key: string): FileDiffMetadata |
   key = `${key}:${++diffRevision}`;
   try {
     if (edit.oldText !== undefined || edit.newText !== undefined) {
-      return parseDiffFromFile(
+      const metadata = parseDiffFromFile(
         { name: edit.path, contents: edit.oldText ?? "", cacheKey: `${key}:old` },
         { name, contents: edit.newText ?? "", cacheKey: `${key}:new` },
       );
+      if (edit.fragment) for (const hunk of metadata.hunks) {
+        hunk.noEOFCRAdditions = false;
+        hunk.noEOFCRDeletions = false;
+      }
+      return metadata;
     }
     if (edit.diff === undefined) return undefined;
     if (edit.kind === "add" && !/^@@ /m.test(edit.diff))
@@ -58,7 +63,10 @@ export function renderEdit(host: HTMLElement, edit: FileEdit, key: string, prefe
     host.append(h("div", { class: "diff-empty" }, edit.diff ? "This change could not be parsed as a diff." : "The provider sent no patch for this edit."));
     return () => {};
   }
-  const instance = new FileDiff(baseOptions(preferences, { disableFileHeader: true }));
+  const instance = new FileDiff(baseOptions(preferences, {
+    disableFileHeader: true,
+    ...(edit.fragment ? { disableLineNumbers: true, hunkSeparators: "simple" } : {}),
+  }));
   instance.render({ fileDiff: metadata, containerWrapper: host });
   return () => instance.cleanUp();
 }

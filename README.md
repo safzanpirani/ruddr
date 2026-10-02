@@ -701,6 +701,8 @@ searches, or tool calls folds into one row; click it to expand the run. A
 session row flashes once in its new color when its status changes.
 The Chat tab renders available file edits as syntax-highlighted diffs from
 Codex patches and adapter edit-tool inputs. Providers can omit patches.
+Adapter replacement snippets omit file line numbers and EOF markers because
+the snippets do not identify their position in the file.
 Unnumbered apply_patch hunks can lack the location data that Pierre needs.
 Write inputs without previous content show the supplied content as additions.
 The Diff tab shows the working tree against `HEAD` with a file tree, split or
@@ -725,7 +727,7 @@ private network such as Tailscale, never to a public interface. It reads run
 files only for verified sessions it discovered. The authenticated working-directory
 picker can list directory names across the host filesystem. New sessions can
 use any existing working directory that the server account can write to.
-The stream loads the last 6 MiB of events and skips oversized unfinished records.
+The stream loads the last 6 MiB of events and skips records larger than 6 MiB.
 `RUDDR_WEB_HOST`, `RUDDR_WEB_PORT`,
 `--token-file`, and `RUDDR_WEB_ENTRY` override the defaults. Like the TUI, it
 needs Bun 1.4 or newer; it bundles the browser client at startup.

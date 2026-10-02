@@ -104,10 +104,10 @@ describe("file edits", () => {
   });
 
   test("reads Claude Edit, Write, and MultiEdit inputs", () => {
-    expect(fileEditsFromItem({ input: { file_path: "x.ts", old_string: "a", new_string: "b\nc" } })).toEqual([{ path: "x.ts", kind: "update", oldText: "a", newText: "b\nc" }]);
+    expect(fileEditsFromItem({ input: { file_path: "x.ts", old_string: "a", new_string: "b\nc" } })).toEqual([{ path: "x.ts", kind: "update", fragment: true, oldText: "a", newText: "b\nc" }]);
     expect(fileEditsFromItem({ input: { file_path: "y.ts", content: "new" } })).toEqual([{ path: "y.ts", kind: "add", oldText: "", newText: "new" }]);
     expect(fileEditsFromItem({ input: { file_path: "z.ts", edits: [{ old_string: "1", new_string: "2" }] } })).toHaveLength(1);
-    expect(fileEditsFromItem({ input: { filePath: "o.ts", oldString: "p", newString: "q" } })).toEqual([{ path: "o.ts", kind: "update", oldText: "p", newText: "q" }]);
+    expect(fileEditsFromItem({ input: { filePath: "o.ts", oldString: "p", newString: "q" } })).toEqual([{ path: "o.ts", kind: "update", fragment: true, oldText: "p", newText: "q" }]);
   });
 
   test("splits apply_patch envelopes", () => {

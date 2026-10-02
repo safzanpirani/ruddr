@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile, appendFile, symlink, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eventStream, isSameOriginMutation, loadToken, parseWebArguments, readAlignedTail, WebApp } from "./server";
+import { consumeEventBytes, eventStream, isSameOriginMutation, loadToken, parseWebArguments, readAlignedTail, readRange, WebApp } from "./server";
 
 const TOKEN = "t".repeat(40);
 let root: string;
@@ -177,6 +177,49 @@ describe("auth regressions", () => {
 });
 
 describe("session boundary regressions", () => {
+  test("rejects cached directory replacements and closes an existing event stream", async () => {
+    const outside = join(root, "outside-run");
+    await mkdir(outside);
+    await writeFile(join(outside, "output.md"), "OUTSIDE_FIXTURE");
+    await writeFile(join(outside, "events.jsonl"), '{"outside":true}\n');
+    const controller = new AbortController();
+    const stream = await request(`/api/run/events?dir=${encodeURIComponent(stateDir)}`, { signal: controller.signal });
+    const reader = stream.body!.getReader();
+    await reader.read();
+    const saved = `${stateDir}.saved`;
+    await rename(stateDir, saved);
+    try {
+      await symlink(outside, stateDir);
+      for (const route of ["output", "activity", "events", "diff"]) {
+        expect((await request(`/api/run/${route}?dir=${encodeURIComponent(stateDir)}`)).status).toBe(404);
+      }
+      let text = "";
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      try {
+        while (true) {
+          const result = await reader.read();
+          if (result.done) break;
+          text += new TextDecoder().decode(result.value);
+        }
+      } finally { clearTimeout(timeout); }
+      expect(controller.signal.aborted).toBe(false);
+      expect(text).not.toContain("outside");
+      await app.refreshSessions();
+      expect(app.sessionFor(stateDir)).toBeUndefined();
+      await rm(stateDir);
+      await mkdir(stateDir);
+      await writeState("active");
+      await app.refreshSessions();
+      expect(app.sessionFor(stateDir)).toBeUndefined();
+      await rm(stateDir, { recursive: true });
+    } finally {
+      controller.abort(); await reader.cancel().catch(() => {});
+      await rm(stateDir, { recursive: true, force: true });
+      await rename(saved, stateDir);
+      await app.refreshSessions();
+    }
+  });
+
   test("ignores artifact paths supplied by state metadata and refuses symlink artifacts", async () => {
     const secret = join(root, "outside-output");
     await writeFile(secret, "OUTSIDE");
@@ -217,6 +260,47 @@ describe("session boundary regressions", () => {
 });
 
 describe("stream regressions", () => {
+  test("retains a complete record when the tail starts exactly on a line boundary", async () => {
+    const file = join(root, "aligned-boundary");
+    const kept = '{"text":"😀"}\n';
+    await writeFile(file, '{}\n' + kept);
+    const tail = await readAlignedTail(file, Buffer.byteLength(kept));
+    expect(tail.text).toBe(kept);
+    expect(tail.offset).toBe(Buffer.byteLength('{}\n' + kept));
+    expect(tail.pending.length).toBe(0);
+    expect(tail.skipping).toBe(false);
+    expect(tail.truncated).toBe(true);
+  });
+
+  test("rejects a log replaced between the size probe and the range read", async () => {
+    const file = join(root, "rotation-race");
+    await writeFile(file, '{}\n');
+    const tail = await readAlignedTail(file, 100);
+    await rename(file, `${file}.old`);
+    await writeFile(file, '{"replacement":true}\n');
+    expect(await readRange(file, tail.offset, tail.offset + 4, tail.identity)).toBeUndefined();
+    const replacement = await readAlignedTail(file, 100);
+    expect(replacement.text).toBe('{"replacement":true}\n');
+    expect((await readRange(file, 0, replacement.offset, replacement.identity))?.toString()).toBe(replacement.text);
+  });
+
+  test("skips an oversized completed record and recovers the next record", () => {
+    const limit = 6 * 1024 * 1024;
+    const record = Buffer.from(JSON.stringify({ text: "x".repeat(limit + 100) }) + "\n");
+    const first = consumeEventBytes(Buffer.alloc(0), false, record.subarray(0, 4 * 1024 * 1024), limit);
+    expect(first.pending.length).toBe(4 * 1024 * 1024);
+    const next = consumeEventBytes(first.pending, first.skipping, Buffer.concat([record.subarray(4 * 1024 * 1024), Buffer.from('{"valid":"😀"}\n')]), limit);
+    expect(next.text).toBe('{"valid":"😀"}\n');
+    expect(next.pending.length).toBe(0);
+    expect(next.oversized).toBe(true);
+    expect(next.skipping).toBe(false);
+    const unfinished = consumeEventBytes(Buffer.alloc(0), false, Buffer.alloc(limit + 1, 120), limit);
+    expect(unfinished.skipping).toBe(true);
+    expect(unfinished.pending.length).toBe(0);
+    expect(consumeEventBytes(unfinished.pending, unfinished.skipping, Buffer.from('end\n{}\n'), limit).text).toBe('{}\n');
+    expect(consumeEventBytes(Buffer.alloc(0), false, Buffer.from('1234567\n{}\n'), 8).text).toBe('1234567\n{}\n');
+  });
+
   test("keeps byte offsets and partial UTF-8 across tail boundaries", async () => {
     const file = join(root, "utf8-events");
     const bytes = Buffer.from('{"text":"é"}\n{"text":"😀"}\n');
