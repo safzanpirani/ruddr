@@ -23,3 +23,8 @@ interprocess.workspace = true
 [[example]]
 name = "fake_app_server"
 test = false
+
+# A stand-in `ruddr` binary for end-to-end tests of signals and --detach.
+[[example]]
+name = "ruddr_run"
+test = false

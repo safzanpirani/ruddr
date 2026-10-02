@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 const CONNECTION_DEADLINE: Duration = Duration::from_secs(120);
 /// The largest request line accepted; prompts travel in it.
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
-const ACCEPT_POLL: Duration = Duration::from_millis(10);
+/// How often the nonblocking listener checks for clients and for closing.
+const ACCEPT_POLL: Duration = Duration::from_millis(25);
 
 pub trait Connection: Read + Write + Send {}
 impl<T: Read + Write + Send> Connection for T {}

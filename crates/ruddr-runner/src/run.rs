@@ -96,9 +96,13 @@ fn watch_cancel(controller: &Arc<Controller>, cancel: &CancelToken) -> Arc<Atomi
     let finished = Arc::new(AtomicBool::new(false));
     let (flag, token, controller) = (finished.clone(), cancel.clone(), controller.clone());
     let _ = std::thread::Builder::new().name("ruddr-cancel".into()).spawn(move || {
+        // The token wakes this thread at once; the timeout only bounds how
+        // long it outlives the run.
         while !flag.load(Ordering::SeqCst) {
-            if token.wait_timeout(Duration::from_millis(50)) {
-                controller.cancel_session();
+            if token.wait_timeout(Duration::from_millis(250)) {
+                if !flag.load(Ordering::SeqCst) {
+                    controller.cancel_session();
+                }
                 return;
             }
         }
