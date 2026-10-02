@@ -28,9 +28,9 @@ ratatui = "0.30"
 crossterm = "0.29"
 unicode-width = "0.2"
 # The web crate alone uses an async runtime.
-axum = "0.8"
+axum = { version = "0.8", default-features = false }
 tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "process", "fs", "io-util"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", default-features = false }
 ureq = "3"
 sha2 = "0.11"
 
