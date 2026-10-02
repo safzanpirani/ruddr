@@ -1,22 +1,21 @@
 // Styled text helpers: markdown, code highlighting, word wrap, search marks.
 
 use crate::theme::Palette;
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-/// One logical line plus the copy group it belongs to (chat entry, diff line…).
-#[derive(Clone)]
+/// One logical line plus the indent its wrapped continuation rows get.
+#[derive(Clone, Debug)]
 pub struct Row {
     pub line: Line<'static>,
-    pub group: usize,
     /// Continuation indent applied to wrapped rows.
     pub indent: u16,
 }
 
 impl Row {
-    pub fn new(line: Line<'static>, group: usize) -> Row {
-        Row { line, group, indent: 0 }
+    pub fn new(line: Line<'static>) -> Row {
+        Row { line, indent: 0 }
     }
     pub fn indent(mut self, indent: u16) -> Row {
         self.indent = indent;
@@ -24,13 +23,14 @@ impl Row {
     }
 }
 
+#[cfg(test)]
 pub fn line_text(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 /// Greedy word wrap that keeps span styles, prefers breaking at spaces, and
 /// styles every case-insensitive `query` match with `mark`.
-pub fn wrap_rows(rows: &[Row], width: usize, query: &str, mark: Style, current_mark: Style, current_group: Option<usize>) -> Vec<Row> {
+pub fn wrap_rows(rows: &[Row], width: usize, query: &str, mark: Style) -> Vec<Line<'static>> {
     let width = width.max(4);
     let needle: Vec<char> = query.to_lowercase().chars().collect();
     let mut out = Vec::with_capacity(rows.len());
@@ -42,12 +42,11 @@ pub fn wrap_rows(rows: &[Row], width: usize, query: &str, mark: Style, current_m
         }
         if !needle.is_empty() {
             let lower: Vec<char> = cells.iter().map(|(c, _)| c.to_lowercase().next().unwrap_or(*c)).collect();
-            let style = if Some(row.group) == current_group { current_mark } else { mark };
             let mut i = 0;
             while i + needle.len() <= lower.len() {
                 if lower[i..i + needle.len()] == needle[..] {
                     for cell in &mut cells[i..i + needle.len()] {
-                        cell.1 = cell.1.patch(style);
+                        cell.1 = cell.1.patch(mark);
                     }
                     i += needle.len();
                 } else {
@@ -57,11 +56,7 @@ pub fn wrap_rows(rows: &[Row], width: usize, query: &str, mark: Style, current_m
         }
         let widths: Vec<usize> = cells.iter().map(|(c, _)| c.width().unwrap_or(0)).collect();
         if widths.iter().sum::<usize>() <= width {
-            out.push(Row {
-                line: to_line(&cells, 0, row.line.style),
-                group: row.group,
-                indent: row.indent,
-            });
+            out.push(to_line(&cells, 0, row.line.style));
             continue;
         }
         let mut start = 0;
@@ -78,22 +73,17 @@ pub fn wrap_rows(rows: &[Row], width: usize, query: &str, mark: Style, current_m
             if end == start {
                 end = start + 1;
             }
-            if end < cells.len() {
-                if let Some(space) = (start + 1..end).rev().find(|i| cells[*i].0 == ' ') {
-                    if space - start > room / 3 {
-                        end = space + 1;
-                    }
-                }
+            if end < cells.len()
+                && let Some(space) = (start + 1..end).rev().find(|i| cells[*i].0 == ' ')
+                && space - start > room / 3
+            {
+                end = space + 1;
             }
             let mut piece = &cells[start..end];
             while piece.len() > 1 && piece.last().is_some_and(|c| c.0 == ' ') && end < cells.len() {
                 piece = &piece[..piece.len() - 1];
             }
-            out.push(Row {
-                line: to_line(piece, indent, row.line.style),
-                group: row.group,
-                indent: row.indent,
-            });
+            out.push(to_line(piece, indent, row.line.style));
             start = end;
             first = false;
         }
@@ -157,27 +147,25 @@ pub fn inline(text: &str, base: Style, p: &Palette) -> Vec<Span<'static>> {
             && chars.get(i + 1).is_some_and(|n| !n.is_whitespace())
             && (i == 0 || !chars[i - 1].is_alphanumeric())
         {
-            if let Some(end) = find(i + 1, &[c]) {
-                if end > i + 1 {
-                    flush(&mut buf, &mut spans, base);
-                    let inner: String = chars[i + 1..end].iter().collect();
-                    spans.push(Span::styled(inner, base.add_modifier(Modifier::ITALIC)));
-                    i = end + 1;
-                    continue;
-                }
+            if let Some(end) = find(i + 1, &[c])
+                && end > i + 1
+            {
+                flush(&mut buf, &mut spans, base);
+                let inner: String = chars[i + 1..end].iter().collect();
+                spans.push(Span::styled(inner, base.add_modifier(Modifier::ITALIC)));
+                i = end + 1;
+                continue;
             }
-        } else if c == '[' {
-            if let Some(close) = find(i + 1, &[']']) {
-                if chars.get(close + 1) == Some(&'(') {
-                    if let Some(paren) = find(close + 2, &[')']) {
-                        flush(&mut buf, &mut spans, base);
-                        let label: String = chars[i + 1..close].iter().collect();
-                        spans.push(Span::styled(label, base.fg(p.accent.c()).add_modifier(Modifier::UNDERLINED)));
-                        i = paren + 1;
-                        continue;
-                    }
-                }
-            }
+        } else if c == '['
+            && let Some(close) = find(i + 1, &[']'])
+            && chars.get(close + 1) == Some(&'(')
+            && let Some(paren) = find(close + 2, &[')'])
+        {
+            flush(&mut buf, &mut spans, base);
+            let label: String = chars[i + 1..close].iter().collect();
+            spans.push(Span::styled(label, base.fg(p.accent.c()).add_modifier(Modifier::UNDERLINED)));
+            i = paren + 1;
+            continue;
         }
         buf.push(c);
         i += 1;
@@ -186,7 +174,7 @@ pub fn inline(text: &str, base: Style, p: &Palette) -> Vec<Span<'static>> {
     spans
 }
 
-pub fn markdown(text: &str, group: usize, p: &Palette, base: Style) -> Vec<Row> {
+pub fn markdown(text: &str, p: &Palette, base: Style) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut fence: Option<String> = None;
     for raw in text.lines() {
@@ -194,19 +182,16 @@ pub fn markdown(text: &str, group: usize, p: &Palette, base: Style) -> Vec<Row> 
         if let Some(lang) = trimmed.strip_prefix("```") {
             if fence.is_some() {
                 fence = None;
-                rows.push(Row::new(Line::styled("╰─", Style::new().fg(p.border.c())), group));
+                rows.push(Row::new(Line::styled("╰─", Style::new().fg(p.border.c()))));
             } else {
                 let lang = lang.trim().to_string();
-                rows.push(Row::new(
-                    Line::from(vec![
-                        Span::styled("╭─ ", Style::new().fg(p.border.c())),
-                        Span::styled(
-                            if lang.is_empty() { "code".into() } else { lang.clone() },
-                            Style::new().fg(p.dim.c()).italic(),
-                        ),
-                    ]),
-                    group,
-                ));
+                rows.push(Row::new(Line::from(vec![
+                    Span::styled("╭─ ", Style::new().fg(p.border.c())),
+                    Span::styled(
+                        if lang.is_empty() { "code".into() } else { lang.clone() },
+                        Style::new().fg(p.dim.c()).italic(),
+                    ),
+                ])));
                 fence = Some(lang);
             }
             continue;
@@ -214,7 +199,7 @@ pub fn markdown(text: &str, group: usize, p: &Palette, base: Style) -> Vec<Row> 
         if let Some(lang) = &fence {
             let mut spans = vec![Span::styled("│ ", Style::new().fg(p.border.c()))];
             spans.extend(highlight_code(raw, lang, p));
-            rows.push(Row::new(Line::from(spans), group).indent(2));
+            rows.push(Row::new(Line::from(spans)).indent(2));
             continue;
         }
         let level = trimmed.chars().take_while(|c| *c == '#').count();
@@ -222,18 +207,18 @@ pub fn markdown(text: &str, group: usize, p: &Palette, base: Style) -> Vec<Row> 
             let style = base
                 .fg(if level == 1 { p.accent.c() } else { p.warning.c() })
                 .add_modifier(Modifier::BOLD);
-            rows.push(Row::new(Line::from(inline(trimmed[level..].trim(), style, p)), group));
+            rows.push(Row::new(Line::from(inline(trimmed[level..].trim(), style, p))));
             continue;
         }
         if trimmed == "---" || trimmed == "***" {
-            rows.push(Row::new(Line::styled("─".repeat(24), Style::new().fg(p.border.c())), group));
+            rows.push(Row::new(Line::styled("─".repeat(24), Style::new().fg(p.border.c()))));
             continue;
         }
         let indent = raw.len() - trimmed.len();
         if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
             let mut spans = vec![Span::raw(" ".repeat(indent)), Span::styled("• ", Style::new().fg(p.accent.c()))];
             spans.extend(inline(rest, base, p));
-            rows.push(Row::new(Line::from(spans), group).indent(indent as u16 + 2));
+            rows.push(Row::new(Line::from(spans)).indent(indent as u16 + 2));
             continue;
         }
         let digits = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
@@ -243,16 +228,16 @@ pub fn markdown(text: &str, group: usize, p: &Palette, base: Style) -> Vec<Row> 
                 Span::styled(trimmed[..digits + 2].to_string(), Style::new().fg(p.accent.c())),
             ];
             spans.extend(inline(&trimmed[digits + 2..], base, p));
-            rows.push(Row::new(Line::from(spans), group).indent((indent + digits + 2) as u16));
+            rows.push(Row::new(Line::from(spans)).indent((indent + digits + 2) as u16));
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("> ") {
             let mut spans = vec![Span::styled("▎ ", Style::new().fg(p.dim.c()))];
             spans.extend(inline(rest, base.fg(p.dim.c()).italic(), p));
-            rows.push(Row::new(Line::from(spans), group).indent(2));
+            rows.push(Row::new(Line::from(spans)).indent(2));
             continue;
         }
-        rows.push(Row::new(Line::from(inline(raw, base, p)), group));
+        rows.push(Row::new(Line::from(inline(raw, base, p))));
     }
     rows
 }
@@ -422,9 +407,9 @@ mod tests {
 
     #[test]
     fn wraps_at_spaces() {
-        let rows = vec![Row::new(Line::from("hello brave new world"), 0)];
-        let wrapped = wrap_rows(&rows, 12, "", Style::new(), Style::new(), None);
-        let texts: Vec<String> = wrapped.iter().map(|r| line_text(&r.line)).collect();
+        let rows = vec![Row::new(Line::from("hello brave new world"))];
+        let wrapped = wrap_rows(&rows, 12, "", Style::new());
+        let texts: Vec<String> = wrapped.iter().map(line_text).collect();
         assert_eq!(texts, vec!["hello brave", "new world"]);
     }
 
