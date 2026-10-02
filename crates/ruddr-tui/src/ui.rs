@@ -1,20 +1,26 @@
-// Rendering and motion. Every animation derives from wall-clock time, so a
-// slow frame never desynchronises it.
+//! Rendering and motion. Every animation derives from wall-clock time, so a
+//! slow frame never desynchronises it. Anything that moves asks for its next
+//! frame with `app.animate`; when nothing visible moves, nothing redraws.
 
+use crate::app::*;
+use crate::cache::{Key, hash_query};
 use crate::core::*;
-use crate::text::{highlight_code, line_text, markdown, wrap_rows, Row};
 use crate::theme::{Palette, Rgb};
-use crate::*;
+use crate::view::{self, SPINNER, SPINNER_MS, seconds, shimmer};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout as Split, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
-use ratatui::Frame;
+use ruddr_core::state::Status;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LOGO: [&str; 3] = ["┏━┓╻ ╻╺┳┓╺┳┓┏━┓", "┣┳┛┃ ┃ ┃┃ ┃┃┣┳┛", "╹┗╸┗━┛╺┻┛╺┻┛╹┗╸"];
+/// Smooth transitions (easing, sliding) run at this frame interval.
+const TRANSITION: Duration = Duration::from_millis(16);
+/// Breathing pulses and shimmers need far fewer frames.
+const PULSE: Duration = Duration::from_millis(66);
 
 fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -25,26 +31,48 @@ fn progress(since: Instant, ms: u64) -> f32 {
     (since.elapsed().as_secs_f32() * 1000.0 / ms as f32).clamp(0.0, 1.0)
 }
 
-fn seconds(app: &App) -> f32 {
-    app.started.elapsed().as_secs_f32()
+fn spinner(app: &mut App) -> &'static str {
+    let elapsed = app.started.elapsed().as_millis() as u64;
+    app.animate(Duration::from_millis(SPINNER_MS - elapsed % SPINNER_MS));
+    SPINNER[(elapsed / SPINNER_MS) as usize % SPINNER.len()]
 }
 
-fn spinner(app: &App) -> &'static str {
-    SPINNER[(app.started.elapsed().as_millis() / 80) as usize % SPINNER.len()]
-}
-
-/// A slow breathing pulse between 0 and 1.
-fn pulse(app: &App, period: f32) -> f32 {
+/// A slow breathing pulse between 0 and 1. It asks for frames.
+fn pulse(app: &mut App, period: f32) -> f32 {
+    app.animate(PULSE);
     0.5 - 0.5 * (seconds(app) * std::f32::consts::TAU / period).cos()
 }
 
-fn status_color(p: &Palette, status: &str) -> Rgb {
+/// Whether the caret of a blinking cursor shows now; asks for the next flip.
+fn blink(app: &mut App, since: Instant) -> bool {
+    let elapsed = since.elapsed().as_millis() as u64;
+    app.animate(Duration::from_millis(530 - elapsed % 530));
+    (elapsed / 530).is_multiple_of(2)
+}
+
+/// Asks for a frame when a relative time label next changes: every second
+/// while it counts seconds, then every minute or hour. `elapsed` labels keep
+/// seconds up to an hour ("12m 5s").
+fn clock_tick(app: &mut App, timestamp: &str, now: i64, elapsed: bool) {
+    let Some(at) = parse_time(timestamp) else { return };
+    let ms = (now - at).max(0) as u64;
+    let unit = if ms < 60_000 || (elapsed && ms < 3_600_000) {
+        1_000
+    } else if ms < 3_600_000 || elapsed {
+        60_000
+    } else {
+        3_600_000
+    };
+    app.animate(Duration::from_millis(unit - ms % unit));
+}
+
+fn status_color(p: &Palette, status: Status) -> Rgb {
     match status {
-        "active" => p.success,
-        "idle" | "starting" => p.accent,
-        "failed" | "stale" => p.danger,
-        "interrupted" => p.warning,
-        _ => p.dim,
+        Status::Active => p.success,
+        Status::Idle | Status::Starting => p.accent,
+        Status::Failed | Status::Stale => p.danger,
+        Status::Interrupted => p.warning,
+        Status::Completed => p.dim,
     }
 }
 
@@ -66,7 +94,7 @@ fn title<'a>(p: &Palette, text: impl Into<String>, focused: bool) -> Line<'a> {
     ))
 }
 
-/// Text whose colour sweeps between two colours over time.
+/// Text whose colour sweeps between two colours.
 fn gradient<'a>(text: &str, from: Rgb, to: Rgb, phase: f32, style: Style) -> Vec<Span<'a>> {
     let count = text.chars().count().max(1) as f32;
     text.chars()
@@ -78,24 +106,22 @@ fn gradient<'a>(text: &str, from: Rgb, to: Rgb, phase: f32, style: Style) -> Vec
         .collect()
 }
 
-/// A bright band that travels across dim text.
-fn shimmer<'a>(text: &str, base: Rgb, bright: Rgb, app: &App) -> Vec<Span<'a>> {
-    let count = text.chars().count() as f32;
-    let head = (seconds(app) * 14.0) % (count + 12.0) - 6.0;
-    text.chars()
-        .enumerate()
-        .map(|(i, c)| {
-            let d = (i as f32 - head).abs();
-            let t = (1.0 - d / 5.0).max(0.0);
-            Span::styled(c.to_string(), Style::new().fg(base.mix(bright, t).c()))
-        })
-        .collect()
+fn any_working(app: &App) -> bool {
+    app.sessions.iter().any(|s| matches!(s.status, Status::Active | Status::Starting))
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let was_mobile = app.mobile_now;
     app.mobile_now = app.args.mobile || area.width <= app.mobile_threshold;
+    // Switching to the chat-first layout hides the session list, so keys go
+    // to the chat until the drawer opens.
+    if app.mobile_now && !was_mobile && !app.drawer {
+        app.focus = Focus::Artifact;
+    }
     app.hits.clear();
+    app.next_frame = None;
+    app.frames += 1;
     let p = *app.palette();
     frame.render_widget(Block::default().style(Style::new().bg(p.background.c()).fg(p.text.c())), area);
     if app.splash {
@@ -126,9 +152,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.drawer_anim += (target - app.drawer_anim) * 0.35;
             if (app.drawer_anim - target).abs() < 0.02 {
                 app.drawer_anim = target;
+            } else {
+                app.animate(TRANSITION);
             }
             if app.drawer_anim > 0.0 {
-                let full = (body.width.saturating_sub(4)).min(52).max(20);
+                let full = (body.width.saturating_sub(4)).clamp(20, 52);
                 let width = (full as f32 * ease_out(app.drawer_anim)).round() as u16;
                 if width > 2 {
                     // Dim everything behind the drawer.
@@ -183,15 +211,15 @@ fn dim_region(frame: &mut Frame, area: Rect, p: &Palette, amount: f32) {
                 ratatui::style::Color::Rgb(r, g, b) => Rgb(r, g, b),
                 _ => p.background,
             };
-            let shade = Rgb(0, 0, 0);
             cell.set_fg(fg.mix(p.background, amount).c());
-            cell.set_bg(bg.mix(shade, amount * 0.5).c());
+            cell.set_bg(bg.mix(Rgb(0, 0, 0), amount * 0.5).c());
         }
     }
 }
 
-fn draw_splash(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette();
+fn draw_splash(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.animate(TRANSITION);
+    let p = *app.palette();
     let t = progress(app.started, 900);
     let width = LOGO[0].chars().count() as u16;
     let x = area.x + area.width.saturating_sub(width) / 2;
@@ -239,67 +267,86 @@ fn draw_splash(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = *app.palette();
-    let mut spans = vec![Span::raw(" ")];
-    spans.extend(gradient("◆ ruddr", p.accent, p.success, seconds(app) * 0.8, Style::new().bold()));
-    let mut essential = spans.len();
     let session = app.current().cloned();
+    let selected_working = session.as_ref().is_some_and(|s| s.status == Status::Active);
+    // The logo shimmers only while the selected session works.
+    let phase = if selected_working {
+        app.animate(PULSE);
+        seconds(app) * 0.8
+    } else {
+        1.2
+    };
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(gradient("◆ ruddr", p.accent, p.success, phase, Style::new().bold()));
+    let mut essential = spans.len();
     if let Some(s) = &session {
         spans.push(Span::styled("  │  ", Style::new().fg(p.border.c())));
         spans.push(Span::styled(project_name(s), Style::new().fg(p.text.c()).bold()));
         essential = spans.len();
-        if let Some(branch) = s.cwd.as_ref().and_then(|c| app.branches.get(c)).filter(|b| !b.is_empty()) {
+        if let Some(branch) = opt(&s.cwd).and_then(|c| app.branches.get(c)).filter(|b| !b.is_empty()) {
             spans.push(Span::styled(format!(":{branch}"), Style::new().fg(p.dim.c())));
         }
         spans.push(Span::styled(
-            format!("  {} {}", s.provider(), s.model.as_deref().unwrap_or(""))
-                + &s.effort.as_ref().map(|e| format!(" · {e}")).unwrap_or_default(),
+            format!("  {} {}", provider(s), s.model) + &s.effort.as_ref().map(|e| format!(" · {e}")).unwrap_or_default(),
             Style::new().fg(p.dim.c()),
         ));
-        if s.status == "active" && !app.mobile_now {
+        if selected_working && !app.mobile_now {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(format!("{} ", spinner(app)), Style::new().fg(p.success.c())));
-            spans.extend(shimmer("working", p.dim, p.success, app));
+            let glyph = spinner(app);
+            spans.push(Span::styled(format!("{glyph} "), Style::new().fg(p.success.c())));
+            spans.extend(shimmer("working", p.dim, p.success, seconds(app)));
             spans.push(Span::styled(
-                format!(" {}", format_elapsed(&s.started_at, &None, now_seconds())),
+                format!(" {}", format_elapsed(&s.started_at, None, now_ms())),
                 Style::new().fg(p.dim.c()),
             ));
         }
     }
     // Right side: context meter, live count, update badge.
     let mut right: Vec<Span> = Vec::new();
-    if let Some(usage) = session.as_ref().and_then(|s| s.token_usage.clone()) {
-        if let (Some(window), Some(used)) = (usage.context_window.filter(|w| *w > 0), usage.context_tokens) {
-            let ratio = (used as f32 / window as f32).clamp(0.0, 1.0);
-            app.meter_anim += (ratio - app.meter_anim) * 0.15;
-            let cells = 10;
-            let filled = app.meter_anim * cells as f32;
-            let colour = if ratio > 0.85 {
-                p.danger
-            } else if ratio > 0.6 {
-                p.warning
-            } else {
-                p.accent
-            };
-            right.push(Span::styled("ctx ", Style::new().fg(p.dim.c())));
-            for i in 0..cells {
-                let amount = (filled - i as f32).clamp(0.0, 1.0);
-                right.push(Span::styled(
-                    if amount > 0.5 { "▰" } else { "▱" },
-                    Style::new().fg(p.border.mix(colour, amount.max(0.15)).c()),
-                ));
-            }
-            right.push(Span::styled(format!(" {}%  ", (ratio * 100.0).round()), Style::new().fg(p.dim.c())));
+    if let Some((_, ratio)) = session
+        .as_ref()
+        .and_then(|s| context_usage(app, s))
+        .as_ref()
+        .and_then(context_ratio)
+    {
+        let ratio = ratio as f32;
+        app.meter_anim += (ratio - app.meter_anim) * 0.15;
+        if (ratio - app.meter_anim).abs() > 0.005 {
+            app.animate(TRANSITION);
+        } else {
+            app.meter_anim = ratio;
         }
+        let cells = 10;
+        let filled = app.meter_anim * cells as f32;
+        let colour = if ratio > 0.85 {
+            p.danger
+        } else if ratio > 0.6 {
+            p.warning
+        } else {
+            p.accent
+        };
+        right.push(Span::styled("ctx ", Style::new().fg(p.dim.c())));
+        for i in 0..cells {
+            let amount = (filled - i as f32).clamp(0.0, 1.0);
+            right.push(Span::styled(
+                if amount > 0.5 { "▰" } else { "▱" },
+                Style::new().fg(p.border.mix(colour, amount.max(0.15)).c()),
+            ));
+        }
+        right.push(Span::styled(format!(" {}%  ", (ratio * 100.0).round()), Style::new().fg(p.dim.c())));
     }
-    let live = app
-        .sessions
-        .iter()
-        .filter(|s| matches!(s.status.as_str(), "active" | "idle" | "starting"))
-        .count();
+    let live = app.sessions.iter().filter(|s| is_live(s.status)).count();
     if live > 0 {
-        let glow = p.success.mix(p.background, 0.5 * pulse(app, 2.4));
+        let glow = if any_working(app) {
+            p.success.mix(p.background, 0.5 * pulse(app, 2.4))
+        } else {
+            p.success
+        };
         right.push(Span::styled("● ", Style::new().fg(glow.c())));
         right.push(Span::styled(format!("{live} live "), Style::new().fg(p.text.c())));
+    }
+    if app.show_frames {
+        right.push(Span::styled(format!(" f{} ", app.frames), Style::new().fg(p.dim.c())));
     }
     if let Some(version) = &app.update {
         right.push(Span::styled(
@@ -310,11 +357,11 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut right_width: u16 = right.iter().map(|s| s.content.width() as u16).sum();
     let left_needed: u16 = spans.iter().take(essential).map(|s| s.content.width() as u16).sum();
     // Narrow screens drop the context meter before the project name.
-    if right_width + left_needed + 2 > area.width {
-        if let Some(start) = right.iter().position(|s| s.content == "ctx ") {
-            right.drain(start..start + 12);
-            right_width = right.iter().map(|s| s.content.width() as u16).sum();
-        }
+    if right_width + left_needed + 2 > area.width
+        && let Some(start) = right.iter().position(|s| s.content == "ctx ")
+    {
+        right.drain(start..start + 12);
+        right_width = right.iter().map(|s| s.content.width() as u16).sum();
     }
     let left_room = area.width.saturating_sub(right_width + 2) as usize;
     let mut used = 0;
@@ -344,10 +391,30 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// The session's token usage, with the context snapshot recovered from its
+/// events when the controller never recorded one.
+fn context_usage(app: &App, session: &Session) -> Option<ruddr_core::state::TokenUsage> {
+    let mut usage = session.token_usage.clone().unwrap_or_default();
+    if usage.context_tokens.is_none()
+        && app.sources.scope.0 == session.state_dir
+        && let Some(context) = app.sources.transcript.context
+    {
+        usage.context_tokens = Some(context.tokens);
+        if let Some(window) = context.window {
+            usage.context_window = window;
+        }
+    }
+    if session.token_usage.is_none() && usage.context_tokens.is_none() {
+        None
+    } else {
+        Some(usage)
+    }
+}
+
 fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let p = *app.palette();
     let visible: Vec<Session> = app.visible().into_iter().cloned().collect();
-    let live = visible.iter().filter(|s| !is_terminal(&s.status) && s.status != "stale").count();
+    let live = visible.iter().filter(|s| is_live(s.status)).count();
     let header = if app.filter.is_empty() {
         format!("sessions · {live} live · {}", visible.len())
     } else {
@@ -357,10 +424,14 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if visible.is_empty() {
+        let scratch = std::env::current_dir().unwrap_or_default().join(".scratch");
         let text = if app.filter.is_empty() {
-            "No sessions yet.\n\nPress n to start one."
+            format!(
+                "No sessions yet.\n\nWatching the global registry\nand {}.\n\nPress n to start one.",
+                crate::app::short_path(&scratch)
+            )
         } else {
-            "Nothing matches the filter."
+            "Nothing matches the filter.".to_string()
         };
         frame.render_widget(
             Paragraph::new(text).style(Style::new().fg(p.dim.c())).centered(),
@@ -384,8 +455,10 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     app.sel_anim += (selected as f32 - app.sel_anim) * 0.45;
     if (app.sel_anim - selected as f32).abs() < 0.05 {
         app.sel_anim = selected as f32;
+    } else {
+        app.animate(TRANSITION);
     }
-    let now = now_seconds();
+    let now = now_ms();
     let highlight_row = ((app.sel_anim - app.list_offset as f32) * per as f32).round() as i32;
     for (slot, session) in visible.iter().enumerate().skip(app.list_offset).take(rows) {
         let y = inner.y + ((slot - app.list_offset) * per) as u16;
@@ -396,24 +469,21 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             height: per as u16,
         };
         app.hits.push((rect, Hit::Session(slot)));
-        let colour = status_color(&p, &session.status);
+        let colour = status_color(&p, session.status);
         let mut bg = p.background;
         if let Some((_, changed)) = app.seen.get(&session.state_dir) {
             let flash = 1.0 - progress(*changed, 1600);
             if flash > 0.0 {
                 bg = bg.mix(colour, 0.35 * flash);
+                app.animate(Duration::from_millis(33));
             }
         }
-        let glyph = match session.status.as_str() {
-            "active" | "starting" => spinner(app).to_string(),
+        let glyph = match session.status {
+            Status::Active | Status::Starting => spinner(app).to_string(),
             status => status_glyph(status).to_string(),
         };
-        let glyph_colour = if session.status == "idle" {
-            colour.mix(p.background, 0.5 * pulse(app, 3.0))
-        } else {
-            colour
-        };
         let age = format_age(&session.updated_at, now);
+        clock_tick(app, &session.updated_at, now, false);
         let name = project_name(session);
         let room = (inner.width as usize).saturating_sub(age.len() + 5);
         let name: String = if name.chars().count() > room {
@@ -424,16 +494,16 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         let gap = (inner.width as usize).saturating_sub(name.width() + age.len() + 4);
         let line1 = Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{glyph} "), Style::new().fg(glyph_colour.c())),
+            Span::styled(format!("{glyph} "), Style::new().fg(colour.c())),
             Span::styled(name, Style::new().fg(p.text.c()).bold()),
             Span::raw(" ".repeat(gap)),
             Span::styled(age, Style::new().fg(p.dim.c())),
         ]);
-        let mut meta = format!("    {} · {}", session.provider(), session.model.as_deref().unwrap_or("default"));
-        if let Some(usage) = &session.token_usage {
-            if let Some(total) = usage.total_tokens.filter(|t| *t > 0) {
-                meta.push_str(&format!(" · {}", format_token_count(total)));
-            }
+        let mut meta = format!("    {} · {}", provider(session), opt(&session.model).unwrap_or("default"));
+        if let Some(usage) = &session.token_usage
+            && usage.total_tokens > 0
+        {
+            meta.push_str(&format!(" · {}", format_token_count(usage.total_tokens)));
         }
         let line2 = Line::from(Span::styled(meta, Style::new().fg(p.dim.c())));
         frame.render_widget(Paragraph::new(vec![line1, line2]).style(Style::new().bg(bg.c())), rect);
@@ -469,7 +539,13 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
 
 fn draw_main(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = *app.palette();
-    let session = app.current().cloned();
+    let session = app.current().cloned().map(|mut s| {
+        s.token_usage = context_usage(app, &s);
+        s
+    });
+    if let Some(s) = session.as_ref().filter(|s| s.completed_at.is_none() && !s.status.is_terminal()) {
+        clock_tick(app, &s.started_at, now_ms(), true);
+    }
     let details: Vec<Line> = match (&session, app.details, app.layout()) {
         (Some(s), Details::Full, Layout::Classic) => detail_lines(&p, s, false),
         (Some(s), Details::Compact, Layout::Classic) => detail_lines(&p, s, true),
@@ -500,12 +576,12 @@ fn draw_main(frame: &mut Frame, app: &mut App, area: Rect) {
 fn compact_line<'a>(p: &Palette, s: &Session) -> Line<'a> {
     let mut spans = vec![
         Span::styled(
-            format!(" {} ", status_glyph(&s.status)),
-            Style::new().fg(status_color(p, &s.status).c()),
+            format!(" {} ", status_glyph(s.status)),
+            Style::new().fg(status_color(p, s.status).c()),
         ),
-        Span::styled(s.status.clone(), Style::new().fg(status_color(p, &s.status).c())),
+        Span::styled(s.status.to_string(), Style::new().fg(status_color(p, s.status).c())),
         Span::styled(
-            format!(" · {}", format_elapsed(&s.started_at, &s.completed_at, now_seconds())),
+            format!(" · {}", format_elapsed(&s.started_at, s.completed_at.as_deref(), now_ms())),
             Style::new().fg(p.dim.c()),
         ),
     ];
@@ -519,13 +595,13 @@ fn compact_line<'a>(p: &Palette, s: &Session) -> Line<'a> {
 }
 
 fn detail_lines<'a>(p: &Palette, s: &Session, compact: bool) -> Vec<Line<'a>> {
-    session_details(s, now_seconds())
+    session_details(s, now_ms())
         .into_iter()
         .filter(|(k, _)| !compact || matches!(k.as_str(), "status" | "model" | "tokens" | "error"))
         .map(|(k, v)| {
             let colour = match k.as_str() {
                 "error" => p.danger,
-                "status" => status_color(p, &s.status),
+                "status" => status_color(p, s.status),
                 _ => p.text,
             };
             Line::from(vec![
@@ -541,12 +617,10 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = area.x + 1;
     let mut spans = vec![Span::raw(" ")];
     let mut target = (0.0, 0.0);
-    let files = &app.sources.diff_files;
+    let (added, removed): (u32, u32) = app.sources.diff.files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
     for tab in Tab::ALL {
         let mut label = format!(" {} {} ", tab.index() + 1, tab.title());
-        if tab == Tab::Diff && !files.is_empty() {
-            let added: u32 = files.iter().map(|f| f.added).sum();
-            let removed: u32 = files.iter().map(|f| f.removed).sum();
+        if tab == Tab::Diff && !app.sources.diff.files.is_empty() {
             label = format!(" 4 diff +{added} −{removed} ");
         }
         let width = label.width() as u16;
@@ -581,26 +655,33 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     app.tab_anim.0 += (target.0 - app.tab_anim.0) * 0.35;
     app.tab_anim.1 += (target.1 - app.tab_anim.1) * 0.35;
     app.tab_settling = (app.tab_anim.0 - target.0).abs() > 0.3 || (app.tab_anim.1 - target.1).abs() > 0.3;
-    if !app.tab_settling {
+    if app.tab_settling {
+        app.animate(TRANSITION);
+    } else {
         app.tab_anim = target;
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), Rect { height: 1, ..area });
-    let buf = frame.buffer_mut();
-    let y = area.y + 1;
-    for cx in area.left()..area.right() {
-        buf[(cx, y)].set_symbol("─").set_fg(p.border.c());
-    }
-    let start = app.tab_anim.0.round() as u16;
-    let end = (app.tab_anim.0 + app.tab_anim.1).round() as u16;
-    for cx in start.max(area.left())..end.min(area.right()) {
-        buf[(cx, y)].set_symbol("━").set_fg(p.accent.c());
+    {
+        let buf = frame.buffer_mut();
+        let y = area.y + 1;
+        for cx in area.left()..area.right() {
+            buf[(cx, y)].set_symbol("─").set_fg(p.border.c());
+        }
+        let start = app.tab_anim.0.round() as u16;
+        let end = (app.tab_anim.0 + app.tab_anim.1).round() as u16;
+        for cx in start.max(area.left())..end.min(area.right()) {
+            buf[(cx, y)].set_symbol("━").set_fg(p.accent.c());
+        }
     }
     // Follow state on the right of the tab strip.
     let hint = if app.follow { "● live" } else { "‖ paused · G" };
-    let colour = if app.follow {
+    let working = app.current().is_some_and(|s| s.status == Status::Active);
+    let colour = if !app.follow {
+        p.warning
+    } else if working {
         p.success.mix(p.background, 0.4 * pulse(app, 2.0))
     } else {
-        p.warning
+        p.success
     };
     let w = hint.width() as u16;
     if area.width > x - area.x + w + 2 {
@@ -616,356 +697,16 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-struct Built {
-    rows: Vec<Row>,
-    groups: Vec<String>,
-    meta: Vec<GroupMeta>,
-}
-
-fn build_chat(app: &App, p: &Palette) -> Built {
-    let session = app.current();
-    let mut rows = Vec::new();
-    let mut groups = Vec::new();
-    let entries = &app.sources.entries;
-    let last_agent = entries.iter().rposition(|e| e.kind == EntryKind::Agent);
-    for (index, entry) in entries.iter().enumerate() {
-        let group = groups.len();
-        match entry.kind {
-            EntryKind::User => {
-                rows.push(Row::new(Line::raw(""), group));
-                let bubble = p.background.mix(p.accent, 0.08);
-                rows.push(Row::new(
-                    Line::from(vec![
-                        Span::styled("▌ ", Style::new().fg(p.accent.c())),
-                        Span::styled("you", Style::new().fg(p.accent.c()).bold()),
-                    ])
-                    .style(Style::new().bg(bubble.c())),
-                    group,
-                ));
-                for line in entry.text.lines() {
-                    rows.push(
-                        Row::new(
-                            Line::from(vec![
-                                Span::styled("▌ ", Style::new().fg(p.accent.c())),
-                                Span::styled(line.to_string(), Style::new().fg(p.text.c())),
-                            ])
-                            .style(Style::new().bg(bubble.c())),
-                            group,
-                        )
-                        .indent(2),
-                    );
-                }
-                rows.push(Row::new(Line::raw(""), group));
-            }
-            EntryKind::Agent => {
-                let mut text = entry.text.clone();
-                let mut typing = false;
-                if Some(index) == last_agent {
-                    if let Some((id, revealed)) = &app.reveal {
-                        if entry.item_id.as_deref().unwrap_or("") == id && *revealed < text.chars().count() {
-                            text = text.chars().take(*revealed).collect();
-                            typing = true;
-                        }
-                    }
-                }
-                let provider = session.map(|s| s.provider().to_string()).unwrap_or_default();
-                rows.push(Row::new(
-                    Line::from(vec![
-                        Span::styled("◆ ", Style::new().fg(p.success.c())),
-                        Span::styled(provider, Style::new().fg(p.success.c()).bold()),
-                    ]),
-                    group,
-                ));
-                let mut body = markdown(&text, group, p, Style::new().fg(p.text.c()));
-                for row in &mut body {
-                    row.line.spans.insert(0, Span::raw("  "));
-                    row.indent += 2;
-                }
-                if typing {
-                    if let Some(last) = body.last_mut() {
-                        last.line.spans.push(Span::styled("▍", Style::new().fg(p.accent.c())));
-                    }
-                }
-                rows.extend(body);
-                rows.push(Row::new(Line::raw(""), group));
-            }
-            EntryKind::Thought => {
-                rows.push(
-                    Row::new(
-                        Line::from(vec![
-                            Span::styled("  ∴ ", Style::new().fg(p.dim.c())),
-                            Span::styled(entry.text.clone(), Style::new().fg(p.dim.c()).italic()),
-                        ]),
-                        group,
-                    )
-                    .indent(4),
-                );
-            }
-            EntryKind::Tool => {
-                let (glyph, colour) = match entry.status {
-                    Some(ToolStatus::Running) => (spinner(app).to_string(), p.warning),
-                    Some(ToolStatus::Failed) => ("✗".into(), p.danger),
-                    _ => ("✓".into(), p.success),
-                };
-                let mut spans = vec![Span::styled(format!("  {glyph} "), Style::new().fg(colour.c()))];
-                spans.extend(highlight_code(&entry.text, "sh", p).into_iter().map(|s| {
-                    let fg = s.style.fg.unwrap_or(p.dim.c());
-                    let dimmed = match fg {
-                        ratatui::style::Color::Rgb(r, g, b) => Rgb(r, g, b).mix(p.background, 0.3).c(),
-                        other => other,
-                    };
-                    s.fg(dimmed)
-                }));
-                rows.push(Row::new(Line::from(spans), group).indent(4));
-            }
-        }
-        groups.push(entry.text.clone());
-    }
-    if let Some(s) = session {
-        let group = groups.len();
-        match s.status.as_str() {
-            "active" | "starting" => {
-                let mut spans = vec![Span::styled(format!("  {} ", spinner(app)), Style::new().fg(p.accent.c()))];
-                spans.extend(shimmer(
-                    if s.status == "starting" { "starting session" } else { "thinking" },
-                    p.dim,
-                    p.accent,
-                    app,
-                ));
-                spans.push(Span::styled(
-                    format!("  {}", format_elapsed(&s.started_at, &None, now_seconds())),
-                    Style::new().fg(p.border.c()),
-                ));
-                rows.push(Row::new(Line::from(spans), group));
-                groups.push(String::new());
-            }
-            "idle" => {
-                let glow = p.dim.mix(p.accent, 0.5 * pulse(app, 3.0));
-                rows.push(Row::new(
-                    Line::from(vec![
-                        Span::styled("  ◌ ", Style::new().fg(glow.c())),
-                        Span::styled("waiting for your next prompt · s to send", Style::new().fg(p.dim.c())),
-                    ]),
-                    group,
-                ));
-                groups.push(String::new());
-            }
-            _ => {}
-        }
-    }
-    if rows.is_empty() {
-        rows.push(Row::new(Line::styled("  No messages yet.", Style::new().fg(p.dim.c())), 0));
-        groups.push(String::new());
-    }
-    let meta = vec![GroupMeta::default(); groups.len()];
-    Built { rows, groups, meta }
-}
-
-fn build_trace(app: &App, p: &Palette) -> Built {
-    let mut rows = Vec::new();
-    let mut groups = Vec::new();
-    for line in app.sources.trace.lines() {
-        let Some((time, rest)) = line.split_once(' ') else { continue };
-        let (tag, body) = rest.strip_prefix('[').and_then(|r| r.split_once(']')).unwrap_or(("", rest));
-        if tag == "usage" {
-            continue;
-        }
-        let (glyph, colour) = match tag {
-            "error" | "failed" => ("✗", p.danger),
-            "warn" => ("!", p.warning),
-            "completed" => ("✓", p.success),
-            "in_progress" => ("›", p.accent),
-            "think" => ("∴", p.dim),
-            "say" => ("◆", p.text),
-            _ => ("·", p.accent.mix(p.success, 0.5)),
-        };
-        let short = time.get(11..19).unwrap_or(time).to_string();
-        let body = body.trim_start().to_string();
-        let style = if tag == "think" {
-            Style::new().fg(p.dim.c()).italic()
-        } else {
-            Style::new().fg(p.text.c())
-        };
-        rows.push(
-            Row::new(
-                Line::from(vec![
-                    Span::styled(format!(" {short} "), Style::new().fg(p.border.mix(p.dim, 0.5).c())),
-                    Span::styled(format!("{glyph} "), Style::new().fg(colour.c())),
-                    Span::styled(format!("{tag:<11} "), Style::new().fg(colour.c())),
-                    Span::styled(body.clone(), style),
-                ]),
-                groups.len(),
-            )
-            .indent(24),
-        );
-        groups.push(body);
-    }
-    if rows.is_empty() {
-        rows.push(Row::new(Line::styled("  No activity yet.", Style::new().fg(p.dim.c())), 0));
-        groups.push(String::new());
-    }
-    let meta = vec![GroupMeta::default(); groups.len()];
-    Built { rows, groups, meta }
-}
-
-fn build_output(app: &App, p: &Palette) -> Built {
-    if app.sources.output.is_empty() {
-        return Built {
-            rows: vec![Row::new(Line::styled("  No output yet.", Style::new().fg(p.dim.c())), 0)],
-            groups: vec![String::new()],
-            meta: vec![GroupMeta::default()],
-        };
-    }
-    // One group per paragraph keeps copy useful.
-    let mut rows = Vec::new();
-    let mut groups = Vec::new();
-    for block in app.sources.output.split("\n\n") {
-        let group = groups.len();
-        for mut row in markdown(block, group, p, Style::new().fg(p.text.c())) {
-            row.line.spans.insert(0, Span::raw(" "));
-            rows.push(row);
-        }
-        rows.push(Row::new(Line::raw(""), group));
-        groups.push(block.to_string());
-    }
-    let meta = vec![GroupMeta::default(); groups.len()];
-    Built { rows, groups, meta }
-}
-
-fn build_diff(app: &App, p: &Palette) -> Built {
-    if let Some(error) = &app.sources.diff_error {
-        return Built {
-            rows: vec![Row::new(Line::styled(format!("  {error}"), Style::new().fg(p.danger.c())), 0)],
-            groups: vec![error.clone()],
-            meta: vec![GroupMeta::default()],
-        };
-    }
-    if app.sources.diff.is_empty() {
-        return Built {
-            rows: vec![Row::new(
-                Line::styled("  ✓ Working tree clean against HEAD.", Style::new().fg(p.success.c())),
-                0,
-            )],
-            groups: vec![String::new()],
-            meta: vec![GroupMeta::default()],
-        };
-    }
-    let gutter = app
-        .sources
-        .diff
-        .iter()
-        .filter_map(|l| l.old.max(l.new))
-        .max()
-        .unwrap_or(1)
-        .to_string()
-        .len();
-    let add_bg = p.background.mix(p.success, 0.14);
-    let del_bg = p.background.mix(p.danger, 0.14);
-    let add_gutter = p.background.mix(p.success, 0.26);
-    let del_gutter = p.background.mix(p.danger, 0.26);
-    let hunk_bg = p.background.mix(p.accent, 0.08);
-    let mut rows = Vec::new();
-    let mut groups = Vec::new();
-    let mut meta = Vec::new();
-    let lang_for = |path: &str| path.rsplit('.').next().unwrap_or("").to_string();
-    for line in &app.sources.diff {
-        let file = &app.sources.diff_files[line.file];
-        let folded = app.folded.contains(&file.path);
-        if folded && line.kind != DiffKind::FileHeader {
-            continue;
-        }
-        let group = groups.len();
-        let mut m = GroupMeta::default();
-        let number = |n: Option<u32>| n.map(|n| format!("{n:>gutter$}")).unwrap_or_else(|| " ".repeat(gutter));
-        let row = match line.kind {
-            DiffKind::FileHeader => {
-                m.diff_header = Some(file.path.clone());
-                let row_bg = p.panel;
-                rows.push(Row::new(Line::raw(""), group));
-                Row::new(
-                    Line::from(vec![
-                        Span::styled(if folded { " ▸ " } else { " ▾ " }, Style::new().fg(p.accent.c())),
-                        Span::styled(file.path.clone(), Style::new().fg(p.text.c()).bold()),
-                        Span::styled(format!("  +{}", file.added), Style::new().fg(p.success.c())),
-                        Span::styled(format!(" −{}", file.removed), Style::new().fg(p.danger.c())),
-                        Span::styled(
-                            if folded { "  folded".to_string() } else { String::new() },
-                            Style::new().fg(p.dim.c()).italic(),
-                        ),
-                    ])
-                    .style(Style::new().bg(row_bg.c())),
-                    group,
-                )
-            }
-            DiffKind::Meta => continue,
-            DiffKind::Hunk => {
-                m.hunk = true;
-                let context = line.text.splitn(3, "@@").nth(2).unwrap_or("").trim().to_string();
-                Row::new(
-                    Line::from(vec![
-                        Span::styled(format!(" {} ", "┄".repeat(gutter * 2 + 1)), Style::new().fg(p.border.c())),
-                        Span::styled(
-                            line.text.split("@@").nth(1).unwrap_or("").trim().to_string(),
-                            Style::new().fg(p.accent.c()),
-                        ),
-                        Span::styled(format!("  {context}"), Style::new().fg(p.dim.c()).italic()),
-                    ])
-                    .style(Style::new().bg(hunk_bg.c())),
-                    group,
-                )
-            }
-            DiffKind::Add | DiffKind::Del | DiffKind::Context => {
-                let (sign, bg, gutter_bg, sign_colour) = match line.kind {
-                    DiffKind::Add => ("+", Some(add_bg), Some(add_gutter), p.success),
-                    DiffKind::Del => ("-", Some(del_bg), Some(del_gutter), p.danger),
-                    _ => (" ", None, None, p.dim),
-                };
-                let code = line.text.get(1..).unwrap_or("");
-                let mut spans = vec![
-                    Span::styled(
-                        format!(" {} {} ", number(line.old), number(line.new)),
-                        Style::new()
-                            .fg(p.dim.mix(p.border, 0.3).c())
-                            .bg(gutter_bg.unwrap_or(p.background).c()),
-                    ),
-                    Span::styled(format!("{sign} "), Style::new().fg(sign_colour.c())),
-                ];
-                spans.extend(highlight_code(code, &lang_for(&file.path), p));
-                let mut l = Line::from(spans);
-                if let Some(bg) = bg {
-                    l = l.style(Style::new().bg(bg.c()));
-                }
-                Row::new(l, group).indent(gutter as u16 * 2 + 5)
-            }
-        };
-        rows.push(row);
-        groups.push(
-            line.text
-                .get(if line.kind == DiffKind::FileHeader { 0 } else { 1 }..)
-                .unwrap_or("")
-                .to_string(),
-        );
-        if line.kind == DiffKind::FileHeader {
-            *groups.last_mut().unwrap() = file.path.clone();
-        }
-        meta.push(m);
-    }
-    Built { rows, groups, meta }
-}
-
 fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = *app.palette();
     let focused = app.focus == Focus::Artifact && !(app.layout() == Layout::Beta && app.drawer);
     app.hits.push((area, Hit::Artifact));
-    let built = match app.tab {
-        Tab::Chat => build_chat(app, &p),
-        Tab::Trace => build_trace(app, &p),
-        Tab::Output => build_output(app, &p),
-        Tab::Diff => build_diff(app, &p),
-    };
+    if app.tab == Tab::Trace {
+        app.sync_activity();
+    }
     // Diff file tree on wide screens.
     let mut body = area;
-    if app.tab == Tab::Diff && !app.mobile_now && !app.sources.diff_files.is_empty() && area.width >= 80 {
+    if app.tab == Tab::Diff && !app.mobile_now && !app.sources.diff.files.is_empty() && area.width >= 80 {
         let wanted = match (app.tree_ratio, app.tree_width) {
             (Some(r), _) => (r * area.width as f64).round() as u16,
             (None, Some(w)) => w,
@@ -978,22 +719,41 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let block = panel(&p, Line::default(), focused).borders(Borders::ALL);
     let inner = block.inner(body);
+    app.artifact_inner = inner;
     let query = app.artifact_query.get(&app.tab).cloned().unwrap_or_default();
     let mark = Style::new().bg(p.warning.mix(p.background, 0.55).c()).fg(p.text.c());
     let current_mark = Style::new().bg(p.warning.c()).fg(p.background.c()).bold();
-    let mut wrapped = wrap_rows(
-        &built.rows,
-        inner.width.saturating_sub(1) as usize,
-        &query,
-        mark,
-        current_mark,
-        app.cursor,
-    );
-    app.groups = built.groups;
-    app.group_meta = built.meta;
-    app.group_rows = wrapped.iter().enumerate().map(|(i, r)| (r.group, i)).collect();
+    let width = inner.width.saturating_sub(1);
+
+    // Render every block through the cache; only changed blocks re-render.
+    app.blocks = view::build_blocks(app);
+    if app.cursor.is_some_and(|c| c >= app.blocks.len()) {
+        app.cursor = None;
+    }
+    let mut cache = std::mem::take(&mut app.cache);
+    cache.scope(&format!("{}\u{0}{:?}", app.sources.scope.0, app.tab));
+    cache.begin_frame();
+    let query_hash = if query.is_empty() { 0 } else { hash_query(&query) };
+    let mut spans = Vec::with_capacity(app.blocks.len());
+    let mut total = 0usize;
+    for (index, b) in app.blocks.iter().enumerate() {
+        let current = !query.is_empty() && app.cursor == Some(index);
+        let key = Key {
+            version: b.version,
+            width,
+            theme: app.theme,
+            query: query_hash,
+            current,
+            anim: b.anim,
+        };
+        let lines = cache.lines(b.id, key, &query, if current { current_mark } else { mark }, || {
+            view::render_block(app, b, &p)
+        });
+        spans.push((total, lines.len()));
+        total += lines.len();
+    }
+    app.block_spans = spans;
     let height = inner.height as usize;
-    let total = wrapped.len();
     let max = total.saturating_sub(height);
     app.artifact_rows = total;
     app.artifact_height = height;
@@ -1008,15 +768,12 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if app.reveal_cursor {
         app.reveal_cursor = false;
-        if let Some(cursor) = app.cursor {
-            let first = app.group_rows.iter().find(|(g, _)| *g == cursor).map(|(_, r)| *r);
-            let last = app.group_rows.iter().rev().find(|(g, _)| *g == cursor).map(|(_, r)| *r);
-            if let (Some(first), Some(last)) = (first, last) {
-                if first < app.scroll_target {
-                    app.scroll_target = first.saturating_sub(1);
-                } else if last >= app.scroll_target + height {
-                    app.scroll_target = (last + 2).saturating_sub(height).min(first.saturating_sub(1)).min(max);
-                }
+        if let Some((first, len)) = app.cursor.and_then(|c| app.block_spans.get(c).copied()).filter(|(_, len)| *len > 0) {
+            let last = first + len - 1;
+            if first < app.scroll_target {
+                app.scroll_target = first.saturating_sub(1);
+            } else if last >= app.scroll_target + height {
+                app.scroll_target = (last + 2).saturating_sub(height).min(first.saturating_sub(1)).min(max);
             }
         }
     }
@@ -1025,33 +782,54 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
     app.scroll_pos += (target - app.scroll_pos) * 0.4;
     if (app.scroll_pos - target).abs() < 0.5 {
         app.scroll_pos = target;
+    } else {
+        app.animate(TRANSITION);
     }
     let scroll = (app.scroll_pos.round() as usize).min(max);
-    // Cursor highlight.
-    if let Some(cursor) = app.cursor {
-        let bar = if focused { p.selected } else { p.selected.mix(p.background, 0.5) };
-        for row in wrapped.iter_mut().filter(|r| r.group == cursor) {
-            row.line.style = row.line.style.bg(bar.c());
-            for span in &mut row.line.spans {
-                if span.style.bg.is_some() {
-                    span.style.bg = Some(bar.c());
+
+    // Collect only the rows on screen.
+    let bar = if focused { p.selected } else { p.selected.mix(p.background, 0.5) };
+    let mut lines: Vec<Line> = Vec::with_capacity(height);
+    let mut screen_blocks = Vec::with_capacity(height);
+    let mut animated = false;
+    for (index, (start, len)) in app.block_spans.iter().enumerate() {
+        if start + len <= scroll || *start >= scroll + height {
+            continue;
+        }
+        let b = &app.blocks[index];
+        animated |= view::animates(b);
+        let Some(cached) = cache.peek(b.id) else { continue };
+        let from = scroll.saturating_sub(*start);
+        let to = (*len).min(scroll + height - start);
+        for line in &cached[from..to] {
+            let mut line = line.clone();
+            if app.cursor == Some(index) {
+                line.style = line.style.bg(bar.c());
+                for span in &mut line.spans {
+                    if span.style.bg.is_some() {
+                        span.style.bg = Some(bar.c());
+                    }
                 }
             }
+            lines.push(line);
+            screen_blocks.push(Some(index));
         }
     }
+    app.cache = cache;
+    app.screen_blocks = screen_blocks;
+    if animated {
+        let elapsed = app.started.elapsed().as_millis() as u64;
+        app.animate(Duration::from_millis(SPINNER_MS - elapsed % SPINNER_MS));
+    }
+
     let mut title_spans = vec![Span::styled(
         format!(" {} ", app.tab.title()),
         Style::new().fg(if focused { p.accent.c() } else { p.dim.c() }).bold(),
     )];
     if !query.is_empty() {
-        let count = app
-            .groups
-            .iter()
-            .filter(|g| g.to_lowercase().contains(&query.to_lowercase()))
-            .count();
+        let count = app.match_count(&query);
         title_spans.push(Span::styled(format!("/{query} · {count} "), Style::new().fg(p.warning.c())));
     }
-    let lines: Vec<Line> = wrapped.into_iter().skip(scroll).take(height).map(|r| r.line).collect();
     frame.render_widget(Paragraph::new(lines).block(block.title(Line::from(title_spans))), body);
     // Scrollbar.
     if total > height && inner.height > 2 {
@@ -1074,10 +852,9 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
         if unseen > 0 && !app.follow {
             let label = format!(" ↓ {unseen} new · G ");
             let w = label.width() as u16;
-            let bob = (pulse(app, 1.6) * 1.0).round() as u16;
             let rect = Rect {
                 x: body.x + body.width.saturating_sub(w) / 2,
-                y: body.bottom().saturating_sub(2 + bob),
+                y: body.bottom().saturating_sub(2),
                 width: w.min(body.width),
                 height: 1,
             };
@@ -1090,17 +867,19 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect, p: &Palette) {
-    let block = panel(p, title(p, format!("files · {}", app.sources.diff_files.len()), false), false);
+    let files = app.sources.diff.files.clone();
+    let block = panel(p, title(p, format!("files · {}", files.len()), false), false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // The file that owns the cursor row.
     let current = app.cursor.and_then(|c| {
-        // The file that owns the cursor row.
-        app.group_meta[..=c.min(app.group_meta.len().saturating_sub(1))]
+        app.blocks
+            .get(..=c.min(app.blocks.len().saturating_sub(1)))?
             .iter()
             .rev()
-            .find_map(|m| m.diff_header.clone())
+            .find_map(|b| b.diff_header.clone())
     });
-    for (i, file) in app.sources.diff_files.iter().enumerate().take(inner.height as usize) {
+    for (i, file) in files.iter().enumerate().take(inner.height as usize) {
         let y = inner.y + i as u16;
         let rect = Rect { y, height: 1, ..inner };
         app.hits.push((rect, Hit::TreeFile(i)));
@@ -1109,8 +888,9 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect, p: &Palette) {
             .rsplit_once('/')
             .map(|(d, n)| (format!("{d}/"), n.to_string()))
             .unwrap_or((String::new(), file.path.clone()));
-        let stats = format!("+{} −{}", file.added, file.removed);
-        let room = (inner.width as usize).saturating_sub(stats.width() + 4);
+        let touched = app.sources.diff.touched.contains(&file.path);
+        let stats = format!("{} +{} −{}", file.status, file.added, file.removed);
+        let room = (inner.width as usize).saturating_sub(stats.width() + 5);
         let mut dir_shown = dir.clone();
         if dir.width() + name.width() > room {
             let keep = room.saturating_sub(name.width() + 1);
@@ -1125,13 +905,21 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect, p: &Palette) {
             name
         };
         let gap = (inner.width as usize)
-            .saturating_sub(dir_shown.width() + name.width() + stats.width() + 3)
+            .saturating_sub(dir_shown.width() + name.width() + stats.width() + 4)
             .max(1);
+        let status_colour = match file.status {
+            'A' => p.success,
+            'D' => p.danger,
+            'R' => p.warning,
+            _ => p.dim,
+        };
         let line = Line::from(vec![
-            Span::styled(if folded { "▸ " } else { "▾ " }, Style::new().fg(p.dim.c())),
+            Span::styled(if folded { "▸" } else { "▾" }, Style::new().fg(p.dim.c())),
+            Span::styled(if touched { "●" } else { " " }, Style::new().fg(p.accent.c())),
             Span::styled(dir_shown, Style::new().fg(p.dim.c())),
             Span::styled(name, Style::new().fg(if selected { p.accent.c() } else { p.text.c() })),
             Span::raw(" ".repeat(gap)),
+            Span::styled(format!("{} ", file.status), Style::new().fg(status_colour.c())),
             Span::styled(format!("+{}", file.added), Style::new().fg(p.success.c())),
             Span::styled(format!(" −{} ", file.removed), Style::new().fg(p.danger.c())),
         ]);
@@ -1142,7 +930,7 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect, p: &Palette) {
 
 fn help_segments(app: &App) -> Vec<(String, String)> {
     let session = app.current();
-    let stoppable = session.is_some_and(|s| matches!(s.status.as_str(), "active" | "idle"));
+    let can_stop = session.is_some_and(|s| stoppable(s.status));
     let drawer = app.layout() == Layout::Beta && app.drawer;
     let sessions = app.focus == Focus::Sessions || drawer;
     let mut segments: Vec<(&str, &str)> = if sessions {
@@ -1158,6 +946,8 @@ fn help_segments(app: &App) -> Vec<(String, String)> {
             ("Enter", "fold"),
             ("Z", "fold all"),
         ]
+    } else if app.tab == Tab::Trace {
+        vec![("j/k", "rows"), ("Enter", "expand"), ("c", "copy"), ("/", "search")]
     } else {
         vec![("j/k", "rows"), ("c", "copy"), ("/", "search")]
     };
@@ -1168,7 +958,7 @@ fn help_segments(app: &App) -> Vec<(String, String)> {
     if app.deja_available {
         segments.push(("f", "find"));
     }
-    if stoppable {
+    if can_stop {
         segments.push(("x x", "stop"));
     }
     segments.extend([(":", "commands"), ("t", "theme"), ("?", "help"), ("q", "quit")]);
@@ -1177,29 +967,28 @@ fn help_segments(app: &App) -> Vec<(String, String)> {
 
 fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = *app.palette();
-    if let Some(search) = &app.search {
-        let (label, hint) = match search.target {
+    if let Some(target) = app.search.as_ref().map(|s| s.target) {
+        let (label, hint) = match target {
             SearchTarget::Sessions => ("filter", "Enter keep · Esc clear"),
             SearchTarget::Artifact => ("search", "Enter jump · n/N matches · Esc clear"),
             SearchTarget::Deja => ("deja find", "Enter search · Esc cancel"),
         };
-        let caret = if (app.started.elapsed().as_millis() / 530) % 2 == 0 {
-            "▏"
-        } else {
-            " "
-        };
+        let started = app.started;
+        let caret = if blink(app, started) { "▏" } else { " " };
+        let text = app.search.as_ref().map(|s| s.text.clone()).unwrap_or_default();
         let line = Line::from(vec![
             Span::styled(format!(" {label} "), Style::new().fg(p.background.c()).bg(p.accent.c()).bold()),
             Span::styled(" › ", Style::new().fg(p.accent.c())),
-            Span::styled(search.text.clone(), Style::new().fg(p.text.c())),
+            Span::styled(text, Style::new().fg(p.text.c())),
             Span::styled(caret, Style::new().fg(p.accent.c())),
             Span::styled(format!("   {hint}"), Style::new().fg(p.dim.c())),
         ]);
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(p.panel.c())), area);
         return;
     }
-    if let Some((_, armed)) = &app.stop_armed {
-        let remaining = 1.0 - progress(*armed, 2000);
+    if let Some((_, armed)) = app.stop_armed.clone() {
+        app.animate(Duration::from_millis(50));
+        let remaining = 1.0 - progress(armed, 2000);
         let cells = 12;
         let filled = (remaining * cells as f32).round() as usize;
         let line = Line::from(vec![
@@ -1231,26 +1020,33 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(p.panel.c())), area);
 }
 
+/// The mobile action bar: the keys a phone cannot press, as four tappable
+/// buttons, each three rows tall and taking the tap anywhere on its box.
 fn draw_action_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = *app.palette();
-    let session = app.current();
-    let stoppable = session.is_some_and(|s| matches!(s.status.as_str(), "active" | "idle"));
-    let mut buttons: Vec<(&str, Cmd, Rgb)> = vec![
-        ("prompt", Cmd::Prompt, p.accent),
-        ("new", Cmd::New, p.success),
-        ("tab", Cmd::Tab(app.tab.next()), p.text),
-        ("list", Cmd::Sessions, p.text),
+    let can_stop = app.current().is_some_and(|s| stoppable(s.status));
+    let promptable = app.current().is_some_and(|s| prompt_route(s).is_some());
+    let count = app.visible().len();
+    let sessions = format!("≡ {count}");
+    let buttons: Vec<(&str, Cmd, Rgb, bool)> = vec![
+        (sessions.as_str(), Cmd::Sessions, p.accent, true),
+        (
+            if promptable { "✎ prompt" } else { "✎ new" },
+            if promptable { Cmd::Prompt } else { Cmd::New },
+            p.accent,
+            true,
+        ),
+        // Stop arms first and needs a second tap, like `x x`.
+        ("■ stop", Cmd::Stop, if can_stop { p.danger } else { p.dim }, can_stop),
+        ("⋯ more", Cmd::Palette, p.accent, true),
     ];
-    if stoppable {
-        buttons.push(("stop", Cmd::StopNow, p.danger));
-    }
-    buttons.push(("menu", Cmd::Palette, p.dim));
     app.buttons = buttons.iter().map(|b| b.1.clone()).collect();
     let n = buttons.len() as u16;
-    let width = area.width / n;
-    for (i, (label, _, colour)) in buttons.iter().enumerate() {
-        let x = area.x + i as u16 * width;
-        let w = if i as u16 == n - 1 { area.right() - x } else { width };
+    let gap = 1;
+    let width = area.width.saturating_sub(gap * (n - 1)) / n;
+    for (i, (label, _, colour, enabled)) in buttons.iter().enumerate() {
+        let x = area.x + i as u16 * (width + gap);
+        let w = if i as u16 == n - 1 { area.right().saturating_sub(x) } else { width };
         let rect = Rect {
             x,
             y: area.y,
@@ -1258,28 +1054,32 @@ fn draw_action_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             height: 3,
         };
         app.hits.push((rect, Hit::Button(i)));
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(colour.mix(p.background, 0.4).c()))
-            .style(Style::new().bg(p.panel.c()));
-        frame.render_widget(
-            Paragraph::new(Span::styled(*label, Style::new().fg(colour.c()).bold()))
-                .centered()
-                .block(block),
-            rect,
-        );
+        let surface = if *enabled { p.background.mix(p.accent, 0.18) } else { p.panel };
+        let lines = vec![
+            Line::raw(""),
+            Line::from(Span::styled(label.to_string(), Style::new().fg(colour.c()).bold())),
+        ];
+        frame.render_widget(Paragraph::new(lines).centered().style(Style::new().bg(surface.c())), rect);
     }
 }
 
-fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette();
+fn draw_toasts(frame: &mut Frame, app: &mut App, area: Rect) {
+    let p = *app.palette();
     let mut y = area.bottom();
+    let mut wake: Option<Duration> = None;
+    let mut want = |d: Duration| wake = Some(wake.map_or(d, |w| w.min(d)));
     for toast in app.toasts.iter().rev() {
         let age = toast.born.elapsed();
         let life = toast.lifetime();
         let enter = ease_out(age.as_secs_f32() / 0.22);
         let exit = 1.0 - ((age.as_secs_f32() - (life.as_secs_f32() - 0.5)) / 0.5).clamp(0.0, 1.0);
+        // Sliding in and fading out move every frame; otherwise only the
+        // lifetime bar moves, one cell at a time.
+        if enter < 1.0 || exit < 1.0 {
+            want(TRANSITION);
+        } else {
+            want(Duration::from_millis(150));
+        }
         let (glyph, colour) = match toast.kind {
             Kind::Success => ("✓", p.success),
             Kind::Warning => ("!", p.warning),
@@ -1339,6 +1139,9 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+    if let Some(after) = wake {
+        app.animate(after);
+    }
 }
 
 /// Grows a modal from 85% to full size as it opens.
@@ -1368,6 +1171,7 @@ fn modal_rect(screen: Rect, width: u16, height: u16, opened: Instant, anchor: Op
 fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
     let p = *app.palette();
     let Some(prompt) = &app.prompt else { return };
+    let (opened, typed) = (prompt.opened, prompt.typed);
     let (label, colour) = match prompt.kind {
         PromptKind::Route(PromptRoute::Steer) => ("steer the active turn", p.warning),
         PromptKind::Route(PromptRoute::Prompt) => ("next turn", p.accent),
@@ -1376,15 +1180,15 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
         PromptKind::New => ("new session", p.success),
     };
     let cwd = std::env::current_dir().unwrap_or_default();
-    let place = match (&prompt.target, prompt.kind) {
-        (Some(t), _) => project_name(t),
-        (None, _) => cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+    let place = match &prompt.target {
+        Some(t) => project_name(t),
+        None => cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
     };
     let model = prompt
         .model
         .as_ref()
         .map(|m| m.name())
-        .or_else(|| prompt.target.as_ref().and_then(|t| t.model.clone()))
+        .or_else(|| prompt.target.as_ref().and_then(|t| opt(&t.model).map(String::from)))
         .unwrap_or_else(|| "default model".into());
     let effort = prompt.effort.clone().or_else(|| {
         if prompt.model.is_none() {
@@ -1425,7 +1229,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
     }
     let text_rows = lines.len().clamp(3, 12) as u16;
     let height = text_rows + 5;
-    let area = modal_rect(screen, width, height, prompt.opened, None);
+    let area = modal_rect(screen, width, height, opened, None);
     // Soft shadow under the modal.
     dim_region(
         frame,
@@ -1440,7 +1244,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
         0.5,
     );
     frame.render_widget(Clear, area);
-    let open = ease_out(progress(prompt.opened, 220));
+    let open = ease_out(progress(opened, 220));
     let border = p.border.mix(colour, open);
     let header = Line::from(vec![
         Span::styled(format!(" {label} "), Style::new().fg(p.background.c()).bg(colour.c()).bold()),
@@ -1454,10 +1258,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
         chip.push(Span::styled(format!(" · {effort}"), Style::new().fg(p.dim.c())));
     }
     chip.push(Span::raw(" "));
-    let changeable = !matches!(
-        prompt.kind,
-        PromptKind::Route(PromptRoute::Steer) | PromptKind::Route(PromptRoute::Prompt)
-    );
+    let changeable = !matches!(prompt.kind, PromptKind::Route(PromptRoute::Steer | PromptRoute::Prompt));
     let footer = Line::from(vec![
         Span::styled(" enter", Style::new().fg(p.accent.c())),
         Span::styled(" send · ", Style::new().fg(p.dim.c())),
@@ -1502,9 +1303,17 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
             .collect();
         frame.render_widget(Paragraph::new(shown).style(Style::new().fg(p.text.c())), text_area);
     }
+    let count = format!(" {} ", prompt.text.len());
+    if open < 1.0 {
+        app.animate(TRANSITION);
+    }
     // A blinking block caret that stays solid while typing.
-    let blink = prompt.typed.elapsed() < Duration::from_millis(500) || (prompt.typed.elapsed().as_millis() / 530) % 2 == 0;
-    if blink && caret.0 >= first && caret.0 - first < rows {
+    let solid = typed.elapsed() < Duration::from_millis(500);
+    if solid {
+        app.animate(Duration::from_millis(500) - typed.elapsed());
+    }
+    let show = solid || blink(app, typed);
+    if show && caret.0 >= first && caret.0 - first < rows {
         let cx = text_area.x + caret.1 as u16;
         let cy = text_area.y + (caret.0 - first) as u16;
         if cx < text_area.right() {
@@ -1513,7 +1322,6 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
         }
     }
     // Character counter.
-    let count = format!(" {} ", prompt.text.len());
     let cw = count.len() as u16;
     if area.width > cw + 4 {
         frame.render_widget(
@@ -1531,6 +1339,9 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
 
 fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
     let p = *app.palette();
+    let started = app.started;
+    let mut wants_transition = false;
+    let caret_on = app.picker.as_ref().is_some_and(|pk| pk.filterable) && blink(app, started);
     let Some(picker) = &mut app.picker else { return };
     let visible = picker.visible();
     if picker.index >= visible.len() {
@@ -1539,6 +1350,11 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
     picker.sel_anim += (picker.index as f32 - picker.sel_anim) * 0.5;
     if (picker.sel_anim - picker.index as f32).abs() < 0.05 {
         picker.sel_anim = picker.index as f32;
+    } else {
+        wants_transition = true;
+    }
+    if picker.opened.elapsed() < Duration::from_millis(250) {
+        wants_transition = true;
     }
     let two_line = matches!(picker.kind, PickerKind::Deja);
     let per: u16 = if two_line { 2 } else { 1 };
@@ -1579,18 +1395,13 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.hits.push((area, Hit::Overlay));
+    let mut hits = vec![(area, Hit::Overlay)];
     let mut list_area = inner;
     if picker.filterable {
-        let caret = if (app.started.elapsed().as_millis() / 530) % 2 == 0 {
-            "▏"
-        } else {
-            " "
-        };
         let query = Line::from(vec![
             Span::styled(" › ", Style::new().fg(edge.c())),
             Span::styled(picker.query.clone(), Style::new().fg(p.text.c())),
-            Span::styled(caret, Style::new().fg(edge.c())),
+            Span::styled(if caret_on { "▏" } else { " " }, Style::new().fg(edge.c())),
             Span::styled(
                 if picker.query.is_empty() { "type to filter" } else { "" },
                 Style::new().fg(p.border.mix(p.dim, 0.5).c()).italic(),
@@ -1624,7 +1435,7 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
             height: per,
             ..list_area
         };
-        app.hits.push((rect, Hit::PickItem(slot)));
+        hits.push((rect, Hit::PickItem(slot)));
         let selected = slot == picker.index;
         let disabled = item.disabled.is_some();
         let label_colour = if disabled {
@@ -1680,13 +1491,10 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
         }
         let mut lines = vec![Line::from(spans)];
         if two_line {
-            let hint: String = item.hint.chars().take(list_area.width as usize - 6).collect();
+            let hint: String = item.hint.chars().take((list_area.width as usize).saturating_sub(6)).collect();
             lines.push(Line::from(Span::styled(format!("    {hint}"), Style::new().fg(p.dim.c()))));
         }
         frame.render_widget(Paragraph::new(lines), rect);
-        if picker.kind == PickerKind::Palette && selected && !item.hint.is_empty() && item.disabled.is_none() {
-            // Show the hint of the selected command under the list.
-        }
     }
     for offset_row in 0..per as i32 {
         let row = highlight + offset_row;
@@ -1701,23 +1509,27 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
         buf[(list_area.x, y)].set_symbol("▌").set_fg(edge.c());
     }
     // The selected palette command's hint sits on the bottom border.
-    if picker.kind == PickerKind::Palette {
-        if let Some(item) = picker.selected().map(|i| &picker.items[i]) {
-            let text = item.disabled.clone().unwrap_or_else(|| item.hint.clone());
-            if !text.is_empty() {
-                let text: String = text.chars().take(area.width.saturating_sub(6) as usize).collect();
-                let w = text.width() as u16 + 2;
-                frame.render_widget(
-                    Paragraph::new(Span::styled(format!(" {text} "), Style::new().fg(p.dim.c()).italic())),
-                    Rect {
-                        x: area.x + 2,
-                        y: area.bottom() - 1,
-                        width: w.min(area.width - 4),
-                        height: 1,
-                    },
-                );
-            }
+    if picker.kind == PickerKind::Palette
+        && let Some(item) = picker.selected().map(|i| &picker.items[i])
+    {
+        let text = item.disabled.clone().unwrap_or_else(|| item.hint.clone());
+        if !text.is_empty() {
+            let text: String = text.chars().take(area.width.saturating_sub(6) as usize).collect();
+            let w = text.width() as u16 + 2;
+            frame.render_widget(
+                Paragraph::new(Span::styled(format!(" {text} "), Style::new().fg(p.dim.c()).italic())),
+                Rect {
+                    x: area.x + 2,
+                    y: area.bottom() - 1,
+                    width: w.min(area.width.saturating_sub(4)),
+                    height: 1,
+                },
+            );
         }
+    }
+    app.hits.extend(hits);
+    if wants_transition {
+        app.animate(TRANSITION);
     }
 }
 
@@ -1749,11 +1561,11 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
             ],
         ),
         (
-            "diff",
+            "rows",
             &[
-                ("]c [c", "next / previous hunk"),
-                ("]f [f", "next / previous file"),
-                ("Enter  Z", "fold file / fold all"),
+                ("Enter  click", "expand tool / fold file"),
+                ("]c [c  ]f [f", "next / previous hunk or file"),
+                ("Z", "fold every diff file"),
             ],
         ),
         (
@@ -1763,7 +1575,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
                 ("t", "theme with live preview"),
                 ("i", "cycle details"),
                 ("c", "copy row (OSC 52)"),
-                ("right-click", "session menu"),
+                ("right-click", "session or row menu"),
                 ("q", "quit"),
             ],
         ),
@@ -1791,15 +1603,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
     frame.render_widget(Clear, area);
     let block = panel(
         &p,
-        Line::from(gradient(" ruddr · keys ", p.accent, p.success, seconds(app), Style::new().bold())),
+        Line::from(gradient(" ruddr · keys ", p.accent, p.success, 1.2, Style::new().bold())),
         true,
     )
     .style(Style::new().bg(p.panel.c()));
     frame.render_widget(Paragraph::new(lines).block(block), area);
     app.hits.push((area, Hit::Overlay));
-}
-
-#[allow(dead_code)]
-fn plain(line: &Line) -> String {
-    line_text(line)
 }

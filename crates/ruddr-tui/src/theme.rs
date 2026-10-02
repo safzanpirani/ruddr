@@ -1,14 +1,12 @@
-// Themes shared with the Bun TUI. Regenerate themes.json after changing
-// tui/themes.ts or tui/opencode-themes.ts:
-//   bun -e 'import {themes} from "./tui/themes.ts"; await Bun.write("tui-rs/src/themes.json", JSON.stringify(themes))'
-// The selected theme persists in ~/.config/ruddr/tui.json.
+//! Themes shared with the Bun TUI. Regenerate themes.json after changing
+//! tui/themes.ts or tui/opencode-themes.ts:
+//!   bun -e 'import {themes} from "./tui/themes.ts"; await Bun.write("crates/ruddr-tui/src/themes.json", JSON.stringify(themes))'
+//! The selected theme persists in ~/.config/ruddr/tui.json.
 
 use ratatui::style::Color;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -113,16 +111,8 @@ pub fn find(name: &str) -> Option<usize> {
     themes().iter().position(|t| t.name == name)
 }
 
-fn config_home() -> PathBuf {
-    std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"))
-}
-
 pub fn config_path() -> PathBuf {
-    config_home().join("ruddr").join("tui.json")
+    ruddr_core::paths::config_dir().join("tui.json")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -136,7 +126,7 @@ pub struct TuiConfig {
 
 /// Reads tui.json, falling back to files written before the rename.
 pub fn read_config() -> TuiConfig {
-    let home = config_home();
+    let home = ruddr_core::paths::config_dir().parent().map(PathBuf::from).unwrap_or_default();
     let candidates = [
         config_path(),
         home.join("rudder").join("tui.json"),
@@ -167,18 +157,12 @@ pub fn persist_theme(name: &str) -> std::io::Result<()> {
     let mut config = read_config();
     config.raw.insert("theme".into(), Value::String(name.into()));
     let path = config_path();
-    let dir = path.parent().unwrap();
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    writeln!(file, "{}", serde_json::to_string_pretty(&Value::Object(config.raw)).unwrap())?;
-    fs::rename(temporary, path)
+    if let Some(dir) = path.parent() {
+        ruddr_core::fsutil::create_private_dir(dir)?;
+    }
+    let mut data = serde_json::to_vec_pretty(&Value::Object(config.raw)).map_err(std::io::Error::other)?;
+    data.push(b'\n');
+    ruddr_core::fsutil::write_private_atomic(&path, &data)
 }
 
 #[cfg(test)]
