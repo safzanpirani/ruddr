@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::state::RunState;
 use interprocess::local_socket::{GenericFilePath, GenericNamespaced, Name, Stream, prelude::*};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -19,6 +19,7 @@ use std::time::Duration;
 pub const MAX_SOCKET_PATH_BYTES: usize = 100;
 pub const SOCKET_FILE: &str = ".ruddr.sock";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -94,6 +95,7 @@ pub fn send(state_dir: &Path, request: &Request, timeout: Duration) -> Result<Re
     };
     // interprocess has no portable connect/read timeout; run the exchange on
     // a thread and stop waiting at the deadline.
+    // TODO(review): Cancel and close the exchange transport on timeout so repeated timeouts cannot retain threads or pipe handles.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<String> {
@@ -101,9 +103,7 @@ pub fn send(state_dir: &Path, request: &Request, timeout: Duration) -> Result<Re
             let mut stream = Stream::connect(name)?;
             stream.write_all(&line)?;
             stream.flush()?;
-            let mut reply = String::new();
-            BufReader::new(stream).read_line(&mut reply)?;
-            Ok(reply)
+            read_response(stream)
         })();
         let _ = tx.send(result);
     });
@@ -125,6 +125,15 @@ pub fn send(state_dir: &Path, request: &Request, timeout: Duration) -> Result<Re
     Ok(serde_json::from_str(reply.trim())?)
 }
 
+fn read_response(stream: impl Read) -> io::Result<String> {
+    let mut reply = String::new();
+    BufReader::new(stream).take(MAX_RESPONSE_BYTES + 1).read_line(&mut reply)?;
+    if reply.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "control response is too long"));
+    }
+    Ok(reply)
+}
+
 /// Like [`send`], but an `ok: false` reply becomes an error.
 pub fn call(state_dir: &Path, request: &Request, timeout: Duration) -> Result<RunState> {
     let response = send(state_dir, request, timeout)?;
@@ -139,6 +148,13 @@ pub fn call(state_dir: &Path, request: &Request, timeout: Duration) -> Result<Ru
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_responses_are_bounded() {
+        assert_eq!(read_response(&b"{\"ok\":true}\nignored"[..]).unwrap(), "{\"ok\":true}\n");
+        let excessive = io::repeat(b'x').take(MAX_RESPONSE_BYTES + 1);
+        assert_eq!(read_response(excessive).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
 
     #[test]
     fn requests_serialize_like_go() {

@@ -198,6 +198,7 @@ fn fake_droid(out: &Mutex<File>) -> i32 {
 /// user message replays `replay.jsonl` from its directory. A prompt of
 /// "hang" replays nothing. `exit_code` in the directory sets the exit status.
 fn fake_claude(dir: &Path, out: &Mutex<File>) -> i32 {
+    std::fs::write(dir.join("pid"), std::process::id().to_string()).unwrap();
     let env: Vec<String> = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_AGENT_SDK_VERSION", "NODE_OPTIONS", "DEBUG"]
         .iter()
         .map(|name| format!("{name}={}", std::env::var(name).unwrap_or_else(|_| "<unset>".into())))
@@ -208,6 +209,21 @@ fn fake_claude(dir: &Path, out: &Mutex<File>) -> i32 {
     for message in stdin_lines() {
         append(&dir.join("stdin.jsonl"), &message.to_string());
         if message["type"] == "control_request" && message["request"]["subtype"] == "initialize" {
+            let mode = std::fs::read_to_string(dir.join("initialize_mode")).unwrap_or_default();
+            if mode == "eof" {
+                return 0;
+            }
+            if mode == "error" || mode == "wrong-id" {
+                write(
+                    out,
+                    &json!({ "type": "control_response", "response": {
+                    "subtype": if mode == "error" { "error" } else { "success" },
+                    "request_id": if mode == "error" { message["request_id"].clone() } else { json!("unrelated") },
+                    "error": "initialization rejected",
+                } }),
+                );
+                continue;
+            }
             write(
                 out,
                 &json!({ "type": "control_response", "response": {

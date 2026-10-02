@@ -329,6 +329,23 @@ fn server_requests_are_rejected_with_their_exact_id() {
 // ----- threads: resume and fork -----
 
 #[test]
+fn a_fork_that_reuses_the_source_thread_fails_before_starting_a_turn() {
+    let fx = Fixture::new("fork safely");
+    let cfg = RunConfig {
+        fork_thread_id: "source-thread".into(),
+        ..fx.config(&["--fork-same-id"])
+    };
+    let error = run_controller(cfg, &CancelToken::new()).unwrap_err();
+    assert!(error.message.contains("source thread id"), "{error}");
+    let state = fx.state();
+    assert_eq!(state.status, Status::Failed);
+    assert!(state.thread_id.is_none());
+    assert!(fx.requests_for("turn/start").is_empty());
+    assert!(!alive(state.child_pid));
+    socket_gone(&state);
+}
+
+#[test]
 fn resume_continues_the_source_thread_with_clean_params() {
     let fx = Fixture::new("continue the task");
     let cfg = RunConfig {

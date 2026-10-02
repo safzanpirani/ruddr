@@ -28,7 +28,6 @@ pub fn run_controller(mut cfg: RunConfig, cancel: &CancelToken) -> Result<()> {
     let controller = Controller::new(cfg, store);
     let mut teardown = Teardown {
         controller: &controller,
-        child: false,
         watcher: None,
     };
 
@@ -40,7 +39,6 @@ pub fn run_controller(mut cfg: RunConfig, cancel: &CancelToken) -> Result<()> {
         controller.fail(&e.message);
         return Err(e);
     }
-    teardown.child = true;
     teardown.watcher = Some(watch_cancel(&controller, cancel));
     if let Err(e) = crate::control_server::start(&controller) {
         controller.fail(&e.message);
@@ -74,7 +72,6 @@ pub fn run_controller(mut cfg: RunConfig, cancel: &CancelToken) -> Result<()> {
 /// watcher, stop the child, close the logs, then close the control channel.
 struct Teardown<'a> {
     controller: &'a Arc<Controller>,
-    child: bool,
     watcher: Option<Arc<AtomicBool>>,
 }
 
@@ -83,9 +80,7 @@ impl Drop for Teardown<'_> {
         if let Some(finished) = &self.watcher {
             finished.store(true, Ordering::SeqCst);
         }
-        if self.child {
-            self.controller.shutdown_child();
-        }
+        self.controller.shutdown_child();
         self.controller.close_logs();
         crate::control_server::close(self.controller);
     }
@@ -178,6 +173,9 @@ fn acquire_thread(controller: &Controller) -> std::result::Result<(String, &'sta
     let thread_id = crate::controller::str_at(&result, &["thread", "id"]);
     if thread_id.is_empty() {
         return Err(format!("{method} returned no thread id"));
+    }
+    if method == "thread/fork" && thread_id == controller.cfg.fork_thread_id {
+        return Err("thread/fork returned the source thread id".into());
     }
     Ok((thread_id.to_string(), mode))
 }
@@ -328,4 +326,36 @@ fn start_prompted_turn(controller: &Controller, request: crate::controller::Prom
     }
     reply(Err(error.message));
     true
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+
+    #[test]
+    fn teardown_stops_a_child_even_when_initialization_never_finished() {
+        let dir = TempDir::new("setup-teardown");
+        let cfg = RunConfig {
+            state_dir: dir.join("run"),
+            cwd: dir.to_path_buf(),
+            child_command: vec!["sleep".into(), "30".into()],
+            ..Default::default()
+        };
+        let store = StateStore::create(&cfg).unwrap();
+        let controller = Controller::new(cfg, store);
+        controller.open_logs().unwrap();
+        controller.start_child().unwrap();
+        let pid = controller.child_pid();
+        controller.fail("setup did not finish");
+        drop(Teardown {
+            controller: &controller,
+            watcher: None,
+        });
+        assert!(!ruddr_core::process::alive(pid as i64));
+        assert_eq!(
+            ruddr_core::state::read_state(&controller.cfg.state_dir).unwrap().status,
+            Status::Failed
+        );
+    }
 }

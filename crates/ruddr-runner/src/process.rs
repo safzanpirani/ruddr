@@ -92,6 +92,10 @@ mod imp {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
     pub fn terminate(pid: u32, _force: bool, reaped: bool) {
+        if reaped {
+            // TODO(review): Own the provider tree with a Windows Job Object so descendants remain terminable after the parent exits.
+            return;
+        }
         let killed = std::process::Command::new("taskkill.exe")
             .args(super::taskkill_args(pid))
             .stdin(std::process::Stdio::null())
@@ -101,7 +105,7 @@ mod imp {
             .status()
             .map(|status| status.success())
             .unwrap_or(false);
-        if killed || reaped {
+        if killed {
             return;
         }
         // SAFETY: plain Win32 calls; the handle is closed before returning.

@@ -362,18 +362,30 @@ impl Controller {
         let stdin = child.stdin.take().expect("piped stdin");
         self.attach_stdin(Box::new(stdin));
         let reader = Arc::clone(self);
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("ruddr-reader".into())
-            .spawn(move || reader.read_child(io::BufReader::new(stdout)))?;
+            .spawn(move || reader.read_child(io::BufReader::new(stdout)))
+        {
+            self.reap_failed_start(&mut child, true);
+            return Err(error.into());
+        }
         let waiter = Arc::clone(self);
-        std::thread::Builder::new().name("ruddr-waiter".into()).spawn(move || {
+        let child_slot = Arc::new(Mutex::new(Some(child)));
+        let waiting_child = child_slot.clone();
+        if let Err(error) = std::thread::Builder::new().name("ruddr-waiter".into()).spawn(move || {
             // Like Go's exec.Cmd, reap only once the provider output is drained.
             drop(waiter.wait_for(waiter.lock(), None, |l| l.reader_done));
+            let mut child = waiting_child.lock().unwrap_or_else(|e| e.into_inner()).take().expect("owned child");
             let _ = child.wait();
             waiter.child_reaped.store(true, Ordering::SeqCst);
             waiter.lock().child_exited = true;
             waiter.notify();
-        })?;
+        }) {
+            if let Some(mut child) = child_slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                self.reap_failed_start(&mut child, false);
+            }
+            return Err(error.into());
+        }
         if let Err(e) = self.store.update(|state| state.child_pid = pid as i64) {
             self.stop_child.store(true, Ordering::SeqCst);
             self.shutdown_child();
@@ -384,6 +396,25 @@ impl Controller {
             self.cfg.child_command.len() - 1
         ));
         Ok(())
+    }
+
+    fn reap_failed_start(&self, child: &mut std::process::Child, reader_missing: bool) {
+        self.stop_child.store(true, Ordering::SeqCst);
+        self.close_stdin();
+        self.terminate(true);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let reaped = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break true,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                _ => break false,
+            }
+        };
+        self.child_reaped.store(reaped, Ordering::SeqCst);
+        let mut lifecycle = self.lock();
+        lifecycle.child_exited = reaped;
+        lifecycle.reader_done |= reader_missing;
+        self.notify();
     }
 
     /// Hands child stdin to a writer thread, so every write can be bounded.
@@ -528,17 +559,23 @@ impl Controller {
         }
         match result.recv_timeout(remaining) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(format!("write app-server stdin: {e}")),
-            Err(RecvTimeoutError::Timeout) => {
-                self.stdin_broken.store(true, Ordering::SeqCst);
-                self.close_stdin();
-                Err(format!(
-                    "app-server stdin write timed out after {}",
-                    ruddr_core::duration::format(remaining)
-                ))
-            }
-            Err(RecvTimeoutError::Disconnected) => Err("app-server stdin is closed".into()),
+            Ok(Err(e)) => self.fail_stdin(format!("write app-server stdin: {e}")),
+            Err(RecvTimeoutError::Timeout) => self.fail_stdin(format!(
+                "app-server stdin write timed out after {}",
+                ruddr_core::duration::format(remaining)
+            )),
+            Err(RecvTimeoutError::Disconnected) => self.fail_stdin("app-server stdin is closed".into()),
         }
+    }
+
+    fn fail_stdin(&self, error: String) -> Result<(), String> {
+        self.stdin_broken.store(true, Ordering::SeqCst);
+        self.close_stdin();
+        self.stop_child.store(true, Ordering::SeqCst);
+        self.fail(&error);
+        // Closing the sender cannot interrupt a writer blocked on ChildStdin.
+        self.terminate(false);
+        Err(error)
     }
 
     // ----- provider output -----

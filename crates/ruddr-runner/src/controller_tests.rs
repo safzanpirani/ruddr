@@ -83,8 +83,36 @@ fn a_blocked_stdin_write_respects_the_rpc_timeout() {
     );
     // Later writes fail fast instead of interleaving with the stuck frame.
     let again = c.write_line(b"{}\n".to_vec(), Duration::from_secs(1)).unwrap_err();
-    assert!(again.contains("closed"), "{again}");
+    assert!(again.contains("session ended"), "{again}");
+    assert_eq!(state::read_state(&c.cfg.state_dir).unwrap().status, Status::Failed);
+    assert!(c.stop_child.load(Ordering::SeqCst));
     drop(release);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_blocked_child_pipe_fails_the_run_and_cleans_up_the_child_and_socket() {
+    let dir = TempDir::new("blocked-pipe");
+    let cfg = RunConfig {
+        state_dir: dir.join("run"),
+        cwd: dir.to_path_buf(),
+        child_command: vec!["sleep".into(), "30".into()],
+        ..Default::default()
+    };
+    let store = StateStore::create(&cfg).unwrap();
+    let c = Controller::new(cfg, store);
+    c.open_logs().unwrap();
+    c.start_child().unwrap();
+    crate::control_server::start(&c).unwrap();
+    let pid = c.child_pid();
+    c.store.update(|s| s.status = Status::Active).unwrap();
+    assert!(c.write_line(vec![b'x'; 2 * 1024 * 1024], Duration::from_millis(50)).is_err());
+    c.shutdown_child();
+    c.close_logs();
+    crate::control_server::close(&c);
+    assert_eq!(state::read_state(&c.cfg.state_dir).unwrap().status, Status::Failed);
+    assert!(!ruddr_core::process::alive(pid as i64));
+    assert!(!std::path::Path::new(&c.store.snapshot().socket_path).exists());
 }
 
 #[test]

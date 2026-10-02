@@ -173,8 +173,8 @@ impl RpcProcess {
             }
             current.take();
         }
-        child.terminate();
         self.reject_all(message);
+        child.shut_down(Duration::ZERO);
         if !self.closing.load(Ordering::SeqCst) {
             (self.on_event)((self.failure_event)(message));
         }

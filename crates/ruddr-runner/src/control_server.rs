@@ -130,6 +130,7 @@ fn listen(path: &str) -> Result<(Box<dyn Acceptor>, Option<String>)> {
     use interprocess::local_socket::traits::Listener as _;
     use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions};
     let name = ruddr_core::control::socket_name(path).map_err(|e| Error::failed(format!("control pipe name {path}: {e}")))?;
+    // TODO(review): Define and verify an owner or logon SID ACL for the pipe instead of the default Windows descriptor.
     let listener = ListenerOptions::new()
         .name(name)
         .nonblocking(ListenerNonblockingMode::Accept)
@@ -138,6 +139,7 @@ fn listen(path: &str) -> Result<(Box<dyn Acceptor>, Option<String>)> {
     struct Pipe(interprocess::local_socket::Listener);
     impl Acceptor for Pipe {
         fn accept(&mut self) -> io::Result<Box<dyn Connection>> {
+            // TODO(review): Bound Windows pipe reads and writes and cancel stalled clients before releasing their handlers.
             Ok(Box::new(self.0.accept()?))
         }
     }

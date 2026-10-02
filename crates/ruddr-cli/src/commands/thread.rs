@@ -362,10 +362,8 @@ impl Session {
             return;
         }
         terminate(&mut self.child, false);
-        if wait_for_exit(&mut self.child, EXIT_GRACE) {
-            return;
-        }
-        terminate(&mut self.child, true);
+        let reaped = wait_for_exit(&mut self.child, EXIT_GRACE);
+        ruddr_runner::process::terminate_process_tree(self.child.id(), true, reaped);
         wait_for_exit(&mut self.child, EXIT_GRACE);
     }
 }
@@ -381,21 +379,9 @@ fn wait_for_exit(child: &mut Child, grace: Duration) -> bool {
     }
 }
 
-/// Signals the child's process group (Unix) or kills the child (Windows).
+/// Signals the child's process group (Unix) or kills its process tree (Windows).
 fn terminate(child: &mut Child, force: bool) {
-    #[cfg(unix)]
-    {
-        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
-        if let Ok(pid) = i32::try_from(child.id()) {
-            // SAFETY: signals the process group this command created for the child.
-            unsafe { libc::kill(-pid, signal) };
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = force;
-        let _ = child.kill();
-    }
+    ruddr_runner::process::terminate_process_tree(child.id(), force, false);
 }
 
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
@@ -550,6 +536,49 @@ pub fn indent_json(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_cleanup_kills_descendants_after_the_parent_exits_on_term() {
+        let dir = std::env::temp_dir().join(format!("ruddr-thread-tree-{}", ruddr_core::fsutil::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("descendant.pid");
+        let script = "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' child \"$1\" & wait";
+        let command = vec![
+            "sh".into(),
+            "-c".into(),
+            script.into(),
+            "parent".into(),
+            pid_file.to_string_lossy().into_owned(),
+        ];
+        let mut session = Session::start(&dir, &command).unwrap();
+        let parent = session.child.id();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let descendant: i64 = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = text.trim().parse()
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "descendant did not record its PID");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        session.close();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while ruddr_core::process::alive(descendant) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let survived = ruddr_core::process::alive(descendant);
+        if survived {
+            // SAFETY: this test owns the descendant and has observed it still alive.
+            unsafe {
+                libc::kill(descendant as i32, libc::SIGKILL);
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!ruddr_core::process::alive(parent as i64));
+        assert!(!survived, "the TERM-resistant descendant survived cleanup");
+    }
 
     fn parse(list: &[&str]) -> args::Parsed {
         let argv: Vec<String> = list.iter().map(|s| s.to_string()).collect();

@@ -27,13 +27,14 @@ use crate::child::{ChildProcess, describe_exit};
 use crate::protocol::{LineReader, MAX_LINE_BYTES, lock};
 use serde_json::{Map, Value, json};
 use std::process::Command;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 /// The Agent SDK release the stream-json protocol was ported from.
 pub const SDK_VERSION: &str = "0.3.245";
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The SDK's "claude_code" system prompt preset sends no `systemPrompt` in
 /// `initialize`, so the CLI keeps its default prompt. `forwardSubagentText`
@@ -195,6 +196,7 @@ struct QueryState {
     first_result: bool,
     events: Option<Sender<StreamItem>>,
     last_error_result: Option<String>,
+    initializing: Option<(String, SyncSender<Result<(), String>>)>,
 }
 
 pub struct CliQuery {
@@ -206,6 +208,10 @@ pub struct CliQuery {
 
 impl CliQuery {
     fn spawn(options: &QueryOptions, events: Sender<StreamItem>) -> Result<Arc<CliQuery>, String> {
+        Self::spawn_with_timeout(options, events, INITIALIZE_TIMEOUT)
+    }
+
+    fn spawn_with_timeout(options: &QueryOptions, events: Sender<StreamItem>, timeout: Duration) -> Result<Arc<CliQuery>, String> {
         let mut command = Command::new(&options.executable);
         command.args(claude_argv(options)).current_dir(&options.cwd);
         if std::env::var_os("CLAUDE_CODE_ENTRYPOINT").is_none() {
@@ -239,9 +245,32 @@ impl CliQuery {
                 ..Default::default()
             }),
         });
-        query.send_control_request(initialize_request());
+        let id = ruddr_core::fsutil::random_hex(6);
+        let (reply, initialized) = mpsc::sync_channel(1);
+        lock(&query.state).initializing = Some((id.clone(), reply));
         let reader = query.clone();
         thread::spawn(move || reader.read(stdout));
+        let request = json!({ "request_id": id, "type": "control_request", "request": initialize_request() });
+        let started = std::time::Instant::now();
+        let outcome = query
+            .child
+            .write(serde_json::to_vec(&request).unwrap_or_default(), timeout)
+            .and_then(|()| {
+                initialized
+                    .recv_timeout(timeout.saturating_sub(started.elapsed()))
+                    .unwrap_or_else(|_| {
+                        Err(format!(
+                            "Claude initialize did not return a successful response within {}ms",
+                            timeout.as_millis()
+                        ))
+                    })
+            });
+        if let Err(error) = outcome {
+            lock(&query.state).initializing.take();
+            super::ClaudeQuery::close(query.as_ref());
+            super::ClaudeQuery::shutdown(query.as_ref());
+            return Err(error);
+        }
         Ok(query)
     }
 
@@ -290,6 +319,25 @@ impl CliQuery {
             match message.get("type").and_then(Value::as_str) {
                 Some("control_response") => {
                     let response = message.get("response").and_then(Value::as_object);
+                    if let Some(response) = response {
+                        let mut state = lock(&self.state);
+                        if state
+                            .initializing
+                            .as_ref()
+                            .is_some_and(|(id, _)| response.get("request_id").and_then(Value::as_str) == Some(id))
+                        {
+                            let (_, reply) = state.initializing.take().unwrap();
+                            let result = match response.get("subtype").and_then(Value::as_str) {
+                                Some("success") => Ok(()),
+                                _ => Err(format!(
+                                    "Claude initialize failed: {}",
+                                    response.get("error").and_then(Value::as_str).unwrap_or("invalid response")
+                                )),
+                            };
+                            let _ = reply.send(result);
+                            continue;
+                        }
+                    }
                     if let Some(response) = response.filter(|r| r.get("subtype").and_then(Value::as_str) == Some("error")) {
                         eprintln!(
                             "ruddr: claude control request failed: {}",
@@ -309,6 +357,11 @@ impl CliQuery {
                 }
             }
         };
+        if let Some((_, reply)) = lock(&self.state).initializing.take() {
+            let _ = reply.send(Err(failure
+                .clone()
+                .unwrap_or_else(|| "Claude output closed before initialization completed".into())));
+        }
         // Like the SDK, the stream ends with the process: a failed exit or a
         // read error ends it with an error.
         let error = failure.or_else(|| {
@@ -400,9 +453,7 @@ impl super::ClaudeQuery for CliQuery {
     }
 
     fn shutdown(&self) {
-        if self.child.try_status().is_none() {
-            self.child.terminate();
-        }
+        self.child.shut_down(Duration::ZERO);
     }
 }
 
@@ -411,4 +462,47 @@ fn truthy(value: Option<&str>) -> bool {
         value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
         Some("1" | "true" | "yes" | "on")
     )
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::testing::FakeDir;
+
+    #[test]
+    fn initialization_errors_eof_and_missing_matching_replies_reject_and_reap_the_query() {
+        for (mode, expected) in [
+            ("error", "initialize failed"),
+            ("eof", "before initialization"),
+            ("wrong-id", "within"),
+        ] {
+            let fake = FakeDir::new();
+            fake.write("initialize_mode", mode);
+            let options = QueryOptions {
+                executable: fake.script("claude"),
+                cwd: fake.dir.to_string_lossy().into_owned(),
+                model: None,
+                effort: None,
+                sandbox: Sandbox::ReadOnly,
+                permission_mode: "plan",
+                persist_session: true,
+                resume: None,
+                session_id: None,
+            };
+            let (events, _receiver) = mpsc::channel();
+            let started = std::time::Instant::now();
+            let error = match CliQuery::spawn_with_timeout(&options, events, Duration::from_secs(2)) {
+                Ok(query) => {
+                    super::super::ClaudeQuery::shutdown(query.as_ref());
+                    panic!("accepted a query with initialization mode {mode}");
+                }
+                Err(error) => error,
+            };
+            assert!(error.contains(expected), "{mode}: {error}");
+            assert!(started.elapsed() < Duration::from_secs(5));
+            let pid: i64 = fake.read("pid").trim().parse().unwrap();
+            assert!(!ruddr_core::process::alive(pid), "{mode} left Claude running");
+            assert!(fake.records("stdin.jsonl").iter().all(|line| line["type"] != "user"));
+        }
+    }
 }

@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+const STEER_TIMEOUT: Duration = Duration::from_secs(30);
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
+const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(35);
+
 /// Sends a typed prompt along the route it was typed for. The route is
 /// checked again against fresh state right before sending, and a steer
 /// carries the turn the user saw. A mismatch returns an error; it never
@@ -31,7 +36,12 @@ pub fn send_prompt(state_dir: &Path, route: PromptRoute, observed_turn: Option<&
         },
         PromptRoute::Continue => return Err("a continuation starts a new run, not a control request".into()),
     };
-    control::call(state_dir, &request, control::DEFAULT_TIMEOUT).map_err(|e| e.message)?;
+    let timeout = if route == PromptRoute::Steer {
+        STEER_TIMEOUT
+    } else {
+        PROMPT_TIMEOUT
+    };
+    control::call(state_dir, &request, timeout).map_err(|e| e.message)?;
     Ok(match route {
         PromptRoute::Steer => "Steer delivered".into(),
         _ => "Prompt sent".into(),
@@ -62,7 +72,12 @@ pub fn stop(state_dir: &Path, observed: Status, observed_turn: Option<&str>) -> 
         }
         other => return Err(format!("A {other} session cannot be stopped")),
     };
-    control::call(state_dir, &request, control::DEFAULT_TIMEOUT).map_err(|e| e.message)?;
+    let timeout = if observed == Status::Idle {
+        STOP_TIMEOUT
+    } else {
+        INTERRUPT_TIMEOUT
+    };
+    control::call(state_dir, &request, timeout).map_err(|e| e.message)?;
     Ok(if observed == Status::Idle {
         "Shutdown requested".into()
     } else {
@@ -387,6 +402,33 @@ mod tests {
             serde_json::json!({"command": "steer", "text": "go left", "expectedTurnId": "turn-9"})
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_can_wait_longer_than_the_generic_control_timeout() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let dir = temp("slow-prompt");
+        let socket = dir.join(".ruddr.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let mut state = crate::core::tests_support::session(Status::Idle);
+        state.state_dir = dir.to_string_lossy().into_owned();
+        state.socket_path = socket.to_string_lossy().into_owned();
+        state.pid = std::process::id() as i64;
+        ruddr_core::state::persist_state(&state).unwrap();
+        let reply = serde_json::json!({"ok": true, "state": state}).to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            std::thread::sleep(control::DEFAULT_TIMEOUT + Duration::from_millis(100));
+            stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+        });
+        let result = send_prompt(&dir, PromptRoute::Prompt, None, "next turn");
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(result.unwrap(), "Prompt sent");
     }
 
     #[test]

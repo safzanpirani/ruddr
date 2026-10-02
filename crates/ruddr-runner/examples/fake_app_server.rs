@@ -166,7 +166,12 @@ fn main() {
                     out.error(&id, -32602, "lastTurnId mismatch");
                     continue;
                 }
-                out.result(&id, json!({"thread": {"id": "thread-forked"}}));
+                let thread = if options.on("fork-same-id") {
+                    param("threadId")
+                } else {
+                    "thread-forked".to_owned()
+                };
+                out.result(&id, json!({"thread": {"id": thread}}));
             }
             "turn/start" => {
                 if options.on("multi-turn") {

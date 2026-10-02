@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = MAX_LINE_BYTES;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenCodeThread {
@@ -720,11 +722,7 @@ impl Backend for HttpBackend {
             server.process.take()
         };
         if let Some(process) = process {
-            process.close_stdin();
-            if !process.wait_timeout(Duration::from_secs(1)) {
-                process.terminate();
-                process.wait_timeout(Duration::from_secs(1));
-            }
+            process.shut_down(Duration::from_secs(1));
         }
     }
 }
@@ -768,20 +766,35 @@ fn exchange(
     }
     head.push_str(&format!("Content-Length: {}\r\n\r\n", payload.len()));
     let mut writer = stream.try_clone().map_err(io)?;
-    writer.set_write_timeout(remaining()?).map_err(io)?;
-    writer
-        .write_all(head.as_bytes())
-        .and_then(|()| writer.write_all(&payload))
-        .and_then(|()| writer.flush())
-        .map_err(io)?;
+    for bytes in [head.as_bytes(), &payload] {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            writer.set_write_timeout(remaining()?).map_err(io)?;
+            let written = writer.write(&bytes[offset..bytes.len().min(offset + 8192)]).map_err(io)?;
+            if written == 0 {
+                return Err(Exchange::Io("OpenCode API closed the connection during write".into()));
+            }
+            offset += written;
+        }
+    }
 
     let mut reader = BufReader::new(stream);
     let read_line = |reader: &mut BufReader<TcpStream>| -> Result<String, Exchange> {
         let mut line = Vec::new();
         loop {
             reader.get_ref().set_read_timeout(remaining()?).map_err(io)?;
-            let read = reader.read_until(b'\n', &mut line).map_err(io)?;
-            if read == 0 || line.ends_with(b"\n") {
+            let available = reader.fill_buf().map_err(io)?;
+            if available.is_empty() {
+                break;
+            }
+            let count = available.iter().position(|b| *b == b'\n').map_or(available.len(), |i| i + 1);
+            if count > MAX_HTTP_HEADER_BYTES.saturating_sub(line.len()) {
+                return Err(Exchange::Io("OpenCode API header exceeds 64 KiB".into()));
+            }
+            let complete = available[count - 1] == b'\n';
+            line.extend_from_slice(&available[..count]);
+            reader.consume(count);
+            if complete {
                 break;
             }
         }
@@ -800,14 +813,26 @@ fn exchange(
     let reason = parts.next().unwrap_or_default().to_string();
     let mut length = None;
     let mut chunked = false;
+    let mut header_bytes = status_line.len() + 2;
     loop {
         let header = read_line(&mut reader)?;
+        header_bytes += header.len() + 2;
+        if header_bytes > MAX_HTTP_HEADER_BYTES {
+            return Err(Exchange::Io("OpenCode API headers exceed 64 KiB".into()));
+        }
         if header.is_empty() {
             break;
         }
         if let Some((name, value)) = header.split_once(':') {
             match name.trim().to_ascii_lowercase().as_str() {
-                "content-length" => length = value.trim().parse::<usize>().ok(),
+                "content-length" => {
+                    length = Some(
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .map_err(|_| Exchange::Io("invalid content length".into()))?,
+                    );
+                }
                 "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
                 _ => {}
             }
@@ -816,7 +841,11 @@ fn exchange(
     let mut body = Vec::new();
     let read_exact = |reader: &mut BufReader<TcpStream>, count: usize, body: &mut Vec<u8>| -> Result<(), Exchange> {
         let start = body.len();
-        body.resize(start + count, 0);
+        let end = start
+            .checked_add(count)
+            .filter(|end| *end <= MAX_HTTP_BODY_BYTES)
+            .ok_or_else(|| Exchange::Io("OpenCode API body exceeds 64 MiB".into()))?;
+        body.resize(end, 0);
         let mut filled = 0;
         while filled < count {
             reader.get_ref().set_read_timeout(remaining()?).map_err(io)?;
@@ -854,6 +883,9 @@ fn exchange(
                 break;
             }
             body.extend_from_slice(&chunk[..read]);
+            if body.len() > MAX_HTTP_BODY_BYTES {
+                return Err(Exchange::Io("OpenCode API body exceeds 64 MiB".into()));
+            }
         }
     }
     Ok((status, reason, body))

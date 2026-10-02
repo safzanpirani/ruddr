@@ -434,6 +434,61 @@ fn keeps_response_bodies_bounded_by_timeout_and_shutdown() {
 }
 
 #[test]
+fn rejects_oversized_or_invalid_http_headers_lengths_and_chunks() {
+    for (response, expected) in [
+        (
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", usize::MAX),
+            "exceeds 64 MiB",
+        ),
+        (
+            "HTTP/1.1 200 OK\r\nContent-Length: invalid\r\n\r\n".into(),
+            "invalid content length",
+        ),
+        (
+            format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n", usize::MAX),
+            "exceeds 64 MiB",
+        ),
+        (
+            format!("HTTP/1.1 200 OK\r\nX-Large: {}\r\n\r\n", "x".repeat(MAX_HTTP_HEADER_BYTES)),
+            "header exceeds 64 KiB",
+        ),
+        (
+            format!("HTTP/1.1 200 OK\r\n{}\r\n", "X-Small: x\r\n".repeat(MAX_HTTP_HEADER_BYTES / 8)),
+            "headers exceed 64 KiB",
+        ),
+    ] {
+        let (base, _) = fake_http(Arc::new(move |_, _, stream| {
+            let _ = stream.write_all(response.as_bytes());
+        }));
+        let backend = HttpBackend::new(Duration::from_secs(1));
+        backend.attach(&base, "test");
+        let error = backend.prompt("ses_test", "hello", false).unwrap_err();
+        assert!(error.message.contains(expected), "{error}");
+        backend.close(None, false);
+    }
+}
+
+#[test]
+fn a_continuous_partial_http_header_does_not_extend_the_deadline() {
+    let (base, _) = fake_http(Arc::new(move |_, _, stream| {
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nX-Trickle: ");
+        for _ in 0..200 {
+            if stream.write_all(b"x").is_err() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }));
+    let backend = HttpBackend::new(Duration::from_millis(50));
+    backend.attach(&base, "test");
+    let started = Instant::now();
+    let error = backend.prompt("ses_test", "hello", false).unwrap_err();
+    assert!(error.message.contains("timed out"), "{error}");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    backend.close(None, false);
+}
+
+#[test]
 fn installs_distinct_ruddr_agents_without_discarding_inline_config() {
     let existing = json!({ "theme": "ruddr", "agents": { "existing": { "mode": "primary" } } }).to_string();
     let config: Value = serde_json::from_str(&ruddr_config_content(Some("read-only"), Some(&existing)).unwrap()).unwrap();

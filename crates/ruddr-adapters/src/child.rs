@@ -136,13 +136,16 @@ impl ChildProcess {
         }
     }
 
-    /// Closes stdin, waits `grace` for a clean exit, then terminates and
-    /// waits another second. This is how the TypeScript clients closed.
+    /// Closes stdin, waits `grace` for a clean exit, then sends TERM and
+    /// escalates to KILL with a one-second wait after each signal.
     pub fn shut_down(&self, grace: Duration) {
         self.close_stdin();
         if !self.wait_timeout(grace) {
             self.terminate();
-            self.wait_timeout(Duration::from_secs(1));
+            if !self.wait_timeout(Duration::from_secs(1)) {
+                self.kill();
+                self.wait_timeout(Duration::from_secs(1));
+            }
         }
     }
 }
@@ -245,5 +248,24 @@ pub fn hostname() -> String {
     #[cfg(not(unix))]
     {
         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".into())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn shutdown_kills_and_reaps_a_child_that_ignores_term() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "trap '' TERM; printf 'ready\\n'; exec sleep 30"]);
+        let (child, stdout) = ChildProcess::spawn(command).unwrap();
+        let mut ready = String::new();
+        BufReader::new(stdout).read_line(&mut ready).unwrap();
+        assert_eq!(ready, "ready\n");
+        child.shut_down(Duration::from_millis(20));
+        let status = child.try_status().expect("the child was not reaped");
+        assert!(!status.success());
     }
 }
