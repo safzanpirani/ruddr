@@ -6,8 +6,17 @@ Bun or Go at runtime. The browser client stays TypeScript because browsers
 run JavaScript; it is bundled once at development time and embedded in the
 binary.
 
-The Go and TypeScript sources stay in the tree until the port lands, as the
-reference specification. Port behavior from them, and port their tests.
+## Status
+
+The port is complete. Ruddr 0.6.0 ships the Rust workspace described here,
+and the Go and TypeScript implementations are gone from the tree; Git history
+keeps them. `web/client` is the only TypeScript left. The README lists the
+user-visible behavior changes under "Changes in 0.6.0". The rest of this
+document is the design record of the port. Its ownership table, build
+instructions, and report checklist describe how the port was run.
+
+The Go and TypeScript sources stayed in the tree until the port landed, as the
+reference specification. Behavior and tests were ported from them.
 
 ## Workspace
 
