@@ -21,7 +21,7 @@ fn main() {
 fn dispatch(mut args: Vec<String>) -> Result<()> {
     if args.is_empty() {
         commands::print_usage();
-        return Err(Error::usage(""));
+        return Err(Error::usage("a command is required"));
     }
     let command = args.remove(0);
     match command.as_str() {
