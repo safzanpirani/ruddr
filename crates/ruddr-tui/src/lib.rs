@@ -1,4 +1,4 @@
-// Experimental ratatui front end for Ruddr. Launched by `ruddr tui --rs`.
+//! The Ruddr terminal UI (ratatui). Entry point: [`tui_command`].
 
 mod core;
 mod text;
@@ -322,7 +322,7 @@ pub struct Args {
     pub update: Option<String>,
 }
 
-fn parse_args() -> Result<Args, String> {
+fn parse_args(argv: Vec<String>) -> Result<Args, String> {
     let env = |names: &[&str]| names.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()));
     let mut args = Args {
         ruddr: String::new(),
@@ -334,7 +334,7 @@ fn parse_args() -> Result<Args, String> {
         mobile: env(&["RUDDR_TUI_MOBILE", "RUDDER_TUI_MOBILE"]).as_deref() == Some("1"),
         update: env(&["RUDDR_UPDATE_AVAILABLE"]).map(|v| v.trim().to_string()),
     };
-    let mut iter = std::env::args().skip(1);
+    let mut iter = argv.into_iter();
     while let Some(arg) = iter.next() {
         let (flag, inline) = match arg.split_once('=') {
             Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
@@ -2166,22 +2166,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
     Ok(())
 }
 
-fn main() {
-    let args = match parse_args() {
-        Ok(args) => args,
-        Err(message) => {
-            eprintln!("ruddr tui: {message}");
-            std::process::exit(2);
-        }
-    };
+/// Entry point for `ruddr tui ARGS...`. The CLI passes `--ruddr` with its
+/// own executable path until the TUI calls the core crates directly.
+pub fn tui_command(argv: Vec<String>) -> ruddr_core::Result<()> {
+    let args = parse_args(argv).map_err(ruddr_core::Error::usage)?;
     let mut app = App::new(args);
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste);
     let result = run(&mut terminal, &mut app);
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
-    if let Err(error) = result {
-        eprintln!("ruddr tui: {error}");
-        std::process::exit(1);
-    }
+    result.map_err(|error| ruddr_core::Error::failed(error.to_string()))
 }

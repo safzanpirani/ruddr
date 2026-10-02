@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/safzanpirani/ruddr"
+
+# Every third-party crate the workspace may use. Adding one needs the
+# integrator's approval: list it in your report with the reason.
+[workspace.dependencies]
+ruddr-core = { path = "crates/ruddr-core" }
+ruddr-runner = { path = "crates/ruddr-runner" }
+ruddr-adapters = { path = "crates/ruddr-adapters" }
+ruddr-tui = { path = "crates/ruddr-tui" }
+ruddr-web = { path = "crates/ruddr-web" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console"] }
+getrandom = "0.4"
+interprocess = "2"
+ratatui = "0.30"
+crossterm = "0.29"
+unicode-width = "0.2"
+# The web crate alone uses an async runtime.
+axum = "0.8"
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "process", "fs", "io-util"] }
+tokio-stream = "0.1"
+ureq = "3"
+sha2 = "0.11"
+
+[profile.dev]
+# Debug info is most of target/debug; line tables keep backtraces useful.
+debug = "line-tables-only"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

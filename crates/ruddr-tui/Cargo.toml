@@ -1,0 +1,15 @@
+[package]
+name = "ruddr-tui"
+description = "The Ruddr terminal UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ruddr-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ratatui = "0.29"
+libc.workspace = true
+unicode-width.workspace = true
