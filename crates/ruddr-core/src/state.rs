@@ -10,7 +10,8 @@ use crate::error::{Context, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const STATE_VERSION: u32 = 1;
+/// Go releases since provider support wrote version 2.
+pub const STATE_VERSION: u32 = 2;
 pub const STATE_FILE: &str = "state.json";
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const TRACE_FILE: &str = "trace.log";
