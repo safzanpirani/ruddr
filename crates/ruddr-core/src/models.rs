@@ -167,7 +167,10 @@ fn validate_models_file(file: &ModelsFile) -> Result<()> {
         if entry.default
             && let Some(previous) = defaults.insert(&entry.provider, &entry.id)
         {
-            return Err(Error::failed(format!("{} has two defaults: {previous} and {}", entry.provider, entry.id)));
+            return Err(Error::failed(format!(
+                "{} has two defaults: {previous} and {}",
+                entry.provider, entry.id
+            )));
         }
     }
     Ok(())
@@ -237,15 +240,22 @@ pub fn merge_catalog(builtin: &[ProviderModel], entries: &[ModelEntry]) -> Vec<P
 /// The provider's default model after models.json, or `None` when the
 /// provider has none.
 pub fn default_model(provider: Provider) -> Result<Option<String>> {
-    Ok(load_catalog()?.into_iter().find(|m| m.provider == provider.as_str() && m.default).map(|m| m.id))
+    Ok(load_catalog()?
+        .into_iter()
+        .find(|m| m.provider == provider.as_str() && m.default)
+        .map(|m| m.id))
 }
 
 /// The catalog's config overrides for a Codex model as sorted `KEY=VALUE`
 /// strings, so the child command is deterministic.
 pub fn codex_config(model: &str) -> Result<Vec<String>> {
     let catalog = load_catalog()?;
-    let entry = catalog.iter().find(|m| m.provider == "codex" && m.id == model && !m.config.is_empty());
-    Ok(entry.map(|m| m.config.iter().map(|(k, v)| format!("{k}={v}")).collect()).unwrap_or_default())
+    let entry = catalog
+        .iter()
+        .find(|m| m.provider == "codex" && m.id == model && !m.config.is_empty());
+    Ok(entry
+        .map(|m| m.config.iter().map(|(k, v)| format!("{k}={v}")).collect())
+        .unwrap_or_default())
 }
 
 /// Validates one `--config KEY=VALUE` override and splits it.
@@ -258,7 +268,11 @@ pub fn parse_config_override(text: &str) -> Result<(String, String)> {
 
 /// Splits a comma-separated `--efforts` value, dropping blanks.
 pub fn parse_efforts(text: &str) -> Vec<String> {
-    text.split(',').map(str::trim).filter(|e| !e.is_empty()).map(str::to_string).collect()
+    text.split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Writes models.json as private, pretty-printed JSON.
@@ -311,7 +325,14 @@ pub struct Row {
 pub fn rows() -> Result<Vec<Row>> {
     Ok(load_catalog()?
         .into_iter()
-        .map(|m| Row { from_config: m.source == "config", provider: m.provider, id: m.id, default: m.default, available: m.available, note: m.note })
+        .map(|m| Row {
+            from_config: m.source == "config",
+            provider: m.provider,
+            id: m.id,
+            default: m.default,
+            available: m.available,
+            note: m.note,
+        })
         .collect())
 }
 
@@ -328,7 +349,9 @@ pub fn file_path() -> PathBuf {
 
 fn edit_provider(provider: &str) -> Result<Provider> {
     if provider.is_empty() {
-        return Err(Error::usage("unsupported provider \"\"; expected codex, claude, opencode, pi, or droid"));
+        return Err(Error::usage(
+            "unsupported provider \"\"; expected codex, claude, opencode, pi, or droid",
+        ));
     }
     Provider::parse(provider)
 }
@@ -352,14 +375,22 @@ pub fn add(provider: &str, id: &str, options: &AddOptions) -> Result<()> {
     if (!options.set_config.is_empty() || !options.unset_config.is_empty()) && parsed != Provider::Codex {
         return Err(Error::usage("--config applies only to codex models"));
     }
-    if let Some((key, _)) = options.set_config.iter().find(|(key, _)| key.trim().is_empty() || key.contains('=')) {
+    if let Some((key, _)) = options
+        .set_config
+        .iter()
+        .find(|(key, _)| key.trim().is_empty() || key.contains('='))
+    {
         return Err(Error::usage(format!("invalid config key {key:?}")));
     }
     let (mut file, path) = read_models_file()?;
     let index = match file.models.iter().position(|e| e.provider == provider && e.id == id) {
         Some(index) => index,
         None => {
-            file.models.push(ModelEntry { provider: provider.into(), id: id.into(), ..Default::default() });
+            file.models.push(ModelEntry {
+                provider: provider.into(),
+                id: id.into(),
+                ..Default::default()
+            });
             file.models.len() - 1
         }
     };
@@ -395,7 +426,9 @@ pub fn set_default(provider: &str, id: &str) -> Result<()> {
     edit_provider(provider)?;
     edit_id(id)?;
     let (mut file, path) = read_models_file()?;
-    let known = merge_catalog(&builtin_catalog(), &file.models).iter().any(|m| m.provider == provider && m.id == id);
+    let known = merge_catalog(&builtin_catalog(), &file.models)
+        .iter()
+        .any(|m| m.provider == provider && m.id == id);
     if !known {
         return Err(Error::failed(format!(
             "{provider} {id} is not in the catalog; add it with `ruddr models add {provider} {id} --default`"
@@ -406,7 +439,12 @@ pub fn set_default(provider: &str, id: &str) -> Result<()> {
     }
     match file.models.iter_mut().find(|e| e.provider == provider && e.id == id) {
         Some(entry) => entry.default = true,
-        None => file.models.push(ModelEntry { provider: provider.into(), id: id.into(), default: true, ..Default::default() }),
+        None => file.models.push(ModelEntry {
+            provider: provider.into(),
+            id: id.into(),
+            default: true,
+            ..Default::default()
+        }),
     }
     write_models_file(&path, &file)
 }
@@ -419,7 +457,12 @@ pub fn remove(provider: &str, id: &str) -> Result<Removal> {
     let (mut file, path) = read_models_file()?;
     let index = file.models.iter().position(|e| e.provider == provider && e.id == id);
     let removal = if is_builtin(provider, id) {
-        let hidden = ModelEntry { provider: provider.into(), id: id.into(), hidden: true, ..Default::default() };
+        let hidden = ModelEntry {
+            provider: provider.into(),
+            id: id.into(),
+            hidden: true,
+            ..Default::default()
+        };
         match index {
             Some(index) => file.models[index] = hidden,
             None => file.models.push(hidden),
@@ -475,13 +518,21 @@ pub(crate) mod tests {
         assert!(catalog.iter().all(|m| !m.available || !m.id.is_empty()));
         let pi = catalog.iter().find(|m| m.provider == "pi").unwrap();
         assert_eq!(pi.efforts[..2], ["off".to_string(), "minimal".to_string()]);
-        assert!(catalog.iter().any(|m| m.provider == "claude" && m.id == "claude-fable-5-1" && m.available));
+        assert!(
+            catalog
+                .iter()
+                .any(|m| m.provider == "claude" && m.id == "claude-fable-5-1" && m.available)
+        );
     }
 
     #[test]
     fn gpt6_sol_and_luna_entries() {
         let catalog = builtin_catalog();
-        for (id, efforts) in [("gpt-6.1-sol", SOL_EFFORTS), ("gpt-6-sol", SOL_EFFORTS), ("gpt-6-luna", LUNA_EFFORTS)] {
+        for (id, efforts) in [
+            ("gpt-6.1-sol", SOL_EFFORTS),
+            ("gpt-6-sol", SOL_EFFORTS),
+            ("gpt-6-luna", LUNA_EFFORTS),
+        ] {
             let model = catalog.iter().find(|m| m.provider == "codex" && m.id == id).unwrap();
             assert!(model.available && !model.default);
             assert_eq!(model.efforts, efforts);
@@ -492,9 +543,21 @@ pub(crate) mod tests {
     fn edits_add_override_and_hide_models() {
         with_models_file(None, |path| {
             assert_eq!(file_path(), path);
-            let zen = AddOptions { label: Some("Zen Flash".into()), make_default: true, ..Default::default() };
+            let zen = AddOptions {
+                label: Some("Zen Flash".into()),
+                make_default: true,
+                ..Default::default()
+            };
             add("opencode", "opencode/deepseek-v4-flash", &zen).unwrap();
-            add("codex", "gpt-7-preview", &AddOptions { efforts: Some(parse_efforts("low, high,")), ..Default::default() }).unwrap();
+            add(
+                "codex",
+                "gpt-7-preview",
+                &AddOptions {
+                    efforts: Some(parse_efforts("low, high,")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             assert_eq!(remove("codex", "gpt-5.6-luna").unwrap(), Removal::HidBuiltin);
             set_default("claude", "claude-sonnet-5").unwrap();
 
@@ -502,7 +565,10 @@ pub(crate) mod tests {
             let find = |p: &str, id: &str| catalog.iter().find(|m| m.provider == p && m.id == id).cloned();
             let zen = find("opencode", "opencode/deepseek-v4-flash").unwrap();
             assert!(zen.default && zen.label == "Zen Flash" && zen.source == "config");
-            assert_eq!(default_model(Provider::OpenCode).unwrap().as_deref(), Some("opencode/deepseek-v4-flash"));
+            assert_eq!(
+                default_model(Provider::OpenCode).unwrap().as_deref(),
+                Some("opencode/deepseek-v4-flash")
+            );
             let preview = find("codex", "gpt-7-preview").unwrap();
             assert_eq!(preview.efforts, ["low", "high"]);
             assert!(!preview.default);
@@ -532,22 +598,52 @@ pub(crate) mod tests {
 
     #[test]
     fn config_overrides_are_sorted_and_codex_only() {
-        with_models_file(Some(r#"{"models":[{"provider":"codex","id":"gpt-6-sol","config":{"features.b":"false","features.a":"1"}}]}"#), |_| {
-            assert_eq!(codex_config("gpt-6-sol").unwrap(), ["features.a=1", "features.b=false"]);
-            assert!(codex_config("gpt-6-astra").unwrap().is_empty());
-        });
+        with_models_file(
+            Some(r#"{"models":[{"provider":"codex","id":"gpt-6-sol","config":{"features.b":"false","features.a":"1"}}]}"#),
+            |_| {
+                assert_eq!(codex_config("gpt-6-sol").unwrap(), ["features.a=1", "features.b=false"]);
+                assert!(codex_config("gpt-6-astra").unwrap().is_empty());
+            },
+        );
         with_models_file(Some(r#"{"models":[]}"#), |_| {
             let set = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            add("codex", "gpt-6-sol", &AddOptions { set_config: set(&[("features.x", "false"), ("y", "1")]), ..Default::default() }).unwrap();
+            add(
+                "codex",
+                "gpt-6-sol",
+                &AddOptions {
+                    set_config: set(&[("features.x", "false"), ("y", "1")]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             assert_eq!(codex_config("gpt-6-sol").unwrap(), ["features.x=false", "y=1"]);
-            add("codex", "gpt-6-sol", &AddOptions { unset_config: vec!["y".into()], ..Default::default() }).unwrap();
+            add(
+                "codex",
+                "gpt-6-sol",
+                &AddOptions {
+                    unset_config: vec!["y".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             assert_eq!(codex_config("gpt-6-sol").unwrap(), ["features.x=false"]);
-            let error = add("claude", "claude-opus-5-5", &AddOptions { set_config: set(&[("a", "b")]), ..Default::default() }).unwrap_err();
+            let error = add(
+                "claude",
+                "claude-opus-5-5",
+                &AddOptions {
+                    set_config: set(&[("a", "b")]),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
             assert_eq!(error.exit, crate::Exit::Usage);
         });
-        with_models_file(Some(r#"{"models":[{"provider":"claude","id":"claude-opus-5-5","config":{"a":"b"}}]}"#), |_| {
-            assert!(load_catalog().unwrap_err().message.contains("only to codex"));
-        });
+        with_models_file(
+            Some(r#"{"models":[{"provider":"claude","id":"claude-opus-5-5","config":{"a":"b"}}]}"#),
+            |_| {
+                assert!(load_catalog().unwrap_err().message.contains("only to codex"));
+            },
+        );
         assert!(parse_config_override("no-equals-sign").is_err());
         assert!(parse_config_override(" =x").is_err());
         assert_eq!(parse_config_override("a=b=c").unwrap(), ("a".into(), "b=c".into()));

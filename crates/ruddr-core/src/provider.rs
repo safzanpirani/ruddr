@@ -28,7 +28,9 @@ impl Provider {
             "opencode" => Ok(Provider::OpenCode),
             "pi" => Ok(Provider::Pi),
             "droid" => Ok(Provider::Droid),
-            other => Err(Error::usage(format!("unsupported provider {other:?}; expected codex, claude, opencode, pi, or droid"))),
+            other => Err(Error::usage(format!(
+                "unsupported provider {other:?}; expected codex, claude, opencode, pi, or droid"
+            ))),
         }
     }
 
