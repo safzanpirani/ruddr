@@ -43,7 +43,11 @@ pub fn parse(text: &str) -> Result<Duration, String> {
 pub fn format(duration: Duration) -> String {
     let total = duration.as_secs();
     if total == 0 {
-        return if duration.is_zero() { "0s".into() } else { format!("{}ms", duration.as_millis()) };
+        return if duration.is_zero() {
+            "0s".into()
+        } else {
+            format!("{}ms", duration.as_millis())
+        };
     }
     let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
     let mut out = String::new();

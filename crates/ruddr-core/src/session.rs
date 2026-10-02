@@ -2,7 +2,7 @@
 //! explicit state directories, `state.json` files below roots, and the global
 //! registry. Live runs sort first, then the most recently updated.
 
-use crate::state::{RunState, Status, STATE_FILE};
+use crate::state::{RunState, STATE_FILE, Status};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +38,10 @@ pub fn discover(options: &Discover) -> Vec<Session> {
         .filter_map(|file| {
             let dir = file.parent()?;
             let state = crate::state::read_state(dir).ok()?;
-            Some(Session { state: state.displayed(), state_file: file })
+            Some(Session {
+                state: state.displayed(),
+                state_file: file,
+            })
         })
         .collect();
     sort_sessions(&mut sessions);
@@ -83,7 +86,7 @@ pub fn sort_sessions(sessions: &mut [Session]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{persist_state, STATE_VERSION};
+    use crate::state::{STATE_VERSION, persist_state};
 
     fn state(dir: &Path, status: Status, updated: &str) -> RunState {
         RunState {
@@ -135,9 +138,17 @@ mod tests {
         // A forged state.json that claims another directory is ignored.
         let forged = root.join(".scratch/forged");
         std::fs::create_dir_all(&forged).unwrap();
-        std::fs::write(forged.join("state.json"), serde_json::to_vec(&state(&live, Status::Completed, "2026-10-02T12:00:00Z")).unwrap()).unwrap();
+        std::fs::write(
+            forged.join("state.json"),
+            serde_json::to_vec(&state(&live, Status::Completed, "2026-10-02T12:00:00Z")).unwrap(),
+        )
+        .unwrap();
 
-        let sessions = discover(&Discover { roots: vec![root.join(".scratch")], registries: Some(vec![registry]), ..Default::default() });
+        let sessions = discover(&Discover {
+            roots: vec![root.join(".scratch")],
+            registries: Some(vec![registry]),
+            ..Default::default()
+        });
         let order: Vec<String> = sessions.iter().map(|s| s.state.status.to_string()).collect();
         assert_eq!(order, vec!["active", "failed", "completed"]);
         std::fs::remove_dir_all(root).unwrap();

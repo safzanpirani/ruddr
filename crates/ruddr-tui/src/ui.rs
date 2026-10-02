@@ -75,7 +75,7 @@ fn status_color(p: &Palette, status: Status) -> Rgb {
         Status::Active => p.success,
         Status::Idle | Status::Starting => p.accent,
         Status::Failed | Status::Stale => p.danger,
-        Status::Interrupted => p.warning,
+        Status::Interrupted | Status::Stopping => p.warning,
         Status::Completed => p.dim,
     }
 }

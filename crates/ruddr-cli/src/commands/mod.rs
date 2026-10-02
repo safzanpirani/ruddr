@@ -155,4 +155,3 @@ pub fn prepare_dashboard() {
     }
     std::thread::spawn(move || update::refresh_check(&update::Ureq, &path, disabled));
 }
-

@@ -27,7 +27,10 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl Error {
     pub fn new(exit: Exit, message: impl Into<String>) -> Self {
-        Error { exit, message: message.into() }
+        Error {
+            exit,
+            message: message.into(),
+        }
     }
     pub fn failed(message: impl Into<String>) -> Self {
         Error::new(Exit::Failed, message)

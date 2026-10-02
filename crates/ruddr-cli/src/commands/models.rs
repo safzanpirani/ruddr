@@ -73,7 +73,14 @@ impl Catalog for Core {
     fn rows(&self) -> Result<Vec<Row>> {
         Ok(ruddr_core::models::rows()?
             .into_iter()
-            .map(|r| Row { provider: r.provider, id: r.id, default: r.default, available: r.available, note: r.note, from_file: r.from_config })
+            .map(|r| Row {
+                provider: r.provider,
+                id: r.id,
+                default: r.default,
+                available: r.available,
+                note: r.note,
+                from_file: r.from_config,
+            })
             .collect())
     }
     fn to_json(&self) -> Result<serde_json::Value> {

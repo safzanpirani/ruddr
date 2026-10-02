@@ -30,7 +30,8 @@ pub fn format_rfc3339(time: SystemTime) -> String {
 /// values return `None`.
 pub fn parse_rfc3339_ms(text: &str) -> Option<i64> {
     let b = text.as_bytes();
-    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !(b[10] == b'T' || b[10] == b't' || b[10] == b' ') || b[13] != b':' || b[16] != b':' {
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !(b[10] == b'T' || b[10] == b't' || b[10] == b' ') || b[13] != b':' || b[16] != b':'
+    {
         return None;
     }
     let num = |r: std::ops::Range<usize>| text.get(r)?.parse::<i64>().ok();
@@ -63,7 +64,10 @@ pub fn parse_rfc3339_ms(text: &str) -> Option<i64> {
 }
 
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 // Howard Hinnant's civil calendar algorithms.
@@ -104,7 +108,10 @@ mod tests {
 
     #[test]
     fn parses_offsets_and_rejects_go_zero_time() {
-        assert_eq!(parse_rfc3339_ms("2026-10-02T15:00:00+05:30"), parse_rfc3339_ms("2026-10-02T09:30:00Z"));
+        assert_eq!(
+            parse_rfc3339_ms("2026-10-02T15:00:00+05:30"),
+            parse_rfc3339_ms("2026-10-02T09:30:00Z")
+        );
         assert_eq!(parse_rfc3339_ms("0001-01-01T00:00:00Z"), None);
         assert_eq!(parse_rfc3339_ms("garbage"), None);
     }

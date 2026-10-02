@@ -111,7 +111,7 @@ pub fn status_glyph(status: Status) -> &'static str {
     match status {
         Status::Active => "●",
         Status::Idle => "◌",
-        Status::Starting => "◐",
+        Status::Starting | Status::Stopping => "◐",
         Status::Completed => "✓",
         Status::Failed => "×",
         Status::Interrupted => "■",

@@ -9,13 +9,19 @@ pub fn env_any(names: &[&str]) -> Option<String> {
 }
 
 pub fn home_dir() -> PathBuf {
-    env_any(&["HOME", "USERPROFILE"]).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    env_any(&["HOME", "USERPROFILE"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Joins a relative path onto the current directory without touching the
 /// filesystem (no symlink resolution), like Go's `filepath.Abs`.
 pub fn absolute(path: &Path) -> PathBuf {
-    let joined = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(path) };
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
     normalize(&joined)
 }
 
@@ -39,18 +45,26 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 /// `$XDG_CONFIG_HOME/ruddr` or `~/.config/ruddr`: models.json, tui.json, web-token.
 pub fn config_dir() -> PathBuf {
-    env_any(&["XDG_CONFIG_HOME"]).map(PathBuf::from).unwrap_or_else(|| home_dir().join(".config")).join("ruddr")
+    env_any(&["XDG_CONFIG_HOME"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config"))
+        .join("ruddr")
 }
 
 /// `$XDG_STATE_HOME` or `~/.local/state`.
 pub fn state_home() -> PathBuf {
-    env_any(&["XDG_STATE_HOME"]).map(PathBuf::from).unwrap_or_else(|| home_dir().join(".local").join("state"))
+    env_any(&["XDG_STATE_HOME"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".local").join("state"))
 }
 
 /// `$XDG_CACHE_HOME/ruddr` or `~/.cache/ruddr`. Update checks and remote
 /// shell probes live beside the registry under `state_home()/ruddr` instead.
 pub fn cache_dir() -> PathBuf {
-    env_any(&["XDG_CACHE_HOME"]).map(PathBuf::from).unwrap_or_else(|| home_dir().join(".cache")).join("ruddr")
+    env_any(&["XDG_CACHE_HOME"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".cache"))
+        .join("ruddr")
 }
 
 /// The registry directory new runs register in.
@@ -67,7 +81,10 @@ pub fn registry_dirs_for_discovery() -> Vec<PathBuf> {
         return vec![absolute(Path::new(&dir))];
     }
     let home = state_home();
-    ["ruddr", "rudder", "codex-rudder"].iter().map(|name| home.join(name).join("runs")).collect()
+    ["ruddr", "rudder", "codex-rudder"]
+        .iter()
+        .map(|name| home.join(name).join("runs"))
+        .collect()
 }
 
 /// `CWD/.scratch/ruddr`: where runs started without `--state-dir` live.

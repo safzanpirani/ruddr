@@ -73,7 +73,10 @@ mod tests {
     #[test]
     fn entry_names_match_go() {
         // printf /tmp/x | shasum -a 256, the name Go's registerRunStateDir used.
-        assert_eq!(entry_name(Path::new("/tmp/x")), "2e56aa36f538b33b48f37ef51e54ddb5cb9c7935e65c296b7494a17e8dff2a12.run");
+        assert_eq!(
+            entry_name(Path::new("/tmp/x")),
+            "2e56aa36f538b33b48f37ef51e54ddb5cb9c7935e65c296b7494a17e8dff2a12.run"
+        );
     }
 
     #[test]

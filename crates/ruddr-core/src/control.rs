@@ -9,7 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::state::RunState;
-use interprocess::local_socket::{prelude::*, GenericFilePath, GenericNamespaced, Name, Stream};
+use interprocess::local_socket::{GenericFilePath, GenericNamespaced, Name, Stream, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -110,10 +110,17 @@ pub fn send(state_dir: &Path, request: &Request, timeout: Duration) -> Result<Re
     let reply = match rx.recv_timeout(timeout) {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => return Err(Error::failed(format!("connect to Ruddr pid {pid} at {}: {e}", state.socket_path))),
-        Err(_) => return Err(Error::failed(format!("Ruddr pid {pid} did not answer within {}", crate::duration::format(timeout)))),
+        Err(_) => {
+            return Err(Error::failed(format!(
+                "Ruddr pid {pid} did not answer within {}",
+                crate::duration::format(timeout)
+            )));
+        }
     };
     if reply.trim().is_empty() {
-        return Err(Error::failed(format!("Ruddr pid {pid} closed the control connection without a reply")));
+        return Err(Error::failed(format!(
+            "Ruddr pid {pid} closed the control connection without a reply"
+        )));
     }
     Ok(serde_json::from_str(reply.trim())?)
 }
@@ -122,7 +129,9 @@ pub fn send(state_dir: &Path, request: &Request, timeout: Duration) -> Result<Re
 pub fn call(state_dir: &Path, request: &Request, timeout: Duration) -> Result<RunState> {
     let response = send(state_dir, request, timeout)?;
     if !response.ok {
-        return Err(Error::failed(response.error.unwrap_or_else(|| "the controller rejected the request".into())));
+        return Err(Error::failed(
+            response.error.unwrap_or_else(|| "the controller rejected the request".into()),
+        ));
     }
     response.state.ok_or_else(|| Error::failed("the controller replied without state"))
 }
@@ -133,9 +142,20 @@ mod tests {
 
     #[test]
     fn requests_serialize_like_go() {
-        let request = Request { command: Command::Steer, text: Some("go left".into()), expected_turn_id: Some("t1".into()) };
-        assert_eq!(serde_json::to_string(&request).unwrap(), r#"{"command":"steer","text":"go left","expectedTurnId":"t1"}"#);
-        let request = Request { command: Command::Stop, text: None, expected_turn_id: None };
+        let request = Request {
+            command: Command::Steer,
+            text: Some("go left".into()),
+            expected_turn_id: Some("t1".into()),
+        };
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"command":"steer","text":"go left","expectedTurnId":"t1"}"#
+        );
+        let request = Request {
+            command: Command::Stop,
+            text: None,
+            expected_turn_id: None,
+        };
         assert_eq!(serde_json::to_string(&request).unwrap(), r#"{"command":"shutdown"}"#);
         let parsed: Request = serde_json::from_str(r#"{"command":"stop"}"#).unwrap();
         assert_eq!(parsed.command, Command::Stop);

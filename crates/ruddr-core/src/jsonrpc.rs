@@ -63,16 +63,37 @@ pub enum Kind {
 
 impl Message {
     pub fn request(id: impl Into<String>, method: &str, params: Value) -> Message {
-        Message { id: Some(Id::Str(id.into())), method: Some(method.into()), params: Some(params), ..Default::default() }
+        Message {
+            id: Some(Id::Str(id.into())),
+            method: Some(method.into()),
+            params: Some(params),
+            ..Default::default()
+        }
     }
     pub fn notification(method: &str, params: Value) -> Message {
-        Message { method: Some(method.into()), params: Some(params), ..Default::default() }
+        Message {
+            method: Some(method.into()),
+            params: Some(params),
+            ..Default::default()
+        }
     }
     pub fn response(id: Id, result: Value) -> Message {
-        Message { id: Some(id), result: Some(result), ..Default::default() }
+        Message {
+            id: Some(id),
+            result: Some(result),
+            ..Default::default()
+        }
     }
     pub fn error_response(id: Id, code: i64, message: impl Into<String>) -> Message {
-        Message { id: Some(id), error: Some(RpcError { code, message: message.into(), data: None }), ..Default::default() }
+        Message {
+            id: Some(id),
+            error: Some(RpcError {
+                code,
+                message: message.into(),
+                data: None,
+            }),
+            ..Default::default()
+        }
     }
 
     pub fn kind(&self) -> Kind {
@@ -109,7 +130,10 @@ mod tests {
         assert!(line.ends_with('\n') && !line.contains("jsonrpc"));
         assert_eq!(Message::parse(line.trim()).unwrap(), request);
         assert_eq!(Message::parse(r#"{"id":7,"result":{}}"#).unwrap().kind(), Kind::Response);
-        assert_eq!(Message::parse(r#"{"method":"turn/completed","params":{}}"#).unwrap().kind(), Kind::Notification);
+        assert_eq!(
+            Message::parse(r#"{"method":"turn/completed","params":{}}"#).unwrap().kind(),
+            Kind::Notification
+        );
         assert_eq!(Id::Num(7).key(), Id::Str("7".into()).key());
     }
 }
