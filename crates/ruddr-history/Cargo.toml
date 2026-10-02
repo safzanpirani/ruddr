@@ -1,6 +1,6 @@
 [package]
-name = "ruddr-tui"
-description = "The Ruddr terminal UI"
+name = "ruddr-history"
+description = "Reads Codex, Claude Code, Pi, OpenCode, and Droid session transcripts, and rebuilds their file edits as diffs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,6 @@ license.workspace = true
 
 [dependencies]
 ruddr-core.workspace = true
-ruddr-history.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-ratatui.workspace = true
-crossterm.workspace = true
-unicode-width.workspace = true
+rusqlite.workspace = true

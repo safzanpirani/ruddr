@@ -101,6 +101,7 @@ pub enum Cmd {
     Follow,
     Details,
     Sessions,
+    History,
     Theme,
     Refresh,
     Copy,
@@ -291,7 +292,24 @@ pub enum Msg {
         result: Result<String, String>,
         touched: Vec<String>,
     },
+    /// The newest sessions from every agent's history.
+    History(Vec<ruddr_history::SessionInfo>),
 }
+
+/// The session list shows every agent's history instead of Ruddr's runs.
+#[derive(Debug, Default)]
+pub struct HistoryMode {
+    /// State directory (`history:<locator>`) -> the session it names.
+    pub infos: HashMap<String, ruddr_history::SessionInfo>,
+    pub runs: Vec<Session>,
+    pub loading: bool,
+    pub loaded_at: Option<Instant>,
+    /// The run selected when the history opened, selected again on close.
+    pub runs_selected: Option<String>,
+}
+
+/// How often an open history list re-reads the stores.
+const HISTORY_REFRESH: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hit {
@@ -370,6 +388,8 @@ pub struct DiffState {
 pub struct Sources {
     /// state dir, thread id, events path: a change starts over.
     pub scope: (String, Option<String>, PathBuf),
+    /// Batches from an older reader or history load are dropped.
+    pub generation: u64,
     pub tailer: Option<Tailer>,
     pub transcript: Transcript,
     pub activities: Activities,
@@ -413,6 +433,7 @@ pub struct App {
     pub pending_model: Option<(ModelInfo, Option<String>)>,
     pub deja_available: bool,
     pub deja_hits: Vec<DejaHit>,
+    pub history: Option<HistoryMode>,
     pub update: Option<String>,
     pub updating: bool,
 
@@ -536,6 +557,7 @@ impl App {
             pending_model: None,
             deja_available: actions::on_path("deja"),
             deja_hits: vec![],
+            history: None,
             updating: false,
             picker: None,
             prompt: None,
@@ -660,12 +682,22 @@ impl App {
 
     /// Re-reads every state.json. Marks the screen dirty only on a change.
     pub fn refresh(&mut self) {
-        let discovered = ruddr_core::session::discover(&ruddr_core::session::Discover {
-            state_dirs: self.args.state_dirs.clone(),
-            roots: self.args.roots.clone(),
-            registries: None,
-        });
-        let sessions: Vec<Session> = discovered.into_iter().map(|s| s.state).collect();
+        let sessions: Vec<Session> = match &self.history {
+            Some(history) => {
+                if !history.loading && history.loaded_at.is_none_or(|at| at.elapsed() >= HISTORY_REFRESH) {
+                    self.load_history();
+                }
+                self.history.as_ref().map(|h| h.runs.clone()).unwrap_or_default()
+            }
+            None => ruddr_core::session::discover(&ruddr_core::session::Discover {
+                state_dirs: self.args.state_dirs.clone(),
+                roots: self.args.roots.clone(),
+                registries: None,
+            })
+            .into_iter()
+            .map(|s| s.state)
+            .collect(),
+        };
         if sessions != self.sessions {
             self.sessions = sessions;
             self.dirty = true;
@@ -695,6 +727,68 @@ impl App {
             });
         }
         self.last_refresh = Instant::now();
+    }
+
+    /// Lists every agent's newest sessions on a background thread.
+    fn load_history(&mut self) {
+        let Some(history) = &mut self.history else { return };
+        history.loading = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let sessions = ruddr_history::list_sessions(&ruddr_history::Stores::discover(), crate::history::LIMIT);
+            let _ = tx.send(Msg::History(sessions));
+        });
+    }
+
+    fn on_history(&mut self, sessions: Vec<ruddr_history::SessionInfo>) {
+        let Some(history) = &mut self.history else { return };
+        let first = history.loaded_at.is_none();
+        history.loading = false;
+        history.loaded_at = Some(Instant::now());
+        history.runs = sessions.iter().map(crate::history::run_state).collect();
+        let counts: Vec<String> = ruddr_history::Provider::ALL
+            .iter()
+            .filter_map(|p| {
+                let n = sessions.iter().filter(|s| s.provider == *p).count();
+                (n > 0).then(|| format!("{n} {}", p.name()))
+            })
+            .collect();
+        history.infos = sessions
+            .into_iter()
+            .map(|info| (format!("{}{}", crate::history::PREFIX, info.locator), info))
+            .collect();
+        if first {
+            self.toasts.retain(|t| !t.text.starts_with("Loading sessions"));
+            let text = if counts.is_empty() {
+                "No agent sessions found".to_string()
+            } else {
+                counts.join(" · ")
+            };
+            self.toast(text, Kind::Info);
+        }
+        self.refresh();
+    }
+
+    /// Switches the session list between Ruddr's runs and every agent's
+    /// history, keeping each side's selection.
+    fn toggle_history(&mut self) {
+        match self.history.take() {
+            Some(history) => {
+                self.selected = history.runs_selected;
+                self.toast("Showing Ruddr sessions", Kind::Info);
+            }
+            None => {
+                self.history = Some(HistoryMode {
+                    runs_selected: self.selected.take(),
+                    ..Default::default()
+                });
+                self.toast("Loading sessions from every agent…", Kind::Info);
+            }
+        }
+        self.filter.clear();
+        self.list_offset = 0;
+        self.reset_artifact();
+        self.refresh();
     }
 
     fn load_models(&self) {
@@ -730,6 +824,9 @@ impl App {
             return;
         }
         self.tail_generation += 1;
+        if crate::history::is_history(&session.state_dir) {
+            return self.load_history_session(scope);
+        }
         let files = vec![
             (Source::Events, events_path(&session)),
             (Source::Trace, trace_path(&session)),
@@ -747,6 +844,7 @@ impl App {
         };
         self.sources = Sources {
             scope,
+            generation: self.tail_generation,
             tailer: Some(tailer),
             transcript: Transcript::new(session.thread_id.as_deref()),
             diff,
@@ -758,8 +856,57 @@ impl App {
         self.dirty = true;
     }
 
+    /// Reads a history session once: its chat, its assistant messages as the
+    /// output, and its edits as the diff. Nothing streams afterwards.
+    fn load_history_session(&mut self, scope: (String, Option<String>, PathBuf)) {
+        let state_dir = scope.0.clone();
+        let info = self.history.as_ref().and_then(|h| h.infos.get(&state_dir)).cloned();
+        let generation = self.tail_generation;
+        self.sources = Sources {
+            scope,
+            generation,
+            transcript: Transcript::new(None),
+            diff: DiffState {
+                pending: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.expanded.clear();
+        self.dirty = true;
+        let Some(info) = info else { return };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let batch = |source, lines| {
+                Msg::Tail(Batch {
+                    generation,
+                    source,
+                    reset: false,
+                    history_done: true,
+                    lines,
+                })
+            };
+            let (chat, output, diff) = match ruddr_history::load(&info) {
+                Ok(transcript) => (
+                    crate::history::chat_lines(&transcript.events),
+                    crate::history::output_lines(&transcript.events),
+                    Ok(ruddr_history::unified_diff(&transcript)),
+                ),
+                Err(e) => (vec![], vec![], Err(e)),
+            };
+            let _ = tx.send(batch(Source::Events, chat));
+            let _ = tx.send(batch(Source::Output, output));
+            let _ = tx.send(batch(Source::Trace, vec![]));
+            let _ = tx.send(Msg::Diff {
+                state_dir,
+                result: diff,
+                touched: vec![],
+            });
+        });
+    }
+
     pub fn on_tail(&mut self, batch: Batch) {
-        if self.sources.tailer.as_ref().is_none_or(|t| t.generation != batch.generation) {
+        if self.sources.scope.0.is_empty() || self.sources.generation != batch.generation {
             return;
         }
         let now = Instant::now();
@@ -847,6 +994,10 @@ impl App {
             return;
         }
         let Some(session) = self.current().cloned() else { return };
+        if crate::history::is_history(&session.state_dir) {
+            // Loaded with the session; a past session's edits do not change.
+            return;
+        }
         self.sources.diff.pending = true;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -872,7 +1023,7 @@ impl App {
     }
 
     pub fn diff_deadline(&self) -> Option<Instant> {
-        if self.tab != Tab::Diff || self.sources.diff.pending {
+        if self.tab != Tab::Diff || self.sources.diff.pending || self.history.is_some() {
             return None;
         }
         Some(self.sources.diff.next.unwrap_or_else(Instant::now))
@@ -1210,6 +1361,7 @@ impl App {
                 self.set_sessions_width(width, true);
             }
             KeyCode::Char('D') => self.ask_delete_selected(),
+            KeyCode::Char('H') => self.run(Cmd::History),
             KeyCode::Char(c @ (']' | '[')) => self.bracket = Some(c),
             KeyCode::Tab | KeyCode::BackTab => self.run(Cmd::Sessions),
             KeyCode::Esc => {
@@ -1722,6 +1874,7 @@ impl App {
                     };
                 }
             }
+            Cmd::History => self.toggle_history(),
             Cmd::Theme => self.open_theme_picker(),
             Cmd::Refresh => {
                 self.refresh();
@@ -1772,7 +1925,7 @@ impl App {
             }
             Cmd::Delete(dirs) => {
                 let (mut ok, mut failed) = (0, None);
-                for dir in &dirs {
+                for dir in dirs.iter().filter(|dir| !crate::history::is_history(dir)) {
                     if let Some(session) = self.sessions.iter().find(|s| &s.state_dir == dir) {
                         match delete_session(session) {
                             Ok(()) => ok += 1,
@@ -1812,6 +1965,16 @@ impl App {
             cmd("Find a past session", "f", Cmd::Find)
                 .hint("deja search")
                 .disabled_if(!self.deja_available, "deja is not on PATH"),
+            cmd(
+                if self.history.is_some() {
+                    "Back to Ruddr sessions"
+                } else {
+                    "Browse every agent's sessions"
+                },
+                "H",
+                Cmd::History,
+            )
+            .hint("Codex, Claude, Pi, OpenCode, and Droid history, read-only, with each session's diff"),
             cmd(
                 if session.as_ref().is_some_and(|s| s.status == Status::Idle) {
                     "End idle session"
@@ -1988,6 +2151,9 @@ impl App {
 
     fn ask_delete_selected(&mut self) {
         let Some(session) = self.current().cloned() else { return };
+        if crate::history::is_history(&session.state_dir) {
+            return self.toast("Sessions from agent history are read-only", Kind::Warning);
+        }
         if !deletable(&session) {
             return self.toast(format!("Session is {}; stop it before deleting", session.status), Kind::Warning);
         }
@@ -2075,6 +2241,7 @@ impl App {
         let route = session.as_ref().and_then(prompt_route);
         let (Some(session), Some(route)) = (session, route) else {
             let text = match (wanted, self.current()) {
+                (_, Some(s)) if crate::history::is_history(&s.state_dir) => "Sessions from agent history are read-only".to_string(),
                 (Some(PromptRoute::Continue), _) => CONTINUE_HINT.to_string(),
                 (_, Some(s)) => format!("Session is {}; press n for a new session", s.status),
                 (_, None) => "No session selected; press n for a new session".to_string(),
@@ -2324,6 +2491,7 @@ impl App {
                 }
             }
             Msg::Models(models) => self.models = models,
+            Msg::History(sessions) => self.on_history(sessions),
             Msg::Branch(cwd, branch) => {
                 self.branches.insert(cwd, branch);
             }

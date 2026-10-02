@@ -17,6 +17,7 @@ ruddr-runner = { path = "crates/ruddr-runner" }
 ruddr-adapters = { path = "crates/ruddr-adapters" }
 ruddr-tui = { path = "crates/ruddr-tui" }
 ruddr-web = { path = "crates/ruddr-web" }
+ruddr-history = { path = "crates/ruddr-history" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -33,6 +34,8 @@ tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "pro
 tokio-stream = { version = "0.1", default-features = false }
 ureq = "3"
 sha2 = "0.11"
+# OpenCode keeps its sessions in SQLite; bundled so Windows needs no sqlite3.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.dev]
 # Debug info is most of target/debug; line tables keep backtraces useful.

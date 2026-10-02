@@ -179,6 +179,18 @@ pub fn context_meter(usage: &TokenUsage, cells: usize) -> Option<String> {
 
 pub fn session_details(session: &Session, now: i64) -> Vec<(String, String)> {
     let dash = |v: Option<&str>| v.unwrap_or("—").to_string();
+    if let Some(locator) = session.state_dir.strip_prefix(crate::history::PREFIX) {
+        return vec![
+            (
+                "status".into(),
+                format!("◇ history, read-only    updated {}", format_age(&session.updated_at, now)),
+            ),
+            ("provider".into(), provider(session).to_string()),
+            ("session".into(), dash(session.thread_id.as_deref())),
+            ("cwd".into(), dash(opt(&session.cwd))),
+            ("source".into(), locator.to_string()),
+        ];
+    }
     let mut rows = vec![
         (
             "status".into(),
@@ -262,6 +274,9 @@ pub enum PromptRoute {
 /// Active turns get steered, idle sessions get a new turn over the control
 /// channel, finished threads get a continuation run. Never converts routes.
 pub fn prompt_route(session: &Session) -> Option<PromptRoute> {
+    if crate::history::is_history(&session.state_dir) {
+        return None;
+    }
     match session.status {
         Status::Active if session.turn_id.is_some() => Some(PromptRoute::Steer),
         Status::Idle => Some(PromptRoute::Prompt),
@@ -495,8 +510,9 @@ pub fn parse_deja_hits(json: &str) -> Vec<DejaHit> {
 
 // --- deletion -------------------------------------------------------------
 
+/// Another agent's history is read-only: never Ruddr's to delete.
 pub fn deletable(session: &Session) -> bool {
-    session.status.is_terminal() || session.status == Status::Stale
+    !crate::history::is_history(&session.state_dir) && (session.status.is_terminal() || session.status == Status::Stale)
 }
 
 /// Removes a finished or stale run directory and its registry entries. The

@@ -434,17 +434,23 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let p = *app.palette();
     let visible: Vec<Session> = app.visible().into_iter().cloned().collect();
     let live = visible.iter().filter(|s| is_live(s.status)).count();
-    let header = if app.filter.is_empty() {
-        format!("sessions · {live} live · {}", visible.len())
-    } else {
-        format!("sessions · /{}", app.filter)
+    let history = app.history.as_ref().map(|h| h.loading && h.loaded_at.is_none());
+    let header = match (history, app.filter.is_empty()) {
+        (_, false) => format!("{} · /{}", if history.is_some() { "history" } else { "sessions" }, app.filter),
+        (Some(true), true) => "history · loading…".to_string(),
+        (Some(false), true) => format!("history · every agent · {}", visible.len()),
+        (None, true) => format!("sessions · {live} live · {}", visible.len()),
     };
     let block = panel(&p, title(&p, header, focused), focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if visible.is_empty() {
         let scratch = std::env::current_dir().unwrap_or_default().join(".scratch");
-        let text = if app.filter.is_empty() {
+        let text = if history == Some(true) {
+            "Reading Codex, Claude, Pi,\nOpenCode, and Droid sessions…".to_string()
+        } else if history.is_some() && app.filter.is_empty() {
+            "No agent sessions found.\n\nPress H to go back to\nRuddr sessions.".to_string()
+        } else if app.filter.is_empty() {
             format!(
                 "No sessions yet.\n\nWatching the global registry\nand {}.\n\nPress n to start one.",
                 crate::app::short_path(&scratch)
@@ -503,7 +509,11 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         };
         let age = format_age(&session.updated_at, now);
         clock_tick(app, &session.updated_at, now, false);
-        let name = project_name(session);
+        let info = app.history.as_ref().and_then(|h| h.infos.get(&session.state_dir));
+        let name = match info {
+            Some(info) if !info.title.is_empty() => info.title.clone(),
+            _ => project_name(session),
+        };
         let room = (inner.width as usize).saturating_sub(age.len() + 5);
         let name: String = if name.chars().count() > room {
             name.chars().take(room.saturating_sub(1)).collect::<String>() + "…"
@@ -518,7 +528,10 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             Span::raw(" ".repeat(gap)),
             Span::styled(age, Style::new().fg(p.dim.c())),
         ]);
-        let mut meta = format!("    {} · {}", provider(session), opt(&session.model).unwrap_or("default"));
+        let mut meta = match info {
+            Some(_) => format!("    {} · {}", provider(session), project_name(session)),
+            None => format!("    {} · {}", provider(session), opt(&session.model).unwrap_or("default")),
+        };
         if let Some(usage) = &session.token_usage
             && usage.total_tokens > 0
         {
@@ -1623,6 +1636,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
                 ("R", "continue thread in a new run"),
                 ("m", "choose model + effort"),
                 ("f", "find a past session (deja)"),
+                ("H", "browse every agent's sessions + diffs"),
                 ("x x", "interrupt turn / end idle session"),
                 ("D", "delete finished session"),
             ],
