@@ -534,6 +534,7 @@ dependencies = [
 name = "ruddr-adapters"
 version = "0.6.0"
 dependencies = [
+ "libc",
  "ruddr-core",
  "serde",
  "serde_json",
