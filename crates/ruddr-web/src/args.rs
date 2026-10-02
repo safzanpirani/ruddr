@@ -135,6 +135,7 @@ fn parse_interval(raw: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn parse(argv: &[&str], env: &[(&str, &str)]) -> Result<WebArguments> {
         let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
@@ -152,7 +153,7 @@ mod tests {
         assert_eq!(args.host, "100.64.0.1");
         assert_eq!(args.port, 0);
         assert_eq!(args.interval, Duration::from_secs(2));
-        assert_eq!(args.state_dirs, vec![PathBuf::from("/tmp/x")]);
+        assert_eq!(args.state_dirs, vec![ruddr_core::paths::absolute(Path::new("/tmp/x"))]);
         for bad in [
             &["--interval", "5"][..],
             &["--bogus"],
@@ -176,7 +177,7 @@ mod tests {
         .unwrap();
         assert_eq!((args.host.as_str(), args.port, args.open), ("::1", 9000, true));
         assert_eq!(args.interval, Duration::from_millis(500));
-        assert_eq!(args.roots, vec![PathBuf::from("/w/.scratch")]);
+        assert_eq!(args.roots, vec![ruddr_core::paths::absolute(Path::new("/w/.scratch"))]);
         let args = parse(&[], &[("RUDDR_WEB_PORT", "8123"), ("RUDDR_WEB_HOST", "")]).unwrap();
         assert_eq!((args.host.as_str(), args.port), (DEFAULT_HOST, 8123));
         assert!(args.roots[0].ends_with(".scratch"));

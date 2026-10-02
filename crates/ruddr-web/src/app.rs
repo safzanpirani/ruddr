@@ -1022,7 +1022,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|e| e.as_str().unwrap().rsplit('/').next().unwrap().to_string())
+            .map(|e| e.as_str().unwrap().rsplit(['/', '\\']).next().unwrap().to_string())
             .collect();
         assert_eq!(names, ["alpha", "alpine"]);
         assert_eq!(list_directories(&root.to_string_lossy())["entries"].as_array().unwrap().len(), 3);
