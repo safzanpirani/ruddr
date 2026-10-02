@@ -217,6 +217,26 @@ Releases are cut by pushing a `vX.Y.Z` tag that matches the `version` under
 The workflow builds every platform, attaches the binaries and checksums to a
 GitHub release, and publishes the npm package.
 
+### Companion: dejavu
+
+[dejavu](https://github.com/safzanpirani/dejavu) searches past Codex, Claude
+Code, Pi, OpenCode, and Factory Droid transcripts on the same machine. Ruddr
+uses it in two places: the TUI's `f` key runs `deja find` to look up an
+earlier session and continue it under Ruddr, and agents driving Ruddr use
+`dejavu` to recall what earlier runs decided or changed before they delegate
+new work. The TUI's `H` history browser reads the same stores with parsers
+that follow dejavu's. dejavu is a separate single binary; install it from its
+latest release and keep it current with `dejavu self-update`:
+
+```bash
+curl -fsSL -o ~/.local/bin/dejavu https://github.com/safzanpirani/dejavu/releases/latest/download/dejavu-darwin-arm64
+chmod +x ~/.local/bin/dejavu && ln -sf dejavu ~/.local/bin/deja
+```
+
+Pick the asset for your platform: `dejavu-darwin-arm64`, `dejavu-darwin-x64`,
+`dejavu-linux-x64`, `dejavu-linux-arm64`, or `dejavu-windows-x64.exe`. Ruddr
+works without it; `f` then says that `deja` is not on `PATH`.
+
 ## Build
 
 Ruddr builds with Rust stable, 1.88 or newer:
@@ -700,8 +720,8 @@ the first prompt, and the TUI starts a detached `ruddr run --idle` in the
 current directory, in `.scratch/ruddr-tui/<YYYYMMDD-HHMMSS>-<hex>`. New
 sessions stay pinned at the top of the list. `m` opens the same picker to
 override the model for continuations, and `←`/`→` change the effort. When the
-`deja` CLI is installed, `f` searches past Claude and Codex transcripts and
-resumes a chosen session under Ruddr.
+`deja` CLI from [dejavu](#companion-dejavu) is installed, `f` searches past
+agent transcripts and resumes a chosen session under Ruddr.
 
 `H` (or "Browse every agent's sessions" in the palette) switches the sessions
 list to every agent's local history, whether or not Ruddr started the session:
