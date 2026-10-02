@@ -13,8 +13,11 @@
 
 pub mod child;
 pub mod claude;
+pub mod droid;
 pub mod opencode;
+pub mod pi;
 pub mod protocol;
+pub mod rpc;
 
 #[cfg(test)]
 mod testing;
@@ -47,6 +50,8 @@ pub fn new_adapter(provider: &str, executable: Option<String>, emit: Emit) -> ru
             emit,
             resolve("OPENCODE", &["opencode2", "opencode-next"]),
         )),
+        "pi" => Box::new(pi::PiAdapter::new(emit, resolve("PI", &["pi"]))),
+        "droid" => Box::new(droid::DroidAdapter::new(emit, resolve("DROID", &["droid"]))),
         "codex" => {
             return Err(ruddr_core::Error::usage(
                 "codex speaks the app-server protocol itself; run `codex app-server`",

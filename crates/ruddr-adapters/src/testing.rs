@@ -94,6 +94,8 @@ fn fake_provider_entry() {
     // SAFETY: the wrapper script opens descriptor 3 as this process's stdout.
     let out = Arc::new(Mutex::new(unsafe { File::from_raw_fd(3) }));
     let code = match kind.as_str() {
+        "pi" => fake_pi(&out),
+        "droid" => fake_droid(&out),
         "claude" => fake_claude(&dir, &out),
         "opencode" => fake_opencode(&dir, &out),
         other => panic!("unknown fake {other}"),
@@ -117,6 +119,78 @@ fn stdin_lines() -> impl Iterator<Item = Value> {
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| serde_json::from_str(&line).ok())
+}
+
+/// The stand-in for `pi --mode rpc` from pi/testdata/fake-pi.ts.
+fn fake_pi(out: &Mutex<File>) -> i32 {
+    for command in stdin_lines() {
+        let id = command["id"].clone();
+        match command["type"].as_str().unwrap_or_default() {
+            "get_state" => {
+                write(
+                    out,
+                    &json!({ "type": "response", "id": id, "success": true, "data": { "sessionId": "pi_test_session" } }),
+                );
+                write(
+                    out,
+                    &json!({ "type": "extension_ui_request", "id": "ui-select", "method": "select" }),
+                );
+                write(
+                    out,
+                    &json!({ "type": "extension_ui_request", "id": "ui-unknown", "method": "futurePrompt" }),
+                );
+                write(
+                    out,
+                    &json!({ "type": "extension_ui_request", "id": "ui-notify", "method": "notify" }),
+                );
+            }
+            "extension_ui_response" => write(out, &json!({ "type": "test_ui_response", "response": command })),
+            "never_respond" => {}
+            _ => write(out, &json!({ "type": "response", "id": id, "success": true })),
+        }
+    }
+    0
+}
+
+/// The stand-in for `droid exec --input-format stream-jsonrpc` from
+/// droid/testdata/fake-droid.ts. It sends three server requests after
+/// session start, reports the answers as notifications, and never answers
+/// `droid.never_respond`.
+fn fake_droid(out: &Mutex<File>) -> i32 {
+    let send = |message: Value| {
+        let mut envelope = json!({ "jsonrpc": "2.0", "factoryApiVersion": "1.0.0" });
+        envelope.as_object_mut().unwrap().extend(message.as_object().unwrap().clone());
+        write(out, &envelope);
+    };
+    let notify = |notification: Value| {
+        send(json!({
+            "type": "notification",
+            "method": "droid.session_notification",
+            "params": { "sessionId": "droid_test_session", "notification": notification },
+        }))
+    };
+    for message in stdin_lines() {
+        if message["type"] == "response" {
+            notify(json!({ "type": "test_server_response", "response": message }));
+            continue;
+        }
+        let id = message["id"].clone();
+        match message["method"].as_str().unwrap_or_default() {
+            "droid.initialize_session" => {
+                send(json!({ "type": "response", "id": id, "result": { "sessionId": "droid_test_session" } }));
+                send(json!({ "type": "request", "id": "perm-1", "method": "droid.request_permission",
+                    "params": { "toolUses": [], "options": [{ "value": "proceed_once" }, { "value": "cancel" }] } }));
+                send(
+                    json!({ "type": "request", "id": "ask-1", "method": "droid.ask_user", "params": { "toolCallId": "tool-ask", "questions": [] } }),
+                );
+                send(json!({ "type": "request", "id": "future-1", "method": "droid.future_prompt", "params": {} }));
+            }
+            "droid.fail" => send(json!({ "type": "response", "id": id, "error": { "code": -32004, "message": "session not found" } })),
+            "droid.never_respond" => {}
+            _ => send(json!({ "type": "response", "id": id, "result": {} })),
+        }
+    }
+    0
 }
 
 /// A stand-in for `claude -p --input-format stream-json`. It records its
