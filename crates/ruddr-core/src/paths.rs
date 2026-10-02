@@ -47,7 +47,8 @@ pub fn state_home() -> PathBuf {
     env_any(&["XDG_STATE_HOME"]).map(PathBuf::from).unwrap_or_else(|| home_dir().join(".local").join("state"))
 }
 
-/// `$XDG_CACHE_HOME/ruddr` or `~/.cache/ruddr`: update checks and remote shell probes.
+/// `$XDG_CACHE_HOME/ruddr` or `~/.cache/ruddr`. Update checks and remote
+/// shell probes live beside the registry under `state_home()/ruddr` instead.
 pub fn cache_dir() -> PathBuf {
     env_any(&["XDG_CACHE_HOME"]).map(PathBuf::from).unwrap_or_else(|| home_dir().join(".cache")).join("ruddr")
 }

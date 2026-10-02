@@ -142,3 +142,17 @@ the TUI and after version; set RUDDR_NO_UPDATE_CHECK=1 to disable the check.
         version = ruddr_core::VERSION
     )
 }
+
+/// Before the TUI or web dashboard starts: expose the last check's newer
+/// release as `RUDDR_UPDATE_AVAILABLE`, and refresh a day-old check in the
+/// background so the next launch shows it.
+pub fn prepare_dashboard() {
+    let path = update::cache_path();
+    let disabled = update::checks_disabled();
+    if let Some(latest) = update::available_update(&path, disabled) {
+        // SAFETY: called on the main thread before any other thread starts.
+        unsafe { std::env::set_var("RUDDR_UPDATE_AVAILABLE", latest) };
+    }
+    std::thread::spawn(move || update::refresh_check(&update::Ureq, &path, disabled));
+}
+

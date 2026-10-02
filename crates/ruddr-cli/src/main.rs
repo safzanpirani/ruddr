@@ -28,8 +28,14 @@ fn dispatch(mut args: Vec<String>) -> Result<()> {
         "run" => ruddr_runner::run_command(args),
         // Hidden: the provider adapters run as app-server children of `run`.
         "app-server" => ruddr_adapters::app_server_command(args),
-        "tui" => ruddr_tui::tui_command(args),
-        "web" => ruddr_web::web_command(args),
+        "tui" => {
+            commands::prepare_dashboard();
+            ruddr_tui::tui_command(args)
+        }
+        "web" => {
+            commands::prepare_dashboard();
+            ruddr_web::web_command(args)
+        }
         "--remote" => commands::remote(args),
         "-h" | "--help" | "help" => {
             commands::print_usage();
