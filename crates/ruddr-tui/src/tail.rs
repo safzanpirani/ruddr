@@ -126,7 +126,6 @@ impl FileTail {
 /// its next poll.
 pub struct Tailer {
     stop: Arc<AtomicBool>,
-    pub generation: u64,
 }
 
 impl Drop for Tailer {
@@ -145,7 +144,7 @@ impl Tailer {
             .name("ruddr-tui-tail".into())
             .spawn(move || run(generation, files, flag, tx, wrap))
             .expect("spawn the artifact reader thread");
-        Tailer { stop, generation }
+        Tailer { stop }
     }
 }
 

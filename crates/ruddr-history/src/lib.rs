@@ -184,14 +184,34 @@ pub(crate) fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
-/// A one-line title: the first non-empty line, at most 120 characters.
+/// A one-line title: the first line with text, at most 120 characters.
+/// Wrapper tags that harnesses put around pasted or injected text
+/// (`<pasted_content id="...">`) are skipped.
 pub(crate) fn title_from(text: &str) -> String {
-    let line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let line = text.lines().map(strip_tags).find(|line| !line.is_empty()).unwrap_or_default();
+    let line = line.as_str();
     if line.chars().count() > 120 {
         format!("{}…", line.chars().take(119).collect::<String>())
     } else {
         line.to_string()
     }
+}
+
+/// A trimmed line without leading or trailing `<tag ...>`/`</tag>` markup.
+fn strip_tags(line: &str) -> String {
+    let mut line = line.trim();
+    while line.starts_with('<')
+        && let Some(end) = line.find('>')
+        && line[1..end].chars().all(|c| c.is_ascii_alphanumeric() || " _-=\"'/:.".contains(c))
+    {
+        line = line[end + 1..].trim_start();
+    }
+    while line.ends_with('>')
+        && let Some(start) = line.rfind("</")
+    {
+        line = line[..start].trim_end();
+    }
+    line.to_string()
 }
 
 /// Reads at most `max` bytes from the start of a file, cut at the last line.
@@ -309,5 +329,11 @@ mod tests {
     fn titles_are_one_trimmed_line() {
         assert_eq!(title_from("\n  fix the parser \nmore"), "fix the parser");
         assert_eq!(title_from(&"x".repeat(200)).chars().count(), 120);
+        assert_eq!(
+            title_from("<pasted_content id=\"cab7\">\nlog line one\n</pasted_content>"),
+            "log line one"
+        );
+        assert_eq!(title_from("<task>fix it</task>"), "fix it");
+        assert_eq!(title_from("a < b and c > d"), "a < b and c > d");
     }
 }

@@ -703,6 +703,21 @@ override the model for continuations, and `←`/`→` change the effort. When th
 `deja` CLI is installed, `f` searches past Claude and Codex transcripts and
 resumes a chosen session under Ruddr.
 
+`H` (or "Browse every agent's sessions" in the palette) switches the sessions
+list to every agent's local history, whether or not Ruddr started the session:
+Codex (`$CODEX_HOME/sessions`), Claude Code (`$CLAUDE_CONFIG_DIR/projects`),
+Pi (`~/.pi/*/sessions` or `$PI_CODING_AGENT_DIR/sessions`), OpenCode (its
+SQLite databases under `$XDG_DATA_HOME/opencode`, or `$OPENCODE_DB`), and
+Factory Droid (`~/.factory/sessions`). The newest 400 sessions are listed with
+their titles. Selecting one shows the whole conversation in Chat, its assistant
+messages in Output, and every file edit it made in Diff, with the same file
+tree. Claude and Pi follow the active branch of their transcript trees. Codex
+and Claude diffs come from the patches they recorded; other providers' diffs
+are rebuilt from their edit-tool inputs, so their hunk line numbers count from
+the edited fragment. History sessions are read-only: prompts, stops, and
+deletes are disabled for them. Ruddr reads only transcripts, never the auth
+files stored beside them. Press `H` again to return to Ruddr's runs.
+
 `/` filters by project, thread, status, model, provider, working directory,
 or turn when the sessions pane has focus. `/` searches the selected artifact
 when the artifact has focus, and `n`/`N` move between matches. Chat,

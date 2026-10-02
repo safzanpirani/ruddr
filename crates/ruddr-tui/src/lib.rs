@@ -12,6 +12,7 @@ mod activity;
 mod app;
 mod cache;
 mod core;
+mod history;
 mod tail;
 mod text;
 mod theme;
@@ -48,6 +49,8 @@ override. The default layout keeps the sessions dashboard visible. Terminals
 64 columns wide or narrower get the single-column mobile layout with a tappable
 action bar; --mobile or RUDDR_TUI_MOBILE=1 forces it, and mobileWidthThreshold
 in tui.json changes the width.
+Press H to browse every agent's local sessions (Codex, Claude, Pi, OpenCode,
+Droid) read-only, with each session's chat and file diff.
 ";
 
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {

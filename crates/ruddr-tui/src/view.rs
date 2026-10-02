@@ -252,14 +252,22 @@ pub fn render_block(app: &App, block: &Block, p: &Palette) -> Vec<Row> {
 }
 
 fn render_note(app: &App, p: &Palette) -> Vec<Row> {
+    let history = crate::history::is_history(&app.sources.scope.0);
     let (text, colour) = match app.tab {
+        Tab::Trace if history => (
+            "Agent history has no Ruddr activity log; tool calls are in the chat.".to_string(),
+            p.dim,
+        ),
         Tab::Trace => ("No activity has been recorded yet.".to_string(), p.dim),
+        Tab::Output if history => ("This session has no assistant messages.".to_string(), p.dim),
         Tab::Output => ("No output has been written yet.".to_string(), p.dim),
         _ => {
             let diff = &app.sources.diff;
             match &diff.error {
                 Some(error) => (format!("× {error}"), p.danger),
+                None if !diff.loaded && history => ("Reading the session…".to_string(), p.dim),
                 None if !diff.loaded => ("Reading git diff…".to_string(), p.dim),
+                None if history => ("This session edited no files.".to_string(), p.dim),
                 None => ("✓ Working tree clean against HEAD.".to_string(), p.success),
             }
         }

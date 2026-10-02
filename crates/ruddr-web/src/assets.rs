@@ -62,8 +62,7 @@ pub const DEFAULT_THEME: &str = "ruddr";
 /// Every theme as `{name, label, source, palette}`, shared with the TUI.
 pub fn themes() -> &'static [Value] {
     static THEMES: OnceLock<Vec<Value>> = OnceLock::new();
-    THEMES
-        .get_or_init(|| serde_json::from_str(ruddr_core::THEMES_JSON).unwrap_or_default())
+    THEMES.get_or_init(|| serde_json::from_str(ruddr_core::THEMES_JSON).unwrap_or_default())
 }
 
 pub fn find_theme(name: &str) -> Option<&'static Value> {
@@ -73,9 +72,7 @@ pub fn find_theme(name: &str) -> Option<&'static Value> {
 /// The catalog served when `ruddr models --json` fails.
 pub fn fallback_models() -> &'static Value {
     static MODELS: OnceLock<Value> = OnceLock::new();
-    MODELS.get_or_init(|| {
-        serde_json::to_value(ruddr_core::models::builtin_catalog()).unwrap_or(Value::Array(Vec::new()))
-    })
+    MODELS.get_or_init(|| serde_json::to_value(ruddr_core::models::builtin_catalog()).unwrap_or(Value::Array(Vec::new())))
 }
 
 /// `tui.json` in `config_dir`, the file `ruddr tui` shares.
