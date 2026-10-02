@@ -22,6 +22,8 @@ struct Job {
 pub struct ChildProcess {
     child: Mutex<Child>,
     writer: Mutex<Option<mpsc::Sender<Job>>>,
+    /// Signalled directly on Unix; Windows kills through the child handle.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pid: u32,
 }
 

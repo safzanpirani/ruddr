@@ -16,7 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// How long one control connection may take.
+/// How long one control connection may take (Unix sockets only).
+#[cfg(unix)]
 const CONNECTION_DEADLINE: Duration = Duration::from_secs(120);
 /// The largest request line accepted; prompts travel in it.
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;

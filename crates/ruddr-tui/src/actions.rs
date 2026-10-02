@@ -278,6 +278,7 @@ pub fn on_path(binary: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::core::LaunchOverrides;
 
     fn temp(name: &str) -> PathBuf {

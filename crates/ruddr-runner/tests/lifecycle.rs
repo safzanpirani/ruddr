@@ -202,6 +202,8 @@ fn read_pid(path: &Path) -> i64 {
 
 #[cfg_attr(not(unix), allow(dead_code))]
 fn kill(pid: i64) {
+    #[cfg(not(unix))]
+    let _ = pid;
     #[cfg(unix)]
     if pid > 0 {
         let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();

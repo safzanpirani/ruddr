@@ -14,6 +14,7 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
 
 /// Creates a new directory that must not exist yet, as 0700.
 pub fn create_private_dir_new(dir: &Path) -> io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))] // the mode is set on Unix only
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -35,6 +36,7 @@ pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
 }
 
 fn private_options() -> OpenOptions {
+    #[cfg_attr(not(unix), allow(unused_mut))] // the mode is set on Unix only
     let mut options = OpenOptions::new();
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);

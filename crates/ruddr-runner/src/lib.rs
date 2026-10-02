@@ -94,12 +94,9 @@ pub(crate) mod test_support {
         }
 
         /// A directory under /tmp on Unix, for short socket paths.
+        #[cfg(unix)]
         pub fn in_tmp(name: &str) -> TempDir {
-            if cfg!(unix) {
-                Self::under(Path::new("/tmp"), name)
-            } else {
-                Self::new(name)
-            }
+            Self::under(Path::new("/tmp"), name)
         }
 
         fn under(root: &Path, name: &str) -> TempDir {
