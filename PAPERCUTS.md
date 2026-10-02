@@ -152,3 +152,19 @@ Right after the release workflow published ruddr@0.4.3, npm install -g ruddr@0.4
 
 dejavu query on a Claude transcript failed with 'codex exec failed (exit 1); check codex login status and access to gpt-5.6-luna'. dejavu find worked; I fell back to extracting commands from the jsonl with python.
 
+## 32a138 · 2026-09-30T07:35:22.362Z — codex — gpt-6.1-sol
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **About:** `gh`
+- **Tags:** `tooling`
+
+While monitoring the Ruddr 0.4.8 release, gh repo view returned HTTP 401 even after removing GH_TOKEN and GITHUB_TOKEN from its environment. Git pushes and public release API reads worked; downloading workflow logs without authentication returned 403.
+
+## 97919e · 2026-10-02T09:16:38.714Z — claude-code — claude-opus-5-5
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **About:** `agent-browser`
+- **Tags:** `tooling`
+
+Timing a dashboard load with agent-browser: a 3 MB Server-Sent Events history took 15 s to reach the page under agent-browser but ~110 ms in a bare headless Chromium driven over CDP without the Network domain. agent-browser's always-on network capture appears to relay every EventSource message payload, so page-load timings of SSE-heavy pages are not trustworthy under it.
+

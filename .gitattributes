@@ -1,0 +1,3 @@
+# Check out text as LF everywhere. Windows runners default to CRLF, which
+# changed the skill and assets embedded in the Windows binary.
+* text=auto eol=lf
