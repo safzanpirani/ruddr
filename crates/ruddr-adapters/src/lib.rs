@@ -13,6 +13,7 @@
 
 pub mod child;
 pub mod claude;
+pub mod opencode;
 pub mod protocol;
 
 #[cfg(test)]
@@ -42,6 +43,10 @@ pub fn new_adapter(provider: &str, executable: Option<String>, emit: Emit) -> ru
     let resolve = |variable: &str, names: &[&str]| resolve_executable(executable.clone(), variable, names);
     Ok(match provider {
         "claude" => Box::new(claude::ClaudeAdapter::new(emit, resolve("CLAUDE", &["claude"]))),
+        "opencode" => Box::new(opencode::OpenCodeAdapter::new(
+            emit,
+            resolve("OPENCODE", &["opencode2", "opencode-next"]),
+        )),
         "codex" => {
             return Err(ruddr_core::Error::usage(
                 "codex speaks the app-server protocol itself; run `codex app-server`",

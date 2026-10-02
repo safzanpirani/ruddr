@@ -8,7 +8,8 @@
 
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
@@ -94,6 +95,7 @@ fn fake_provider_entry() {
     let out = Arc::new(Mutex::new(unsafe { File::from_raw_fd(3) }));
     let code = match kind.as_str() {
         "claude" => fake_claude(&dir, &out),
+        "opencode" => fake_opencode(&dir, &out),
         other => panic!("unknown fake {other}"),
     };
     std::process::exit(code);
@@ -156,4 +158,105 @@ fn fake_claude(dir: &Path, out: &Mutex<File>) -> i32 {
         .ok()
         .and_then(|code| code.trim().parse().ok())
         .unwrap_or(0)
+}
+
+/// A stand-in for `opencode2 serve --stdio`: it announces a loopback URL,
+/// then serves the OpenCode 2 session API until stdin closes. It records each
+/// request, whether the Basic credentials matched OPENCODE_SERVER_PASSWORD,
+/// and the config content it was given.
+fn fake_opencode(dir: &Path, out: &Mutex<File>) -> i32 {
+    std::fs::write(
+        dir.join("config.json"),
+        std::env::var("OPENCODE_CONFIG_CONTENT").unwrap_or_default(),
+    )
+    .unwrap();
+    let password = std::env::var("OPENCODE_SERVER_PASSWORD").unwrap_or_default();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    write(out, &json!({ "url": url }));
+    let dir = dir.to_path_buf();
+    std::thread::spawn(move || {
+        let prompts = Arc::new(Mutex::new(0));
+        for stream in listener.incoming().map_while(Result::ok) {
+            let dir = dir.clone();
+            let password = password.clone();
+            let prompts = prompts.clone();
+            std::thread::spawn(move || serve_opencode(stream, &dir, &password, &prompts));
+        }
+    });
+    let mut sink = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut sink);
+    0
+}
+
+fn serve_opencode(stream: TcpStream, dir: &Path, password: &str, prompts: &Mutex<u32>) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).unwrap();
+    let mut length = 0;
+    let mut authorization = String::new();
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header).unwrap();
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        let (name, value) = header.split_once(':').unwrap();
+        match name.to_ascii_lowercase().as_str() {
+            "content-length" => length = value.trim().parse().unwrap(),
+            "authorization" => authorization = value.trim().to_string(),
+            _ => {}
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or_default().to_string();
+    let expected = format!("Basic {}", crate::opencode::base64(format!("opencode:{password}").as_bytes()));
+    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    append(
+        &dir.join("requests.jsonl"),
+        &json!({ "method": method, "path": path, "auth": authorization == expected, "body": body }).to_string(),
+    );
+    let (status, response) = match (method.as_str(), path.as_str()) {
+        ("POST", "/api/session") => (200, json!({ "data": { "id": "ses_fake" } })),
+        ("POST", "/api/session/ses_fake/prompt") => {
+            let mut count = prompts.lock().unwrap();
+            *count += 1;
+            (200, json!({ "data": { "id": format!("msg_{count}") } }))
+        }
+        ("POST", "/api/experimental/session/ses_fake/wait") => {
+            std::thread::sleep(Duration::from_millis(50));
+            (204, Value::Null)
+        }
+        ("GET", "/api/experimental/session/ses_fake/export") => (
+            200,
+            json!({ "data": {
+                "info": { "outcome": "succeeded", "tokens": { "input": 7, "output": 3, "reasoning": 1, "cache": { "read": 2 } }, "cost": 0.5 },
+                "messages": [
+                    { "id": "msg_1", "type": "user", "content": [{ "type": "text", "text": "hello" }] },
+                    { "id": "msg_a", "type": "assistant", "content": [
+                        { "type": "tool", "id": "call_1", "name": "bash", "state": { "status": "completed", "input": { "command": "ls" }, "output": "README.md" } },
+                        { "type": "text", "text": "FAKE_OK" },
+                    ] },
+                ],
+            } }),
+        ),
+        ("DELETE", "/api/session/ses_fake") => (204, Value::Null),
+        _ => (404, json!({ "error": "not found" })),
+    };
+    let body = if status == 204 { String::new() } else { response.to_string() };
+    let reason = match status {
+        200 => "OK",
+        204 => "No Content",
+        _ => "Not Found",
+    };
+    let mut stream = stream;
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
 }
