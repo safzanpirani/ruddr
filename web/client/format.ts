@@ -1,5 +1,5 @@
-// Browser-safe copies of the TUI's display formatting. tui/core.ts imports
-// node:fs, so the client cannot bundle it directly.
+// Display formatting for the dashboard: token counts, ages, elapsed times,
+// and status glyphs, matching the TUI.
 
 export interface TokenUsage {
   inputTokens?: number;

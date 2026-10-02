@@ -45,7 +45,9 @@ fn source_hash(repo: &Path) -> String {
         })
         .collect();
     let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(repo.join("package.json")).unwrap()).unwrap();
-    let mut pierre: Vec<(String, String)> = manifest["dependencies"]
+    // The Pierre libraries are bundled at development time, so they are
+    // development dependencies.
+    let mut pierre: Vec<(String, String)> = manifest["devDependencies"]
         .as_object()
         .map(|deps| {
             deps.iter()

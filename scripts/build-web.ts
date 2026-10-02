@@ -8,8 +8,6 @@
 //   crates/ruddr-web/assets/client/   the Bun.build output (index.html, chunks)
 //   crates/ruddr-web/assets/bundle.rs the embedded file table
 //   crates/ruddr-web/assets/SOURCE_HASH  the hash of the bundle inputs
-//   crates/ruddr-web/assets/themes.json and fallback-models.json, copied from
-//     tui/themes.ts and tui/core.ts while those sources exist
 //
 // The Rust test `bundle_matches_sources` recomputes SOURCE_HASH the same way
 // and fails when web/client changed without a rebuild.
@@ -48,8 +46,8 @@ export async function sourceHash(): Promise<string> {
     const text = (await readFile(join(repo, path))).toString("latin1").replaceAll("\r\n", "\n");
     entries.push([path, Buffer.from(text, "latin1")]);
   }
-  const manifest = JSON.parse(await readFile(join(repo, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
-  const pierre = Object.entries(manifest.dependencies ?? {})
+  const manifest = JSON.parse(await readFile(join(repo, "package.json"), "utf8")) as { devDependencies?: Record<string, string> };
+  const pierre = Object.entries(manifest.devDependencies ?? {})
     .filter(([name]) => name.startsWith("@pierre/"))
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([name, version]) => `${name}@${version}\n`)

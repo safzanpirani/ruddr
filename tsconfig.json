@@ -6,14 +6,12 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["bun"]
+    "types": [
+      "bun"
+    ]
   },
   "include": [
-    "adapter/**/*.ts",
-    "claude/**/*.ts",
-    "opencode/**/*.ts",
-    "pi/**/*.ts",
-    "tui/**/*.ts",
-    "web/**/*.ts"
+    "web/**/*.ts",
+    "scripts/**/*.ts"
   ]
 }
