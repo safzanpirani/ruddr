@@ -120,6 +120,9 @@ pub struct TuiConfig {
     pub theme: Option<String>,
     pub diff_tree_ratio: Option<f64>,
     pub diff_tree_width: Option<u16>,
+    /// The classic layout's session list, as a share of the screen width.
+    pub sessions_ratio: Option<f64>,
+    pub sessions_width: Option<u16>,
     pub mobile_width_threshold: Option<u16>,
     raw: Map<String, Value>,
 }
@@ -141,6 +144,8 @@ pub fn read_config() -> TuiConfig {
             theme: raw.get("theme").and_then(Value::as_str).map(str::to_string),
             diff_tree_ratio: raw.get("diffTreeRatio").and_then(Value::as_f64).filter(|r| *r > 0.0 && *r < 1.0),
             diff_tree_width: raw.get("diffTreeWidth").and_then(Value::as_u64).map(|w| w as u16),
+            sessions_ratio: raw.get("sessionsRatio").and_then(Value::as_f64).filter(|r| *r > 0.0 && *r < 1.0),
+            sessions_width: raw.get("sessionsWidth").and_then(Value::as_u64).map(|w| w as u16),
             mobile_width_threshold: raw
                 .get("mobileWidthThreshold")
                 .and_then(Value::as_u64)
@@ -160,6 +165,11 @@ pub fn persist_theme(name: &str) -> std::io::Result<()> {
 /// Saves the diff sidebar size the way the Bun TUI does.
 pub fn persist_tree(width: u16, ratio: f64) -> std::io::Result<()> {
     persist(&[("diffTreeWidth", Value::from(width)), ("diffTreeRatio", Value::from(ratio))])
+}
+
+/// Saves the session list size.
+pub fn persist_sessions(width: u16, ratio: f64) -> std::io::Result<()> {
+    persist(&[("sessionsWidth", Value::from(width)), ("sessionsRatio", Value::from(ratio))])
 }
 
 fn persist(updates: &[(&str, Value)]) -> std::io::Result<()> {

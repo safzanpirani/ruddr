@@ -145,9 +145,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match app.layout() {
         Layout::Classic => {
-            let list_width = (area.width / 3).clamp(30, 52);
+            app.body_area = body;
+            let wanted = match (app.sessions_ratio, app.sessions_width) {
+                (Some(r), _) => (r * body.width as f64).round() as u16,
+                (None, Some(w)) => w,
+                _ => crate::app::sessions_default(body.width),
+            };
+            let list_width = wanted.clamp(crate::app::SESSIONS_MIN, crate::app::sessions_max(body.width));
             let [list, side] = Split::horizontal([Constraint::Length(list_width), Constraint::Min(20)]).areas(body);
-            draw_sessions(frame, app, list, app.focus == Focus::Sessions);
+            draw_sessions(frame, app, list, app.focus == Focus::Sessions || app.dragging_sessions);
+            // The list's right border drags to resize it.
+            app.hits.push((
+                Rect {
+                    x: list.right().saturating_sub(1),
+                    width: 1,
+                    ..list
+                },
+                Hit::SessionsDivider,
+            ));
             draw_main(frame, app, side);
         }
         Layout::Beta => {
@@ -1618,6 +1633,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
                 ("Enter  click", "expand tool / fold file"),
                 ("]c [c  ]f [f", "next / previous hunk or file"),
                 ("Z", "fold every diff file"),
+                ("< >  drag", "narrow / widen the session list"),
             ],
         ),
         (
