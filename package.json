@@ -44,7 +44,7 @@
     "cli"
   ],
   "scripts": {
-    "build:web": "scripts/build-web.sh",
+    "build:web": "bun scripts/build-web.ts",
     "test:web": "bun test web scripts",
     "postinstall": "node scripts/npm-postinstall.cjs"
   },

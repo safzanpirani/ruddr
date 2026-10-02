@@ -43,9 +43,7 @@ jobs:
       - run: bunx tsc -p tsconfig.json --noEmit
       - run: bun test web scripts
       - name: Check the embedded client bundle is current
-        run: |
-          scripts/build-web.sh
-          git diff --exit-code -- crates/ruddr-web/assets
+        run: bun scripts/build-web.ts --check
       - name: Check the npm package contents
         run: |
           node -e 'require("./scripts/npm-binary.cjs")'
