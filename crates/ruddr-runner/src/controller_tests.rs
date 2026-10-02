@@ -310,6 +310,7 @@ fn each_trace_record_stays_on_one_line() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn closing_never_removes_a_socket_path_the_run_did_not_bind() {
     let (_dir, c) = controller(false);

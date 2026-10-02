@@ -188,6 +188,7 @@ fn wait_dead(pid: i64) -> bool {
     !alive(pid)
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn read_pid(path: &Path) -> i64 {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -199,6 +200,7 @@ fn read_pid(path: &Path) -> i64 {
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn kill(pid: i64) {
     #[cfg(unix)]
     if pid > 0 {
