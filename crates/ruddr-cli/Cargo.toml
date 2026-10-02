@@ -20,5 +20,8 @@ serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 interprocess.workspace = true

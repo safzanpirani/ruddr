@@ -3,9 +3,12 @@
 //! and the `models` command.
 
 pub mod args;
+pub mod models;
 pub mod result;
 pub mod runs;
+pub mod skill;
 pub mod steering;
+pub mod thread;
 
 #[cfg(test)]
 mod tests;
@@ -23,7 +26,10 @@ pub fn dispatch(command: &str, args: Vec<String>) -> Result<()> {
         "prompt" => steering::prompt(&mut stdout.lock(), args, &mut std::io::stdin()),
         "stop" => steering::stop(&mut stdout.lock(), args),
         "interrupt" => steering::interrupt(&mut stdout.lock(), args),
-        "thread" | "models" | "skill" | "update" => Err(Error::failed(format!("ruddr {command} is not ported yet"))),
+        "thread" => thread::thread_command(args),
+        "models" => models::models_command(args),
+        "skill" => skill::skill_command(args),
+        "update" => Err(Error::failed("ruddr update is not ported yet")),
         other => {
             print_usage();
             Err(Error::usage(format!("unknown command {other:?}")))
