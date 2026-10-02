@@ -9,31 +9,48 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # The browser client stays TypeScript. Bun is a development tool here: it
+  # type-checks and tests the client, rebuilds the embedded bundle, and fails
+  # when the committed bundle is stale.
+  web-client:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Check Go formatting
-        run: test -z "$(gofmt -l *.go)"
-      - run: go test ./...
-      - run: go vet ./...
-      - run: go build -o ruddr .
-      - run: bun test
       - run: bunx tsc -p tsconfig.json --noEmit
+      - run: bun test web scripts
+      - name: Check the embedded client bundle is current
+        run: |
+          scripts/build-web.sh
+          git diff --exit-code -- crates/ruddr-web/assets
       - name: Check the npm package contents
         run: |
           node -e 'require("./scripts/npm-binary.cjs")'
           npm pack --dry-run 2>&1 | tee pack.log
-          grep -q 'tui/index.ts' pack.log
-          grep -q 'main.go' pack.log
-          ! grep -q 'core.test.ts' pack.log
-          ! grep -q 'runner_test.go' pack.log
+          grep -q 'bin/ruddr.cjs' pack.log
+          grep -q 'skills/ruddr-delegate/SKILL.md' pack.log
+          ! grep -q '\.ts$' pack.log
+          ! grep -q 'crates/' pack.log

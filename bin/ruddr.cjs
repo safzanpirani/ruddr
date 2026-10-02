@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// npm launcher: runs the native Ruddr binary that lives beside the TUI and
-// adapter sources in this package, so the binary's sibling lookup finds them.
+// npm launcher: runs the native Ruddr binary, fetching it on first use when
+// the postinstall hook did not run.
 "use strict";
 
 const { spawnSync } = require("node:child_process");

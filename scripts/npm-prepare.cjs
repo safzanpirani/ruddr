@@ -12,9 +12,10 @@ if (!version || !checksumFile) {
   process.exit(2);
 }
 const root = path.resolve(__dirname, "..");
-const goVersion = /const version = "([^"]+)"/.exec(fs.readFileSync(path.join(root, "main.go"), "utf8"))?.[1];
-if (goVersion !== version) {
-  console.error(`main.go declares version ${goVersion}, but the release tag is ${version}`);
+const workspace = fs.readFileSync(path.join(root, "Cargo.toml"), "utf8");
+const cargoVersion = /\[workspace\.package\][^[]*?\nversion = "([^"]+)"/.exec(workspace)?.[1];
+if (cargoVersion !== version) {
+  console.error(`Cargo.toml declares version ${cargoVersion}, but the release tag is ${version}`);
   process.exit(1);
 }
 const checksums = {};

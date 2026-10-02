@@ -16,32 +16,41 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
+      fail-fast: true
       matrix:
         include:
-          - { goos: darwin, goarch: arm64 }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
+          - { goos: darwin, goarch: arm64, target: aarch64-apple-darwin, runner: macos-latest }
+          - { goos: darwin, goarch: amd64, target: x86_64-apple-darwin, runner: macos-latest }
+          # musl gives fully static Linux binaries, like the Go builds were.
+          - { goos: linux, goarch: amd64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { goos: linux, goarch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { goos: windows, goarch: amd64, target: x86_64-pc-windows-msvc, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
-          cache: true
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          cargo build --release --locked -p ruddr-cli --target ${{ matrix.target }}
+          ext=""
+          [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ruddr$ext" "dist/ruddr-${{ matrix.goos }}-${{ matrix.goarch }}$ext"
+      - name: Smoke test
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
         run: |
           ext=""
-          [ "$GOOS" = "windows" ] && ext=".exe"
-          mkdir -p dist
-          go build -trimpath -ldflags "-s -w" -o "dist/ruddr-${GOOS}-${GOARCH}${ext}" .
+          [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
+          "dist/ruddr-${{ matrix.goos }}-${{ matrix.goarch }}$ext" version
       - uses: actions/upload-artifact@v4
         with:
           name: ruddr-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -51,15 +60,10 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -68,16 +72,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Verify the tag matches the declared version
+      - name: Verify the tag matches the declared versions
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          declared=$(sed -n 's/^const version = "\(.*\)"$/\1/p' main.go)
-          test "$tag" = "$declared" || { echo "tag v$tag does not match main.go version $declared"; exit 1; }
+          cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)
+          npm_version=$(node -p 'require("./package.json").version')
+          test "$tag" = "$cargo_version" || { echo "tag v$tag does not match Cargo.toml version $cargo_version"; exit 1; }
+          test "$tag" = "$npm_version" || { echo "tag v$tag does not match package.json version $npm_version"; exit 1; }
       - name: Test
-        run: |
-          bun install --frozen-lockfile --ignore-scripts
-          go test ./...
-          bun test
+        run: cargo test --workspace --locked
       - name: Checksums
         run: |
           cd dist

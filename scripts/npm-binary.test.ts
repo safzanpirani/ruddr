@@ -11,7 +11,7 @@ const source = readFileSync(new URL("./npm-binary.cjs", import.meta.url), "utf8"
 const binary = Buffer.from("test binary");
 const digest = createHash("sha256").update(binary).digest("hex");
 
-// Run the real installer in an isolated package with fake network and Go.
+// Run the real installer in an isolated package with a fake network.
 async function withInstaller(checksum: unknown, run: (fixture: {
   install: () => Promise<string>; downloads: () => number; destination: string;
 }) => Promise<void>) {
@@ -24,8 +24,7 @@ async function withInstaller(checksum: unknown, run: (fixture: {
   runInNewContext(source, {
     __dirname: join(root, "scripts"), module, Buffer,
     process: { platform: "linux", arch: "x64", pid: process.pid, env: {} },
-    require: (name: string) => name === "node:child_process"
-      ? { spawnSync: () => ({ status: 1 }) } : require(name),
+    require,
     fetch: async () => {
       downloads++;
       return { ok: true, arrayBuffer: async () => binary };

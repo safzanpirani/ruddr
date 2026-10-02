@@ -14,9 +14,6 @@ ensureBinary({ log })
     if (skill.error || skill.status !== 0)
       log(`ruddr: could not install the ruddr-delegate skill; run \`ruddr skill install\` later${skill.stderr ? `: ${String(skill.stderr).trim()}` : ""}`);
     else log(`ruddr: ${String(skill.stdout).trim().split("\n").join("\nruddr: ")}`);
-    const bun = spawnSync("bun", ["--version"], { stdio: "ignore" });
-    if (bun.error || bun.status !== 0)
-      log("ruddr: Bun 1.4 or newer is required for `ruddr tui`, `ruddr web`, and the Claude, OpenCode, Pi, and Droid providers: https://bun.sh");
   })
   .catch((error) => {
     log(error instanceof Error ? error.message : String(error));

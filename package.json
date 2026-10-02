@@ -1,7 +1,7 @@
 {
   "name": "ruddr",
   "version": "0.5.1",
-  "description": "Thin control plane for Codex, Claude Code, OpenCode, Pi, and Factory Droid agent sessions: run, steer, observe, and a live TUI and web dashboard with diffs.",
+  "description": "Thin control plane for Codex, Claude Code, OpenCode, Pi, and Factory Droid agent sessions: run, steer, observe, and a live TUI and web dashboard with diffs. One native binary.",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -12,22 +12,10 @@
     "bin/",
     "scripts/npm-binary.cjs",
     "scripts/npm-postinstall.cjs",
-    "tui/",
-    "adapter/",
-    "claude/",
-    "opencode/",
-    "pi/",
-    "droid/",
-    "web/",
     "skills/",
-    "*.go",
-    "go.mod",
-    "go.sum",
     "checksums.json",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
-    "!**/*.test.ts",
-    "!*_test.go",
     "LICENSE"
   ],
   "engines": {
@@ -56,18 +44,13 @@
     "cli"
   ],
   "scripts": {
-    "tui": "bun run tui/index.ts",
-    "test:tui": "bun test tui",
-    "web": "bun run web/server.ts",
+    "build:web": "scripts/build-web.sh",
+    "test:web": "bun test web scripts",
     "postinstall": "node scripts/npm-postinstall.cjs"
   },
-  "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.245",
-    "@opentui/core": "^0.5.8",
-    "@pierre/diffs": "1.5.1",
-    "@pierre/trees": "1.0.0-beta.6"
-  },
   "devDependencies": {
+    "@pierre/diffs": "1.5.1",
+    "@pierre/trees": "1.0.0-beta.6",
     "@types/bun": "^1.4.2",
     "typescript": "^5.9.3"
   }
