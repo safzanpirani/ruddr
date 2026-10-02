@@ -13,8 +13,11 @@ is delegation, not review: the run should end with working, verified code. The
 parent agent stays free to keep talking to the user and can redirect the run
 mid-turn with `ruddr steer`.
 
-Requires the `ruddr` CLI (see the repo's README "Agent setup guide" if it is
-not installed).
+Requires the `ruddr` CLI, one native binary that needs no Bun or Go
+(`npm install -g ruddr`; see the repo's README "Agent setup guide" if it is
+not installed). Flags are GNU style: `--flag value` or `--flag=value`. The
+single-dash form `-flag` is bad usage and exits 2. `ruddr COMMAND --help`
+lists a command's flags.
 
 ## Pick a provider and model
 
@@ -194,9 +197,9 @@ ruddr tui                                                 # every session, live
 ruddr web                                                 # browser dashboard
 ```
 
-`ruddr web` requires Bun 1.4 or newer. It prints a link that exchanges the
-private token in `~/.config/ruddr/web-token` for an HttpOnly cookie. Bind it
-to loopback or a private address with `--host`. The browser can steer active
+`ruddr web` prints a link that exchanges the private token in
+`~/.config/ruddr/web-token` for an HttpOnly cookie. Bind it to loopback or a
+private address with `--host`. The browser can steer active
 turns, prompt idle sessions, and continue completed threads in detached runs.
 The server rejects stale prompt routes and changed steering turn IDs.
 
@@ -210,8 +213,9 @@ ruddr steer --state-dir .scratch/<task-slug>/run "<exact update, literals preser
 Use `--message-file` for multiline or shell-sensitive text. A rejected steer
 means the turn already ended — read the output; never silently start a
 replacement run. To abort a wrong-premise turn use `ruddr interrupt`, not
-kill. If `status` reports `stale`, the controller died: report it and start
-fresh only with the user's go-ahead.
+kill. If `status` reports `stale`, the controller died: `steer`, `prompt`,
+`interrupt`, and `stop` then exit 4 like `wait`. Report it and start fresh
+only with the user's go-ahead.
 
 Wedge check: if `status` says `active` but `trace.log` has been silent far
 longer than the work plausibly takes, interrupt and resume the same thread
