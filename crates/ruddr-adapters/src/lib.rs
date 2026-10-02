@@ -140,7 +140,7 @@ mod tests {
     fn resolves_the_executable_from_the_flag_then_the_environment_then_path() {
         assert_eq!(resolve_executable(Some("/opt/x".into()), "RUDDR_TEST_UNSET", &["pi"]), "/opt/x");
         assert_eq!(
-            resolve_executable(None, "RUDDR_TEST_UNSET", &["ruddr-no-such-binary", "x"]),
+            resolve_executable(None, "RUDDR_TEST_UNSET", &["ruddr-no-such-binary", "ruddr-also-missing"]),
             "ruddr-no-such-binary"
         );
         #[cfg(unix)]
