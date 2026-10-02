@@ -42,6 +42,25 @@ test("concurrent launches use distinct private bundles and keep the prompt out o
   }
 });
 
+test("the launch directory ignores itself and keeps an existing .gitignore", async () => {
+  const { cwd, script } = await fixture(`
+    const [, , , directory] = Bun.argv;
+    await Bun.write(directory + "/state.json", JSON.stringify({status: "completed"}));
+  `);
+  const launch = () => launchSession({
+    ruddr: process.execPath, cwd, message: "hi",
+    argumentsForFiles: (prompt, directory) => [script, prompt, directory],
+    onSpawn: () => {},
+  });
+  await launch();
+  const ignore = join(cwd, ".scratch", "ruddr-tui", ".gitignore");
+  expect(await readFile(ignore, "utf8")).toBe("*\n");
+  if (process.platform !== "win32") expect((await stat(ignore)).mode & 0o777).toBe(0o600);
+  await writeFile(ignore, "custom\n");
+  await launch();
+  expect(await readFile(ignore, "utf8")).toBe("custom\n");
+});
+
 test("early child failure surfaces stderr and retains the draft and diagnostic bundle", async () => {
   const { cwd, script } = await fixture(`
     console.error("configured provider executable was not found");

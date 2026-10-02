@@ -22,12 +22,28 @@ export function detachedRunArguments(args: string[]): string[] {
   return ["run", "--detach", ...args.slice(1)];
 }
 
+// The launch directory ignores itself, like `.scratch/ruddr`, so run files
+// never show up in the workspace's git status or the dashboard's Diff tab.
+async function ignoreDirectory(base: string): Promise<void> {
+  try {
+    const ignore = await open(join(base, ".gitignore"), "wx", 0o600);
+    try {
+      await ignore.writeFile("*\n");
+    } finally {
+      await ignore.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+}
+
 // Both fresh and continued sessions use this private launch bundle. File-backed
 // stderr stays available after the TUI exits and cannot block a long-lived child.
 export async function launchSession(options: LaunchOptions): Promise<string> {
   const base = join(options.cwd, ".scratch", "ruddr-tui");
   await mkdir(base, { recursive: true, mode: 0o700 });
   await chmod(base, 0o700);
+  await ignoreDirectory(base);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const stateDirectory = await mkdtemp(join(base, `${stamp}-`));
   await chmod(stateDirectory, 0o700);

@@ -206,8 +206,9 @@ $EDITOR .scratch/ruddr-demo/prompt.md
 `--state-dir` is optional. Without it, Ruddr creates
 `.scratch/ruddr/<time>-<id>` under `--cwd`, prints the path (`run --detach`
 prints it on stdout, a foreground run on stderr), and writes a `.gitignore`
-into `.scratch/ruddr` so run files stay out of `git status`. Pass
-`--state-dir` when you want to choose the location.
+into `.scratch/ruddr` so run files stay out of `git status`. Sessions started
+from `ruddr tui` or `ruddr web` live in `.scratch/ruddr-tui`, which ignores
+itself the same way. Pass `--state-dir` when you want to choose the location.
 
 `--config KEY=VALUE` (repeatable) overrides a `~/.codex/config.toml` setting
 for one Codex run. A run fails at `thread/start` when that file enables a

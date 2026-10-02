@@ -97,7 +97,8 @@ or repository business logic.
   3 still running, 4 stale. Keep them stable and document any new one in
   `printUsage`, the README, and the skill.
 - A default state directory lives under `CWD/.scratch/ruddr`, which carries its
-  own `.gitignore` so run files never reach a sub-agent's `git status`.
+  own `.gitignore` so run files never reach a sub-agent's `git status`. The
+  TUI and web launch directory, `CWD/.scratch/ruddr-tui`, does the same.
 
 ## Thread semantics
 
