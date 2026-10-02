@@ -20,7 +20,6 @@ ruddr-web = { path = "crates/ruddr-web" }
 ruddr-history = { path = "crates/ruddr-history" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console"] }
 getrandom = "0.4"

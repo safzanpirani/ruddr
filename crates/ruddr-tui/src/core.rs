@@ -415,45 +415,20 @@ impl ModelInfo {
     }
 }
 
-/// Embedded fallback for when `ruddr models --json` is unavailable. Keep it
-/// in step with `FALLBACK_MODELS` in tui/core.ts until the catalog moves into
-/// ruddr-core.
+/// The built-in catalog, for when `ruddr models --json` is unavailable.
 pub fn fallback_models() -> Vec<ModelInfo> {
-    let m = |provider: &str, id: &str, label: &str, efforts: &[&str], default: bool| ModelInfo {
-        provider: provider.into(),
-        id: Some(id.into()),
-        label: Some(label.into()),
-        efforts: efforts.iter().map(|e| e.to_string()).collect(),
-        default,
-        available: true,
-        note: None,
-    };
-    let sol = ["low", "medium", "high", "xhigh", "max", "ultra"];
-    let deepseek = "openrouter/deepseek/deepseek-v4-flash-vision-exp";
-    vec![
-        m("codex", "gpt-6-astra", "GPT-6-Astra", &[], true),
-        m("codex", "gpt-6.1-sol", "GPT-6.1-Sol", &sol, false),
-        m("codex", "gpt-6-sol", "GPT-6-Sol", &sol, false),
-        m("codex", "gpt-6-luna", "GPT-6-Luna", &sol[..5], false),
-        m("codex", "gpt-5.6-sol", "GPT-5.6-Sol", &[], false),
-        m("codex", "gpt-5.6-terra", "GPT-5.6-Terra", &[], false),
-        m("codex", "gpt-5.6-luna", "GPT-5.6-Luna", &[], false),
-        m("claude", "claude-fable-5-1", "Claude Fable 5.1", &[], false),
-        m("claude", "claude-fable-5", "Claude Fable 5", &[], false),
-        m("claude", "claude-opus-5-5", "Claude Opus 5.5", &[], true),
-        m("claude", "claude-opus-5", "Claude Opus 5", &[], false),
-        m("claude", "claude-sonnet-5", "Claude Sonnet 5", &[], false),
-        m("claude", "claude-haiku-4-5-20251001", "Claude Haiku 4.5", &[], false),
-        m("opencode", deepseek, "DeepSeek V4 Flash Vision Exp", &[], true),
-        m(
-            "pi",
-            deepseek,
-            "DeepSeek V4 Flash Vision Exp",
-            &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-            true,
-        ),
-        m("droid", "glm-5.3-flash", "GLM-5.3-Flash", &["low", "high", "max"], true),
-    ]
+    ruddr_core::models::builtin_catalog()
+        .into_iter()
+        .map(|m| ModelInfo {
+            provider: m.provider,
+            id: Some(m.id),
+            label: Some(m.label).filter(|label| !label.is_empty()),
+            efforts: m.efforts,
+            default: m.default,
+            available: m.available,
+            note: Some(m.note).filter(|note| !note.is_empty()),
+        })
+        .collect()
 }
 
 pub fn parse_model_catalog(json: &str) -> Vec<ModelInfo> {

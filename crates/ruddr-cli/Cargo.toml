@@ -18,7 +18,6 @@ ruddr-web.workspace = true
 ruddr-tui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-clap.workspace = true
 ureq.workspace = true
 sha2.workspace = true
 
