@@ -303,6 +303,8 @@ pub enum Hit {
     TreeRow(usize),
     /// The tree's right border, which drags to resize the sidebar.
     TreeDivider,
+    /// The session list's right border, which drags to resize the list.
+    SessionsDivider,
     Artifact,
     Backdrop,
     Overlay,
@@ -429,6 +431,11 @@ pub struct App {
     /// The artifact area the diff tree splits, for divider drags.
     pub diff_area: Rect,
     pub dragging_tree: bool,
+    pub sessions_ratio: Option<f64>,
+    pub sessions_width: Option<u16>,
+    /// The classic layout's body, which the session list splits.
+    pub body_area: Rect,
+    pub dragging_sessions: bool,
     pub expanded: HashSet<u64>,
     pub cursor: Option<usize>,
     pub reveal_cursor: bool,
@@ -478,7 +485,32 @@ pub struct App {
     pub quit: bool,
 }
 
+/// The narrowest session list that still shows a name and an age.
+pub const SESSIONS_MIN: u16 = 24;
+
+/// The session list leaves at least 60 columns for the chat and diff.
+pub fn sessions_max(body: u16) -> u16 {
+    body.saturating_sub(60).max(SESSIONS_MIN)
+}
+
+/// The list width before the user resizes it.
+pub fn sessions_default(body: u16) -> u16 {
+    (body / 3).clamp(30, 52)
+}
+
 impl App {
+    /// Applies a new session-list width; `save` also writes it to tui.json.
+    pub fn set_sessions_width(&mut self, width: u16, save: bool) {
+        self.sessions_width = Some(width);
+        self.sessions_ratio = Some(width as f64 / self.body_area.width.max(1) as f64);
+        if save
+            && let Some(ratio) = self.sessions_ratio
+            && let Err(e) = theme::persist_sessions(width, ratio)
+        {
+            self.toast(format!("Session list resized, but could not save: {e}"), Kind::Error);
+        }
+    }
+
     pub fn new(args: Args) -> Self {
         let (tx, rx) = channel();
         let config = theme::read_config();
@@ -518,6 +550,10 @@ impl App {
             tree_entries: vec![],
             diff_area: Rect::default(),
             dragging_tree: false,
+            sessions_ratio: config.sessions_ratio,
+            sessions_width: config.sessions_width,
+            body_area: Rect::default(),
+            dragging_sessions: false,
             expanded: HashSet::new(),
             cursor: None,
             reveal_cursor: false,
@@ -1167,6 +1203,12 @@ impl App {
             KeyCode::Char('i') => self.run(Cmd::Details),
             KeyCode::Char('c') => self.run(Cmd::Copy),
             KeyCode::Char('Z') => self.run(Cmd::Fold),
+            KeyCode::Char('<') | KeyCode::Char('>') if self.layout() == Layout::Classic => {
+                let current = self.sessions_width.unwrap_or_else(|| sessions_default(self.body_area.width));
+                let step: i32 = if key.code == KeyCode::Char('>') { 4 } else { -4 };
+                let width = (current as i32 + step).clamp(SESSIONS_MIN as i32, sessions_max(self.body_area.width) as i32) as u16;
+                self.set_sessions_width(width, true);
+            }
             KeyCode::Char('D') => self.ask_delete_selected(),
             KeyCode::Char(c @ (']' | '[')) => self.bracket = Some(c),
             KeyCode::Tab | KeyCode::BackTab => self.run(Cmd::Sessions),
@@ -1523,6 +1565,7 @@ impl App {
                         None => {}
                     },
                     Some(Hit::TreeDivider) => self.dragging_tree = true,
+                    Some(Hit::SessionsDivider) => self.dragging_sessions = true,
                     Some(Hit::Backdrop) => {
                         self.drawer = false;
                         self.focus = Focus::Artifact;
@@ -1552,6 +1595,17 @@ impl App {
                 let width = (mouse.column.saturating_sub(area.x) + 1).clamp(20, maximum);
                 self.tree_width = Some(width);
                 self.tree_ratio = Some(width as f64 / area.width.max(1) as f64);
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging_sessions => {
+                let area = self.body_area;
+                let width = (mouse.column.saturating_sub(area.x) + 1).clamp(SESSIONS_MIN, sessions_max(area.width));
+                self.set_sessions_width(width, false);
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.dragging_sessions => {
+                self.dragging_sessions = false;
+                if let Some(width) = self.sessions_width {
+                    self.set_sessions_width(width, true);
+                }
             }
             MouseEventKind::Up(MouseButton::Left) if self.dragging_tree => {
                 self.dragging_tree = false;
@@ -2401,6 +2455,14 @@ fn copy_osc52(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_list_width_keeps_room_for_the_main_pane() {
+        assert_eq!(sessions_default(150), 50);
+        assert_eq!(sessions_default(60), 30);
+        assert_eq!(sessions_max(200), 140);
+        assert_eq!(sessions_max(70), SESSIONS_MIN, "a narrow body still allows the minimum");
+    }
 
     #[test]
     fn output_paragraphs_keep_fences_whole() {

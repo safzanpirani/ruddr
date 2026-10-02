@@ -779,8 +779,10 @@ that with a duration such as `--interval 2s` (whole milliseconds or seconds,
 at least 100ms).
 
 The TUI keeps its settings in `~/.config/ruddr/tui.json` (`$XDG_CONFIG_HOME`
-is honored): `theme`, `mobileWidthThreshold`, and the diff tree's
-`diffTreeWidth` and `diffTreeRatio`. The web dashboard shares the `theme`
+is honored): `theme`, `mobileWidthThreshold`, the diff tree's
+`diffTreeWidth` and `diffTreeRatio`, and the session list's `sessionsWidth`
+and `sessionsRatio`. Drag the right border of the session list or of the diff
+tree to resize it; `<` and `>` also narrow and widen the session list. The web dashboard shares the `theme`
 key, and both front ends keep keys they do not use. `RUDDR_TUI_FRAMES=1` adds
 a count of drawn frames to the header, for debugging redraws.
 
