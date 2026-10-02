@@ -440,16 +440,37 @@ impl App {
         Ok(json_response(&body, StatusCode::OK))
     }
 
+    /// The edits the run recorded in its event log, as the Diff tab's body.
+    async fn recorded_diff(self: &Arc<Self>, session: &Session, cwd: String, reason: String) -> RouteResult {
+        let directory = self.verify_directory(session)?;
+        let events = directory.join(ruddr_core::state::EVENTS_FILE);
+        let diff_cwd = cwd.clone();
+        let content = blocking(move || match std::fs::read_to_string(&events) {
+            Ok(text) => Ok(ruddr_history::app_server::run_diff(&text, &diff_cwd)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(format!("Read the event log: {e}")),
+        })
+        .await?;
+        let body = json!({ "content": content, "recorded": reason, "cwd": cwd, "untracked": [], "touched": [] });
+        Ok(json_response(&body, StatusCode::OK))
+    }
+
     async fn run_diff(self: &Arc<Self>, state_dir: Option<&str>, force: bool) -> RouteResult {
         let Some(session) = self.known_session(state_dir).await else {
             return Ok(failure("Unknown session", StatusCode::NOT_FOUND));
         };
         let cwd = session.state.cwd.clone();
-        if cwd.is_empty() {
-            return Ok(json_response(
-                &json!({ "content": "", "error": "This session has no working directory." }),
-                StatusCode::OK,
-            ));
+        // Outside a Git work tree, or when git diff fails, the run's own
+        // event log still holds its edits.
+        let reason = if cwd.is_empty() {
+            Some("No working directory".to_string())
+        } else if !git::is_work_tree(&cwd).await {
+            Some("Not a Git repository".to_string())
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return self.recorded_diff(&session, cwd, reason).await;
         }
         let (result, branch, untracked) = tokio::join!(
             self.git.workspace_diff(&cwd, force),
@@ -462,6 +483,10 @@ impl App {
         let cwd_path = PathBuf::from(&cwd);
         let touched = blocking(move || Ok(git::touched_since(&cwd_path, &paths, &started_at))).await?;
         self.verify_directory(&session)?;
+        if let Some(error) = result.error.as_deref().filter(|_| result.content.is_empty()) {
+            let reason = format!("Git diff failed ({})", error.lines().next().unwrap_or("").trim_end_matches('.'));
+            return self.recorded_diff(&session, cwd, reason).await;
+        }
         let mut body = json!({ "content": result.content });
         if let Some(error) = result.error {
             body["error"] = Value::String(error);

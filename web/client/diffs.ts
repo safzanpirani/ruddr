@@ -78,6 +78,8 @@ export interface WorkspaceDiffData {
   cwd?: string;
   untracked: string[];
   touched: string[];
+  /** Set when Git could not describe the directory: the diff holds the edits the run recorded. */
+  recorded?: string;
 }
 
 interface RenderedFile {
@@ -269,7 +271,7 @@ export class WorkspaceDiffView {
     this.data = data;
     this.touched = new Set(data.touched);
     const untrackedKey = data.untracked.join("\0");
-    const metadataKey = JSON.stringify([data.touched, data.error, data.branch, data.cwd]);
+    const metadataKey = JSON.stringify([data.touched, data.error, data.branch, data.cwd, data.recorded]);
     if (data.content === this.lastContent && untrackedKey === this.lastUntracked && metadataKey === this.lastMetadata) return;
     this.lastMetadata = metadataKey;
     this.lastContent = data.content;
@@ -291,7 +293,9 @@ export class WorkspaceDiffView {
       }
     clear(this.summary);
     append(this.summary, [
-      h("span", { class: "diff-branch" }, data.branch ? `⎇ ${data.branch}` : "working tree"),
+      data.recorded
+        ? h("span", { class: "diff-branch", title: `${data.recorded}: showing the edits this session recorded` }, "recorded edits")
+        : h("span", { class: "diff-branch" }, data.branch ? `⎇ ${data.branch}` : "working tree"),
       h("span", null, `${parsed.length} file${parsed.length === 1 ? "" : "s"}`),
       h("span", { class: "add" }, `+${additions}`),
       h("span", { class: "del" }, `−${deletions}`),
@@ -322,6 +326,9 @@ export class WorkspaceDiffView {
     this.files = next;
     const children: HTMLElement[] = this.files.map((file) => file.section);
     if (data.error && !parsed.length) children.push(h("div", { class: "empty-state" }, data.error));
+    else if (data.recorded && !parsed.length)
+      children.push(h("div", { class: "empty-state" }, h("div", { class: "empty-glyph" }, "∅"), `${data.recorded}. This session has recorded no file edits yet.`));
+    else if (data.recorded) children.unshift(h("div", { class: "diff-note dim" }, `${data.recorded}: showing the edits this session recorded.`));
     else if (!parsed.length && !untracked.length)
       children.push(h("div", { class: "empty-state" }, h("div", { class: "empty-glyph" }, "∅"), "No tracked changes against HEAD."));
     this.filesHost.replaceChildren(...children);

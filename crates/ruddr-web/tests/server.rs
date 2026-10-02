@@ -876,8 +876,17 @@ async fn serves_output_activity_and_diff_for_verified_sessions() {
     assert_eq!(activity["activities"][0]["text"], "hello");
     let diff = body_json(f.get(&format!("/api/run/diff?dir={}&force=1", f.dir_param())).await).await;
     assert_eq!(diff["cwd"], f.root.to_string_lossy().as_ref());
-    assert!(diff["error"].is_string(), "the fixture root is not a Git repository: {diff}");
-    assert_eq!(diff["untracked"], json!([]));
+    // The fixture root is not a Git repository: the run's recorded edits stand in.
+    assert_eq!(diff["recorded"], "Not a Git repository", "{diff}");
+    assert!(diff.get("error").is_none(), "no Git usage text reaches the page: {diff}");
+    assert_eq!((diff["content"].as_str(), &diff["untracked"]), (Some(""), &json!([])));
+    let edit = json!({"method": "item/completed", "params": {"item": {
+        "type": "fileChange", "id": "e1", "status": "completed", "toolName": "Write",
+        "input": {"file_path": f.root.join("notes.md").to_string_lossy(), "content": "hello\n"}}}});
+    std::fs::write(f.state_dir.join("events.jsonl"), format!("{edit}\n")).unwrap();
+    let diff = body_json(f.get(&format!("/api/run/diff?dir={}&force=1", f.dir_param())).await).await;
+    let content = diff["content"].as_str().unwrap();
+    assert!(content.starts_with("diff --git a/notes.md b/notes.md\nnew file mode"), "{content}");
 }
 
 #[tokio::test]

@@ -291,6 +291,8 @@ pub enum Msg {
         state_dir: String,
         result: Result<String, String>,
         touched: Vec<String>,
+        /// Why the diff shows the run's recorded edits instead of `git diff`.
+        recorded: Option<String>,
     },
     /// The newest sessions from every agent's history.
     History(Vec<ruddr_history::SessionInfo>),
@@ -381,6 +383,9 @@ pub struct DiffState {
     pub loaded: bool,
     /// Width of the line-number gutter.
     pub gutter: usize,
+    /// Set when the diff comes from the run's recorded edits: why Git could
+    /// not describe the working directory.
+    pub recorded: Option<String>,
 }
 
 /// Everything read for the selected session.
@@ -901,6 +906,7 @@ impl App {
                 state_dir,
                 result: diff,
                 touched: vec![],
+                recorded: None,
             });
         });
     }
@@ -1001,23 +1007,32 @@ impl App {
         self.sources.diff.pending = true;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let (result, touched) = if session.cwd.is_empty() {
-                (Err("No working directory.".to_string()), vec![])
+            let recorded = |reason: String| {
+                let result = actions::recorded_diff(&events_path(&session), &session.cwd);
+                (result, vec![], Some(reason))
+            };
+            let (result, touched, recorded) = if session.cwd.is_empty() {
+                recorded("No working directory".to_string())
+            } else if !actions::is_git_work_tree(&session.cwd) {
+                recorded("Not a Git repository".to_string())
             } else {
-                let result = actions::workspace_diff(&session.cwd);
-                let touched = match &result {
+                match actions::workspace_diff(&session.cwd) {
                     Ok(raw) => {
-                        let paths: Vec<String> = parse_git_diff(raw).1.into_iter().map(|f| f.path).collect();
-                        actions::touched_since(&session.cwd, &paths, &session.started_at)
+                        let paths: Vec<String> = parse_git_diff(&raw).1.into_iter().map(|f| f.path).collect();
+                        let touched = actions::touched_since(&session.cwd, &paths, &session.started_at);
+                        (Ok(raw), touched, None)
                     }
-                    Err(_) => vec![],
-                };
-                (result, touched)
+                    Err(e) => recorded(format!(
+                        "Git diff failed ({})",
+                        e.lines().next().unwrap_or("").trim_end_matches('.')
+                    )),
+                }
             };
             let _ = tx.send(Msg::Diff {
                 state_dir: session.state_dir,
                 result,
                 touched,
+                recorded,
             });
         });
     }
@@ -1029,7 +1044,7 @@ impl App {
         Some(self.sources.diff.next.unwrap_or_else(Instant::now))
     }
 
-    fn on_diff(&mut self, state_dir: String, result: Result<String, String>, touched: Vec<String>) {
+    fn on_diff(&mut self, state_dir: String, result: Result<String, String>, touched: Vec<String>, recorded: Option<String>) {
         if self.sources.scope.0 != state_dir {
             return;
         }
@@ -1040,7 +1055,7 @@ impl App {
             Err(e) => (String::new(), Some(e)),
         };
         let touched: HashSet<String> = touched.into_iter().collect();
-        let changed = raw != diff.raw || error != diff.error || touched != diff.touched || !diff.loaded;
+        let changed = raw != diff.raw || error != diff.error || touched != diff.touched || recorded != diff.recorded || !diff.loaded;
         if changed {
             (diff.lines, diff.files) = parse_git_diff(&raw);
             diff.gutter = diff
@@ -1055,6 +1070,7 @@ impl App {
             diff.raw = raw;
             diff.error = error;
             diff.touched = touched;
+            diff.recorded = recorded;
             diff.generation += 1;
             diff.loaded = true;
             self.dirty = true;
@@ -2499,7 +2515,8 @@ impl App {
                 state_dir,
                 result,
                 touched,
-            } => self.on_diff(state_dir, result, touched),
+                recorded,
+            } => self.on_diff(state_dir, result, touched, recorded),
             Msg::Deja(Err(e)) => self.toast(e, Kind::Error),
             Msg::Deja(Ok(hits)) if hits.is_empty() => self.toast("No resumable sessions matched", Kind::Warning),
             Msg::Deja(Ok(hits)) => {

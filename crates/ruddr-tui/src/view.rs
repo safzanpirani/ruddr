@@ -142,6 +142,10 @@ pub fn build_blocks(app: &App) -> Vec<Block> {
                 }
                 return blocks;
             }
+            if diff.recorded.is_some() {
+                // Says where the diff came from when Git could not provide it.
+                blocks.push(Block::new(9, 7, diff.generation, BlockRef::Note));
+            }
             for (index, line) in diff.lines.iter().enumerate() {
                 let file = &diff.files[line.file];
                 let folded = app.folded.contains(&file.path);
@@ -268,7 +272,11 @@ fn render_note(app: &App, p: &Palette) -> Vec<Row> {
                 None if !diff.loaded && history => ("Reading the session…".to_string(), p.dim),
                 None if !diff.loaded => ("Reading git diff…".to_string(), p.dim),
                 None if history => ("This session edited no files.".to_string(), p.dim),
-                None => ("✓ Working tree clean against HEAD.".to_string(), p.success),
+                None => match &diff.recorded {
+                    Some(reason) if diff.lines.is_empty() => (format!("{reason} · this session has recorded no file edits yet."), p.dim),
+                    Some(reason) => (format!("{reason} · showing the edits this session recorded"), p.dim),
+                    None => ("✓ Working tree clean against HEAD.".to_string(), p.success),
+                },
             }
         }
     };
