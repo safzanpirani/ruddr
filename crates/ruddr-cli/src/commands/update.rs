@@ -660,7 +660,12 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_ne!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o111, 0);
         }
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "temporary file left behind");
+        // Windows cannot delete a running executable, so the previous binary
+        // stays beside it as ruddr.old until the next update removes it.
+        let expected = if cfg!(windows) { 2 } else { 1 };
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), expected, "temporary file left behind");
+        #[cfg(windows)]
+        assert_eq!(std::fs::read_to_string(dir.join("ruddr.old")).unwrap(), "old");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -562,12 +562,17 @@ struct FakeController {
 
 impl FakeController {
     fn start(dir: &Path, state: Value, reply: impl Fn(&Request, &RunState) -> Response + Send + 'static) -> FakeController {
-        let socket = dir.join(".ruddr.sock");
+        // Controllers listen on a Unix socket in the state directory, or on a
+        // named pipe on Windows.
+        #[cfg(unix)]
+        let socket = dir.join(".ruddr.sock").display().to_string();
+        #[cfg(windows)]
+        let socket = format!(r"\\.\pipe\ruddr-test-{}", ruddr_core::fsutil::random_hex(6));
         let mut fields = state;
         fields["pid"] = json!(std::process::id());
-        fields["socketPath"] = json!(socket.display().to_string());
+        fields["socketPath"] = json!(socket);
         write_state(dir, fields);
-        let name = ruddr_core::control::socket_name(socket.to_str().unwrap()).unwrap();
+        let name = ruddr_core::control::socket_name(&socket).unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = requests.clone();
