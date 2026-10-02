@@ -25,6 +25,9 @@ func tuiCommand(args []string) error {
 	if stdinErr != nil || stdoutErr != nil || stdinInfo.Mode()&os.ModeCharDevice == 0 || stdoutInfo.Mode()&os.ModeCharDevice == 0 {
 		return errors.New("the TUI requires an interactive terminal")
 	}
+	if useRustTUI(args) {
+		return runRustTUI(args)
+	}
 	bunPath, err := exec.LookPath("bun")
 	if err != nil {
 		return errors.New("the optional TUI requires Bun 1.4 or newer; install Bun and run again")
@@ -54,6 +57,63 @@ func tuiCommand(args []string) error {
 	return nil
 }
 
+// useRustTUI selects the experimental ratatui front end.
+func useRustTUI(args []string) bool {
+	for _, arg := range args {
+		if arg == "--rs" {
+			return true
+		}
+	}
+	return os.Getenv("RUDDR_TUI_IMPL") == "rust"
+}
+
+func runRustTUI(args []string) error {
+	binary, err := findRustTUI()
+	if err != nil {
+		return err
+	}
+	registerRunningRuddrRuns()
+	ruddrPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate Ruddr executable: %w", err)
+	}
+	cmd := exec.Command(binary, append([]string{"--ruddr", ruddrPath}, args...)...)
+	if latest, ok := availableUpdate(); ok {
+		cmd.Env = append(os.Environ(), updateAvailableEnvironment+"="+latest)
+	}
+	go refreshUpdateCheck(context.Background())
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("TUI exited: %w", err)
+	}
+	return nil
+}
+
+func findRustTUI() (string, error) {
+	var candidates []string
+	if configured := os.Getenv("RUDDR_TUI_BIN"); configured != "" {
+		candidates = append(candidates, configured)
+	}
+	if executable, err := os.Executable(); err == nil {
+		dir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(dir, "ruddr-tui"),
+			filepath.Join(dir, "tui-rs", "target", "release", "ruddr-tui"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "tui-rs", "target", "release", "ruddr-tui"))
+	}
+	if path, err := exec.LookPath("ruddr-tui"); err == nil {
+		candidates = append(candidates, path)
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("cannot locate the ruddr-tui binary; build it with `cargo build --release` in tui-rs or set RUDDR_TUI_BIN")
+}
+
 func newTUIProcess(bunPath, entryPath, ruddrPath string, args []string) *exec.Cmd {
 	childArgs := []string{"run", entryPath, "--ruddr", ruddrPath}
 	childArgs = append(childArgs, args...)
@@ -65,7 +125,7 @@ func printTUIUsage() {
 	fmt.Fprintf(os.Stderr, `Ruddr live sessions TUI
 
 Usage:
-  %s tui [--root DIR]... [--state-dir DIR]... [--all] [--interval 500ms] [--theme NAME] [--beta] [--mobile]
+  %s tui [--root DIR]... [--state-dir DIR]... [--all] [--interval 500ms] [--theme NAME] [--beta] [--mobile] [--rs]
 
 Shows live runs first, then every finished run from the global registry plus
 .scratch below the current directory. --root and --state-dir may be repeated;
@@ -78,6 +138,9 @@ override. The default layout keeps the sessions dashboard visible. Terminals
 64 columns wide or narrower get the single-column mobile layout with a tappable
 action bar; --mobile or RUDDR_TUI_MOBILE=1 forces it, and mobileWidthThreshold
 in tui.json changes the width.
+--rs (or RUDDR_TUI_IMPL=rust) launches the experimental ratatui front end
+from tui-rs instead; RUDDR_TUI_BIN points at its binary. It accepts the same
+flags, themes, and tui.json settings.
 `, name)
 }
 
