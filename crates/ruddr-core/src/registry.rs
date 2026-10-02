@@ -84,10 +84,10 @@ mod tests {
         std::fs::write(registry.join("a.run"), "/w/run-a\n").unwrap();
         std::fs::write(registry.join("b.run"), "/w/run-b\n").unwrap();
         std::fs::write(registry.join("note.txt"), "/ignored\n").unwrap();
-        let mut dirs = registered_in(&[registry.clone()]);
+        let mut dirs = registered_in(std::slice::from_ref(&registry));
         dirs.sort();
         assert_eq!(dirs, vec![PathBuf::from("/w/run-a"), PathBuf::from("/w/run-b")]);
-        assert_eq!(unregister(Path::new("/w/run-a"), &[registry.clone()]), 1);
+        assert_eq!(unregister(Path::new("/w/run-a"), std::slice::from_ref(&registry)), 1);
         assert_eq!(registered_in(&[registry]), vec![PathBuf::from("/w/run-b")]);
         std::fs::remove_dir_all(root).unwrap();
     }

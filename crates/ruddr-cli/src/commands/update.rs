@@ -116,7 +116,7 @@ pub fn write_check(path: &Path, check: &UpdateCheck) -> Result<()> {
 pub fn check_is_stale(path: &Path, now_ms: i64) -> bool {
     let Some(check) = read_check(path) else { return true };
     let age = now_ms - ruddr_core::time::parse_rfc3339_ms(&check.checked_at).unwrap_or(0);
-    check.current != ruddr_core::VERSION || age < 0 || age > CHECK_INTERVAL_MS
+    check.current != ruddr_core::VERSION || !(0..=CHECK_INTERVAL_MS).contains(&age)
 }
 
 /// The newer release the last check found, if any.
