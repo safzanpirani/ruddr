@@ -116,6 +116,11 @@ async fn output(cwd: &str, args: &[&str]) -> Option<(i32, Vec<u8>)> {
     Some((out.status.code().unwrap_or(-1), out.stdout))
 }
 
+/// Whether `cwd` is inside a Git work tree that `git diff` can describe.
+pub async fn is_work_tree(cwd: &str) -> bool {
+    matches!(output(cwd, &["rev-parse", "--is-inside-work-tree"]).await, Some((0, out)) if out.trim_ascii() == b"true")
+}
+
 pub async fn untracked_files(cwd: &str) -> Vec<String> {
     match output(cwd, &["ls-files", "--others", "--exclude-standard", "-z"]).await {
         Some((0, stdout)) => String::from_utf8_lossy(&stdout)

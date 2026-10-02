@@ -10,6 +10,7 @@
 //! Only session transcripts are read. Auth files that sit beside them
 //! (`~/.factory/auth.json`, Codex and Claude credentials) are never opened.
 
+pub mod app_server;
 mod claude;
 mod codex;
 mod diff;

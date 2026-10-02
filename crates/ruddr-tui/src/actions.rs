@@ -194,6 +194,22 @@ const DIFF_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Tracked changes against HEAD. A repository without commits shows the
 /// staged and unstaged changes instead.
+/// Whether `cwd` is inside a Git work tree that `git diff` can describe.
+pub fn is_git_work_tree(cwd: &str) -> bool {
+    let mut command = Command::new("git");
+    command.args(["-C", cwd, "rev-parse", "--is-inside-work-tree"]);
+    matches!(run_bounded(command, DIFF_TIMEOUT, 64), Ok((out, _, true, _)) if out.trim() == "true")
+}
+
+/// The edits a run recorded in its own event log, as a git-style diff.
+pub fn recorded_diff(events_path: &std::path::Path, cwd: &str) -> Result<String, String> {
+    match std::fs::read_to_string(events_path) {
+        Ok(text) => Ok(ruddr_history::app_server::run_diff(&text, cwd)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("Read {}: {e}", events_path.display())),
+    }
+}
+
 pub fn workspace_diff(cwd: &str) -> Result<String, String> {
     let git = |extra: &[&str]| {
         let mut command = Command::new("git");
@@ -300,6 +316,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ruddr-tui-{name}-{}", ruddr_core::fsutil::random_hex(4)));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::canonicalize(dir).unwrap()
+    }
+
+    #[test]
+    fn a_directory_outside_git_shows_the_runs_recorded_edits() {
+        let dir = temp("nogit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_string_lossy().into_owned();
+        assert!(!is_git_work_tree(&cwd), "a temp directory is not a work tree");
+        let events = dir.join("events.jsonl");
+        let edit = serde_json::json!({"method": "item/completed", "params": {"item": {
+            "type": "fileChange", "id": "1", "status": "completed", "toolName": "Write",
+            "input": {"file_path": format!("{cwd}/notes.md"), "content": "hello\n"}}}});
+        std::fs::write(&events, format!("{edit}\n")).unwrap();
+        let diff = recorded_diff(&events, &cwd).unwrap();
+        assert!(diff.starts_with("diff --git a/notes.md b/notes.md\nnew file mode"), "{diff}");
+        assert!(diff.contains("+hello"));
+        assert_eq!(
+            recorded_diff(&dir.join("missing.jsonl"), &cwd).unwrap(),
+            "",
+            "no log yet means no edits"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]

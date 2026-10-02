@@ -445,6 +445,7 @@ diffs-container, .edit-diff > *, .diff-file-body > * {
 }
 
 .empty-state { padding: 40px 16px; text-align: center; color: var(--dim); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.diff-note { padding: 8px 14px; font-size: 12px; }
 .empty-state.small { padding: 16px; font-size: 13px; }
 .empty-glyph { font-size: 28px; opacity: 0.6; }
 

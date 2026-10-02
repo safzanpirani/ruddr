@@ -730,7 +730,12 @@ mode; press End or `G` to return to live output.
 
 Diff shows the selected session's tracked staged and unstaged working-tree
 changes against `HEAD` (in a repository without commits, the index and the
-working tree). It refreshes while the Diff tab is open and polls less often
+working tree). When the session's working directory is not in a Git
+repository, or `git diff` fails, Diff shows the edits the run recorded in its
+own `events.jsonl` instead, under a one-line note that says why: Codex's file
+changes, and the edit and write tools of the other providers. Changes a shell
+command made are not recorded, so they appear only in a Git diff. It refreshes
+while the Diff tab is open and polls less often
 while the tree is quiet. Panes at least 80 columns wide also show a
 changed-file tree with per-file line counts; selecting a file jumps to its
 patch, and clicking a directory collapses it. Drag the divider beside the tree
@@ -824,7 +829,9 @@ the snippets do not identify their position in the file.
 Unnumbered apply_patch hunks can lack the location data that Pierre needs.
 Write inputs without previous content show the supplied content as additions.
 The Diff tab shows the working tree against `HEAD` with a file tree, split or
-unified layout, and a filter for files edited since the session started. A
+unified layout, and a filter for files edited since the session started.
+Outside a Git repository it shows the edits the run recorded, labeled
+"recorded edits", as the TUI does. A
 refresh re-highlights only files whose patch changed, and small files highlight
 in the background, so returning to the tab is instant. Diffs
 and the file tree use Pierre's `@pierre/diffs` and `@pierre/trees`. Model and
