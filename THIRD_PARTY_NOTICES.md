@@ -8,6 +8,12 @@ sessions.
 Copyright Anthropic PBC. All rights reserved. Use is subject to Anthropic's
 legal agreements: https://code.claude.com/docs/en/legal-and-compliance.
 
+## Pierre diffs and trees
+
+`ruddr web` renders diffs and file trees with `@pierre/diffs` and
+`@pierre/trees` by The Pierre Computer Company, installed as npm dependencies
+under the Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0.
+
 ## OpenCode themes
 
 The palettes in `tui/opencode-themes.ts` are derived from OpenCode's built-in

@@ -16,6 +16,7 @@ ruddr run --prompt-file task.md --state-dir run &   # start a turn
 ruddr peek --state-dir run                          # watch it think
 ruddr steer --state-dir run "tests first, skip the benchmark"
 ruddr tui                                           # every session, live
+ruddr web                                           # the same, in a browser
 ```
 
 ## Why?
@@ -96,7 +97,7 @@ TUI are provider-agnostic already.
 
 ## Install
 
-The quickest route is the npm package, which ships the launcher, the TUI, and
+The quickest route is the npm package, which ships the launcher, the TUI, the web dashboard, and
 the provider adapters, and fetches the prebuilt `ruddr` binary for your
 platform from the matching GitHub release at install time:
 
@@ -127,7 +128,7 @@ prefix when it does not have that access:
 npm install -g --prefix "$HOME/.local" ruddr
 ```
 
-The Codex provider needs only the binary. `ruddr tui` and the Claude,
+The Codex provider needs only the binary. `ruddr tui`, `ruddr web`, and the Claude,
 OpenCode, Pi, and Droid providers also need Bun 1.4 or newer on `PATH`.
 
 ### Updating
@@ -681,6 +682,53 @@ beside the binary or in the current checkout. For custom development paths, set
 `RUDDR_DROID_ADAPTER_ENTRY`. Legacy
 `CODEX_RUDDER_*` variables and installed assets remain readable.
 
+### Web dashboard
+
+`ruddr web` serves the same dashboard to a browser:
+
+```bash
+ruddr web                         # http://127.0.0.1:4519, printed with its token
+ruddr web --host 100.64.0.7       # a Tailscale address, for a phone
+ruddr web --port 8080 --root ~/work/.scratch --open
+```
+
+It has the TUI's sessions list, Chat, Activity, Output, and Diff tabs, prompt
+routing, new sessions, `deja` resumes, themes, and keyboard shortcuts. The
+Chat tab streams agent messages, reasoning, and command output as they arrive.
+Command output keeps its ANSI colors. A finished run of three or more commands,
+searches, or tool calls folds into one row; click it to expand the run. A
+session row flashes once in its new color when its status changes.
+The Chat tab renders available file edits as syntax-highlighted diffs from
+Codex patches and adapter edit-tool inputs. Providers can omit patches.
+Unnumbered apply_patch hunks can lack the location data that Pierre needs.
+Write inputs without previous content show the supplied content as additions.
+The Diff tab shows the working tree against `HEAD` with a file tree, split or
+unified layout, and a filter for files edited since the session started. A
+refresh re-highlights only files whose patch changed, and small files highlight
+in the background, so returning to the tab is instant. Diffs
+and the file tree use Pierre's `@pierre/diffs` and `@pierre/trees`. Model and
+other pickers follow the dashboard theme instead of the browser's native menu. Narrow
+screens get a single-column phone layout with a bottom tab bar. Press `?` for
+the shortcut list or `Cmd/Ctrl+K` for the command palette. The theme is shared
+with `ruddr tui`.
+
+A nonempty draft keeps its original prompt route and steering turn ID. Clear
+the draft to choose the current route after the server rejects stale intent.
+
+The page can steer and start agents, so every API call needs the token stored
+in `~/.config/ruddr/web-token` (created `0600` on first use). Open the printed
+link once and the server swaps the token for an `HttpOnly`, `SameSite=Strict`
+cookie. Mutations also require a same-origin custom header. The server listens
+on `127.0.0.1` unless `--host` says otherwise. Bind it only to loopback or a
+private network such as Tailscale, never to a public interface. It reads run
+files only for verified sessions it discovered. The authenticated working-directory
+picker can list directory names across the host filesystem. New sessions can
+use any existing working directory that the server account can write to.
+The stream loads the last 6 MiB of events and skips oversized unfinished records.
+`RUDDR_WEB_HOST`, `RUDDR_WEB_PORT`,
+`--token-file`, and `RUDDR_WEB_ENTRY` override the defaults. Like the TUI, it
+needs Bun 1.4 or newer; it bundles the browser client at startup.
+
 Run artifacts:
 
 - `.ruddr.claim` — atomic ownership marker that prevents state-directory reuse.
@@ -903,6 +951,12 @@ PART 1 — INSTALL AND VERIFY
    my shell configuration without telling me what you changed.
 
 PART 2 — HOW TO OPERATE RUDDR
+
+Browser dashboard. Run `ruddr web` and open its printed access link.
+The page can steer, prompt, continue, interrupt, and start sessions.
+Use `--host` only for a private address when accessing it from a phone.
+Keep the token private. The browser rejects stale prompt routes and changed
+steering turn IDs. Continuations create detached runs for the same thread.
 
 Core model. One `ruddr run` owns one provider session. Its --state-dir holds
 everything about the run; without the flag Ruddr creates

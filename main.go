@@ -58,6 +58,8 @@ func runCLIContext(ctx context.Context, args []string) error {
 		return threadCommand(args[1:])
 	case "tui":
 		return tuiCommand(args[1:])
+	case "web":
+		return webCommand(args[1:])
 	case "steer":
 		return steerCommand(args[1:])
 	case "prompt":
@@ -527,6 +529,7 @@ Usage:
          [-- APP_SERVER_COMMAND...]
   %[1]s thread list|search|read|turns|fork|name|archive|unarchive [options]
   %[1]s tui [--root DIR] [--state-dir DIR] [--all] [--theme NAME]
+  %[1]s web [--host ADDR] [--port 4519] [--root DIR] [--open]  (browser dashboard)
   %[1]s steer --state-dir DIR "new direction"
   %[1]s prompt --state-dir DIR "next task"      (idle sessions started with --idle)
   %[1]s stop RUNS                               (gracefully end idle sessions)

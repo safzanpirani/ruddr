@@ -1,7 +1,7 @@
 {
   "name": "ruddr",
   "version": "0.4.9",
-  "description": "Thin control plane for Codex, Claude Code, OpenCode, Pi, and Factory Droid agent sessions: run, steer, observe, and a live TUI with diffs.",
+  "description": "Thin control plane for Codex, Claude Code, OpenCode, Pi, and Factory Droid agent sessions: run, steer, observe, and a live TUI and web dashboard with diffs.",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -18,6 +18,7 @@
     "opencode/",
     "pi/",
     "droid/",
+    "web/",
     "skills/",
     "*.go",
     "go.mod",
@@ -57,11 +58,14 @@
   "scripts": {
     "tui": "bun run tui/index.ts",
     "test:tui": "bun test tui",
+    "web": "bun run web/server.ts",
     "postinstall": "node scripts/npm-postinstall.cjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.245",
-    "@opentui/core": "^0.5.8"
+    "@opentui/core": "^0.5.8",
+    "@pierre/diffs": "1.5.1",
+    "@pierre/trees": "1.0.0-beta.6"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

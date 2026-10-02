@@ -52,6 +52,13 @@ or repository business logic.
 - `tui_command.go`, `tui/` — the Bun/OpenTUI TUI. `tui/index.ts` builds the
   layout, including the mobile layout; `tui/core.ts` holds pure logic,
   argument parsing, and a fallback copy of the model catalog.
+- `web_command.go`, `web/` — `ruddr web`, the browser dashboard. `web/server.ts`
+  is a Bun server that reuses the TUI's discovery, diff, prompt, and launch
+  helpers, gates every API call on the token in `~/.config/ruddr/web-token`,
+  and bundles `web/index.html` with `Bun.build` at startup. `web/client/`
+  holds the browser code: `transcript.ts` folds `events.jsonl` into chat
+  entries, `diffs.ts` wraps `@pierre/diffs` and `@pierre/trees`, and
+  `markdown.ts` escapes all model text before formatting it.
 - `adapter/`, `claude/`, `opencode/`, `pi/`, `droid/` — Bun app-server
   adapters that let non-Codex providers speak the Codex app-server protocol.
   `droid/` drives `droid exec` in stream JSON-RPC mode; the README records the
@@ -163,7 +170,7 @@ model, output format, or TUI control. Update these in the same change, without
 waiting to be asked:
 
 1. **Usage text.** `printUsage` in `main.go`, `printTUIUsage` in
-   `tui_command.go`, `printSkillUsage` in `skill.go`, and any subcommand help.
+   `tui_command.go`, `printWebUsage` in `web_command.go`, `printSkillUsage` in `skill.go`, and any subcommand help.
 2. **README.md.** The section for the feature, plus the Agent setup guide's
    operating manual when agent-facing behavior changes.
 3. **The embedded skill.** `skills/ruddr-delegate/SKILL.md` teaches agents how

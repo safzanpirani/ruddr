@@ -24,7 +24,7 @@ bun install --cwd "$repo_dir" --frozen-lockfile --ignore-scripts
 )
 go build -C "$repo_dir" -o ruddr .
 
-mkdir -p "$bin_dir" "$install_dir/tui" "$install_dir/adapter" "$install_dir/claude" "$install_dir/opencode" "$install_dir/pi" "$install_dir/droid"
+mkdir -p "$bin_dir" "$install_dir/tui" "$install_dir/adapter" "$install_dir/claude" "$install_dir/opencode" "$install_dir/pi" "$install_dir/droid" "$install_dir/web/client"
 binary_tmp=$(mktemp "$bin_dir/.ruddr.XXXXXX")
 /bin/cp "$repo_dir/ruddr" "$binary_tmp"
 chmod 0755 "$binary_tmp"
@@ -36,6 +36,8 @@ chmod 0755 "$binary_tmp"
 /bin/cp "$repo_dir/opencode/"*.ts "$install_dir/opencode/"
 /bin/cp "$repo_dir/pi/"*.ts "$install_dir/pi/"
 /bin/cp "$repo_dir/droid/"*.ts "$install_dir/droid/"
+/bin/cp "$repo_dir/web/"*.ts "$repo_dir/web/index.html" "$install_dir/web/"
+/bin/cp "$repo_dir/web/client/"*.ts "$repo_dir/web/client/"*.css "$install_dir/web/client/"
 
 bun install --cwd "$install_dir" --production --frozen-lockfile --ignore-scripts
 
@@ -55,6 +57,10 @@ test -f "$install_dir/pi/app-server.ts" || {
   printf '%s\n' "ruddr install: installed Pi adapter entry is missing" >&2
   exit 1
 }
+test -f "$install_dir/web/server.ts" || {
+  printf '%s\n' "ruddr install: installed web dashboard entry is missing" >&2
+  exit 1
+}
 test -f "$install_dir/droid/app-server.ts" || {
   printf '%s\n' "ruddr install: installed Droid adapter entry is missing" >&2
   exit 1
@@ -72,4 +78,4 @@ test "$source_hash" = "$installed_hash" || {
 # Keep the pre-rename command working for existing shells and scripts.
 ln -sfn ruddr "$bin_dir/rudder"
 printf '%s\n' "installed $bin_dir/ruddr (and the rudder alias)"
-printf '%s\n' "installed TUI assets in $install_dir"
+printf '%s\n' "installed TUI and web assets in $install_dir"

@@ -191,7 +191,14 @@ ruddr --remote ampere wait --state-dir '~/.scratch/ruddr/<task-slug>/run' --time
 ruddr peek --state-dir .scratch/<task-slug>/run -n 25     # live trace
 ruddr status --state-dir .scratch/<task-slug>/run --json  # machine-readable
 ruddr tui                                                 # every session, live
+ruddr web                                                 # browser dashboard
 ```
+
+`ruddr web` requires Bun 1.4 or newer. It prints a link that exchanges the
+private token in `~/.config/ruddr/web-token` for an HttpOnly cookie. Bind it
+to loopback or a private address with `--host`. The browser can steer active
+turns, prompt idle sessions, and continue completed threads in detached runs.
+The server rejects stale prompt routes and changed steering turn IDs.
 
 When the user adds context, corrects a premise, or changes priority while the
 turn is active, forward it immediately into the same turn:
