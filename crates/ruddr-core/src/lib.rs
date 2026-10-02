@@ -18,5 +18,9 @@ pub mod time;
 
 pub use error::{Error, Exit, Result};
 
+/// Every TUI and web dashboard theme as a JSON array of
+/// `{name, label, source, palette}`. Both front ends read this one copy.
+pub const THEMES_JSON: &str = include_str!("themes.json");
+
 /// The Ruddr release this binary belongs to.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

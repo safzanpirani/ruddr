@@ -98,14 +98,6 @@ ${rows.join("\n")}
 `;
   await writeFile(join(assets, "bundle.rs"), table);
 
-  if (existsSync(join(repo, "tui", "themes.ts"))) {
-    const { themes } = await import(join(repo, "tui", "themes.ts"));
-    await writeFile(join(assets, "themes.json"), `${JSON.stringify(themes, null, 1)}\n`);
-  }
-  if (existsSync(join(repo, "tui", "core.ts"))) {
-    const { FALLBACK_MODELS } = await import(join(repo, "tui", "core.ts"));
-    await writeFile(join(assets, "fallback-models.json"), `${JSON.stringify(FALLBACK_MODELS, null, 1)}\n`);
-  }
   await writeFile(join(assets, "SOURCE_HASH"), `${await sourceHash()}\n`);
   const total = result.outputs.reduce((sum, output) => sum + output.size, 0);
   console.log(`Bundled ${result.outputs.length} files (${(total / 1024 / 1024).toFixed(1)} MiB) into ${relative(repo, clientOut)}`);

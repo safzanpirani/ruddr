@@ -1,6 +1,6 @@
-//! Themes shared with the Bun TUI. Regenerate themes.json after changing
-//! tui/themes.ts or tui/opencode-themes.ts:
-//!   bun -e 'import {themes} from "./tui/themes.ts"; await Bun.write("crates/ruddr-tui/src/themes.json", JSON.stringify(themes))'
+//! Themes come from `ruddr_core::THEMES_JSON`, which the web dashboard
+//! shares. `bun scripts/sync-opencode-themes.ts DIR` refreshes the OpenCode
+//! palettes from OpenCode's theme assets.
 //! The selected theme persists in ~/.config/ruddr/tui.json.
 
 use ratatui::style::Color;
@@ -84,7 +84,7 @@ impl Rgb {
 pub fn themes() -> &'static [Theme] {
     static THEMES: OnceLock<Vec<Theme>> = OnceLock::new();
     THEMES.get_or_init(|| {
-        let raw: Vec<RawTheme> = serde_json::from_str(include_str!("themes.json")).expect("embedded themes.json");
+        let raw: Vec<RawTheme> = serde_json::from_str(ruddr_core::THEMES_JSON).expect("embedded themes.json");
         raw.into_iter()
             .map(|t| Theme {
                 name: t.name,

@@ -63,7 +63,7 @@ pub const DEFAULT_THEME: &str = "ruddr";
 pub fn themes() -> &'static [Value] {
     static THEMES: OnceLock<Vec<Value>> = OnceLock::new();
     THEMES
-        .get_or_init(|| serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/themes.json"))).unwrap_or_default())
+        .get_or_init(|| serde_json::from_str(ruddr_core::THEMES_JSON).unwrap_or_default())
 }
 
 pub fn find_theme(name: &str) -> Option<&'static Value> {
@@ -74,8 +74,7 @@ pub fn find_theme(name: &str) -> Option<&'static Value> {
 pub fn fallback_models() -> &'static Value {
     static MODELS: OnceLock<Value> = OnceLock::new();
     MODELS.get_or_init(|| {
-        serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fallback-models.json")))
-            .unwrap_or(Value::Array(Vec::new()))
+        serde_json::to_value(ruddr_core::models::builtin_catalog()).unwrap_or(Value::Array(Vec::new()))
     })
 }
 
