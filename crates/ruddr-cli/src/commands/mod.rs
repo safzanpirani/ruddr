@@ -4,11 +4,13 @@
 
 pub mod args;
 pub mod models;
+pub mod remote;
 pub mod result;
 pub mod runs;
 pub mod skill;
 pub mod steering;
 pub mod thread;
+pub mod update;
 
 #[cfg(test)]
 mod tests;
@@ -29,22 +31,37 @@ pub fn dispatch(command: &str, args: Vec<String>) -> Result<()> {
         "thread" => thread::thread_command(args),
         "models" => models::models_command(args),
         "skill" => skill::skill_command(args),
-        "update" => Err(Error::failed("ruddr update is not ported yet")),
+        "update" => update::update_command(args),
         other => {
+            if let Some(target) = other.strip_prefix("--remote=") {
+                return remote_with_target(Some(target), args);
+            }
             print_usage();
             Err(Error::usage(format!("unknown command {other:?}")))
         }
     }
 }
 
-pub fn remote(args: Vec<String>) -> Result<()> {
-    let _ = args;
-    Err(Error::failed("ruddr --remote is not ported yet"))
+/// `ruddr --remote SSH_TARGET COMMAND [args]`; `args` starts with the target.
+pub fn remote(mut args: Vec<String>) -> Result<()> {
+    let target = (!args.is_empty()).then(|| args.remove(0));
+    remote_with_target(target.as_deref(), args)
 }
 
-pub fn version(_args: Vec<String>) -> Result<()> {
-    println!("ruddr {}", ruddr_core::VERSION);
+fn remote_with_target(target: Option<&str>, args: Vec<String>) -> Result<()> {
+    let target = remote::check_target(target)?;
+    let code = remote::run(&target, &args)?;
+    if code != 0 {
+        // The remote ruddr already printed its own error; pass its status on.
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        std::process::exit(code);
+    }
     Ok(())
+}
+
+pub fn version(args: Vec<String>) -> Result<()> {
+    update::version_command(args)
 }
 
 pub fn print_usage() {
