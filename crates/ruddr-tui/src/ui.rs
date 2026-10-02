@@ -1282,45 +1282,61 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
     frame.render_widget(Clear, area);
     let open = ease_out(progress(opened, 220));
     let border = p.border.mix(colour, open);
-    let header = Line::from(vec![
-        Span::styled(format!(" {label} "), Style::new().fg(p.background.c()).bg(colour.c()).bold()),
-        Span::styled(format!(" {place} "), Style::new().fg(p.text.c())),
-    ]);
-    let mut chip = vec![Span::styled(
-        format!(" {} · {}", prompt.provider, model),
-        Style::new().fg(p.dim.c()),
-    )];
+    // Narrow screens keep what fits: the label, then the place, then the
+    // model chip; a chip that does not fit moves inside the box.
+    let border_room = area.width.saturating_sub(4) as usize;
+    let label_text = format!(" {label} ");
+    let place_text = format!(" {place} ");
+    let show_place = label_text.width() + place_text.width() <= border_room;
+    let mut chip_text = format!(" {} · {}", prompt.provider, model);
     if let Some(effort) = &effort {
-        chip.push(Span::styled(format!(" · {effort}"), Style::new().fg(p.dim.c())));
+        chip_text.push_str(&format!(" · {effort}"));
     }
-    chip.push(Span::raw(" "));
+    chip_text.push(' ');
+    let used = label_text.width() + if show_place { place_text.width() } else { 0 };
+    let chip_on_border = used + chip_text.width() < border_room;
+    let mut header = vec![Span::styled(label_text, Style::new().fg(p.background.c()).bg(colour.c()).bold())];
+    if show_place {
+        header.push(Span::styled(place_text, Style::new().fg(p.text.c())));
+    }
     let changeable = !matches!(prompt.kind, PromptKind::Route(PromptRoute::Steer | PromptRoute::Prompt));
-    let footer = Line::from(vec![
-        Span::styled(" enter", Style::new().fg(p.accent.c())),
-        Span::styled(" send · ", Style::new().fg(p.dim.c())),
-        Span::styled("alt+enter", Style::new().fg(p.accent.c())),
-        Span::styled(" newline · ", Style::new().fg(p.dim.c())),
-        Span::styled(if changeable { "tab" } else { "" }, Style::new().fg(p.accent.c())),
-        Span::styled(if changeable { " model · " } else { "" }, Style::new().fg(p.dim.c())),
-        Span::styled("esc", Style::new().fg(p.accent.c())),
-        Span::styled(" cancel ", Style::new().fg(p.dim.c())),
-    ]);
-    let block = Block::default()
+    let key = |k: &'static str| Span::styled(k, Style::new().fg(p.accent.c()));
+    let note = |t: &'static str| Span::styled(t, Style::new().fg(p.dim.c()));
+    let mut footer = vec![key(" enter"), note(" send · ")];
+    if area.width >= 60 {
+        footer.extend([key("alt+enter"), note(" newline · ")]);
+        if changeable {
+            footer.extend([key("tab"), note(" model · ")]);
+        }
+    }
+    footer.extend([key("esc"), note(" cancel ")]);
+    let footer_width: usize = footer.iter().map(|s| s.content.width()).sum();
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(border.c()))
         .style(Style::new().bg(p.panel.c()).fg(p.text.c()))
-        .title(header)
-        .title(Line::from(chip).right_aligned())
-        .title_bottom(footer);
+        .title(Line::from(header))
+        .title_bottom(Line::from(footer));
+    if chip_on_border {
+        block = block.title(Line::from(Span::styled(chip_text.clone(), Style::new().fg(p.dim.c()))).right_aligned());
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let text_area = Rect {
+    let mut text_area = Rect {
         x: inner.x + 1,
         y: inner.y + 1,
         width: inner.width.saturating_sub(2),
         height: inner.height.saturating_sub(2),
     };
+    if !chip_on_border {
+        frame.render_widget(
+            Paragraph::new(Span::styled(chip_text.trim().to_string(), Style::new().fg(p.dim.c()))),
+            Rect { height: 1, ..text_area },
+        );
+        text_area.y += 1;
+        text_area.height = text_area.height.saturating_sub(1);
+    }
     let rows = text_area.height as usize;
     let first = caret.0.saturating_sub(rows.saturating_sub(1));
     if prompt.text.is_empty() {
@@ -1359,7 +1375,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
     }
     // Character counter.
     let cw = count.len() as u16;
-    if area.width > cw + 4 {
+    if area.width as usize > footer_width + cw as usize + 6 {
         frame.render_widget(
             Paragraph::new(Span::styled(count, Style::new().fg(p.border.mix(p.dim, 0.5).c()))),
             Rect {

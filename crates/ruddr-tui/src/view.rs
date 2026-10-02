@@ -347,7 +347,9 @@ fn render_chat(app: &App, index: usize, frame: u64, p: &Palette) -> Vec<Row> {
             ])));
             let streaming = transcript.is_streaming(index);
             let (committed, tail) = transcript.display(index);
-            let committed = committed.trim();
+            // A committed blank line stays, so the next line does not jump
+            // down when it commits.
+            let committed = committed.trim_start();
             let tail = if committed.is_empty() { tail.trim() } else { tail.trim_end() };
             // Completed lines render as markdown; the line still arriving
             // stays plain until its newline lands.
