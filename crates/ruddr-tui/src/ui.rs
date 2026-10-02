@@ -19,8 +19,6 @@ use unicode_width::UnicodeWidthStr;
 const LOGO: [&str; 3] = ["┏━┓╻ ╻╺┳┓╺┳┓┏━┓", "┣┳┛┃ ┃ ┃┃ ┃┃┣┳┛", "╹┗╸┗━┛╺┻┛╺┻┛╹┗╸"];
 /// Smooth transitions (easing, sliding) run at this frame interval.
 const TRANSITION: Duration = Duration::from_millis(16);
-/// Breathing pulses and shimmers need far fewer frames.
-const PULSE: Duration = Duration::from_millis(66);
 
 fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -31,15 +29,21 @@ fn progress(since: Instant, ms: u64) -> f32 {
     (since.elapsed().as_secs_f32() * 1000.0 / ms as f32).clamp(0.0, 1.0)
 }
 
-fn spinner(app: &mut App) -> &'static str {
+/// Asks for a frame on the next spinner tick. Spinners, pulses, and
+/// shimmers all share this clock, so together they cost one frame per tick.
+fn tick(app: &mut App) {
     let elapsed = app.started.elapsed().as_millis() as u64;
     app.animate(Duration::from_millis(SPINNER_MS - elapsed % SPINNER_MS));
-    SPINNER[(elapsed / SPINNER_MS) as usize % SPINNER.len()]
+}
+
+fn spinner(app: &mut App) -> &'static str {
+    tick(app);
+    SPINNER[(app.started.elapsed().as_millis() as u64 / SPINNER_MS) as usize % SPINNER.len()]
 }
 
 /// A slow breathing pulse between 0 and 1. It asks for frames.
 fn pulse(app: &mut App, period: f32) -> f32 {
-    app.animate(PULSE);
+    tick(app);
     0.5 - 0.5 * (seconds(app) * std::f32::consts::TAU / period).cos()
 }
 
@@ -271,7 +275,7 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     let selected_working = session.as_ref().is_some_and(|s| s.status == Status::Active);
     // The logo shimmers only while the selected session works.
     let phase = if selected_working {
-        app.animate(PULSE);
+        tick(app);
         seconds(app) * 0.8
     } else {
         1.2
@@ -819,8 +823,7 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
     app.cache = cache;
     app.screen_blocks = screen_blocks;
     if animated {
-        let elapsed = app.started.elapsed().as_millis() as u64;
-        app.animate(Duration::from_millis(SPINNER_MS - elapsed % SPINNER_MS));
+        tick(app);
     }
 
     let mut title_spans = vec![Span::styled(

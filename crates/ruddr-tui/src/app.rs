@@ -2016,14 +2016,19 @@ impl App {
     }
 
     fn open_prompt(&mut self, wanted: Option<PromptRoute>) {
-        let Some(session) = self.current().cloned() else {
-            return self.toast("No session selected · press n to start one", Kind::Warning);
-        };
-        let Some(route) = prompt_route(&session) else {
-            return self.toast(format!("A {} session cannot take a prompt", session.status), Kind::Warning);
+        const CONTINUE_HINT: &str = "Select a finished session with a thread and working directory to continue";
+        let session = self.current().cloned();
+        let route = session.as_ref().and_then(prompt_route);
+        let (Some(session), Some(route)) = (session, route) else {
+            let text = match (wanted, self.current()) {
+                (Some(PromptRoute::Continue), _) => CONTINUE_HINT.to_string(),
+                (_, Some(s)) => format!("Session is {}; press n for a new session", s.status),
+                (_, None) => "No session selected; press n for a new session".to_string(),
+            };
+            return self.toast(text, Kind::Warning);
         };
         if wanted.is_some_and(|w| w != route) {
-            return self.toast("Continue works on finished sessions with a thread", Kind::Warning);
+            return self.toast(CONTINUE_HINT, Kind::Warning);
         }
         let (model, effort) = match (&self.pending_model, route) {
             (Some((m, e)), PromptRoute::Continue) if m.provider == crate::core::provider(&session) => (Some(m.clone()), e.clone()),
