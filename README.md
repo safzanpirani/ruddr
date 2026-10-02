@@ -708,7 +708,7 @@ list to every agent's local history, whether or not Ruddr started the session:
 Codex (`$CODEX_HOME/sessions`), Claude Code (`$CLAUDE_CONFIG_DIR/projects`),
 Pi (`~/.pi/*/sessions` or `$PI_CODING_AGENT_DIR/sessions`), OpenCode (its
 SQLite databases under `$XDG_DATA_HOME/opencode`, or `$OPENCODE_DB`), and
-Factory Droid (`~/.factory/sessions`). The newest 400 sessions are listed with
+Factory Droid (`~/.factory/sessions`, or `$FACTORY_HOME_OVERRIDE/.factory/sessions`). The newest 400 sessions are listed with
 their titles. Selecting one shows the whole conversation in Chat, its assistant
 messages in Output, and every file edit it made in Diff, with the same file
 tree. Claude and Pi follow the active branch of their transcript trees. Codex

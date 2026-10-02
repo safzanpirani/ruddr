@@ -3,7 +3,8 @@
 //! `$CLAUDE_CONFIG_DIR/projects`, Codex `$CODEX_HOME/sessions`, Pi
 //! `$PI_CODING_AGENT_DIR/sessions` (otherwise every `~/.pi/*/sessions`
 //! profile), OpenCode `$OPENCODE_DB` or `$XDG_DATA_HOME/opencode/*.db`, and
-//! Droid `~/.factory/sessions`.
+//! Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (Droid's replacement for
+//! the home directory, not a Factory directory) or `~/.factory/sessions`.
 
 use crate::Provider;
 use std::path::{Path, PathBuf};
@@ -72,7 +73,11 @@ impl Stores {
             codex: existing(configured("CODEX_HOME", home.join(".codex")).join("sessions")),
             pi,
             opencode,
-            droid: existing(home.join(".factory").join("sessions")),
+            droid: existing(
+                configured("FACTORY_HOME_OVERRIDE", home.to_path_buf())
+                    .join(".factory")
+                    .join("sessions"),
+            ),
         }
     }
 
@@ -172,6 +177,13 @@ mod tests {
         let env = move |name: &str| (name == "CLAUDE_CONFIG_DIR").then(|| custom.clone());
         let stores = Stores::from_env(&env, &home);
         assert_eq!(stores.claude.unwrap(), home.join("custom/projects"));
+        std::fs::create_dir_all(home.join("factory-home/.factory/sessions")).unwrap();
+        let factory = home.join("factory-home").to_string_lossy().into_owned();
+        let env = move |name: &str| (name == "FACTORY_HOME_OVERRIDE").then(|| factory.clone());
+        assert_eq!(
+            Stores::from_env(&env, &home).droid.unwrap(),
+            home.join("factory-home/.factory/sessions")
+        );
         std::fs::remove_dir_all(home).unwrap();
     }
 }
