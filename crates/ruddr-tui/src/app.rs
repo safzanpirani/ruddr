@@ -299,7 +299,10 @@ pub enum Hit {
     Tab(Tab),
     Button(usize),
     PickItem(usize),
-    TreeFile(usize),
+    /// A row of the diff file tree, by index into `tree_entries`.
+    TreeRow(usize),
+    /// The tree's right border, which drags to resize the sidebar.
+    TreeDivider,
     Artifact,
     Backdrop,
     Overlay,
@@ -421,6 +424,11 @@ pub struct App {
 
     pub artifact_query: HashMap<Tab, String>,
     pub folded: HashSet<String>,
+    pub collapsed_dirs: HashSet<String>,
+    pub tree_entries: Vec<TreeEntry>,
+    /// The artifact area the diff tree splits, for divider drags.
+    pub diff_area: Rect,
+    pub dragging_tree: bool,
     pub expanded: HashSet<u64>,
     pub cursor: Option<usize>,
     pub reveal_cursor: bool,
@@ -506,6 +514,10 @@ impl App {
             splash: true,
             artifact_query: HashMap::new(),
             folded: HashSet::new(),
+            collapsed_dirs: HashSet::new(),
+            tree_entries: vec![],
+            diff_area: Rect::default(),
+            dragging_tree: false,
             expanded: HashSet::new(),
             cursor: None,
             reveal_cursor: false,
@@ -1492,16 +1504,25 @@ impl App {
                             self.run(cmd);
                         }
                     }
-                    Some(Hit::TreeFile(file)) => {
-                        if let Some(path) = self.sources.diff.files.get(file).map(|f| f.path.clone())
-                            && let Some(block) = self.blocks.iter().position(|b| b.diff_header.as_deref() == Some(&path))
-                        {
-                            self.cursor = Some(block);
-                            self.follow = false;
-                            self.reveal_cursor = true;
-                            self.focus = Focus::Artifact;
+                    Some(Hit::TreeRow(row)) => match self.tree_entries.get(row).cloned() {
+                        Some(TreeEntry::Dir { path, .. }) => {
+                            if !self.collapsed_dirs.remove(&path) {
+                                self.collapsed_dirs.insert(path);
+                            }
                         }
-                    }
+                        Some(TreeEntry::File { index, .. }) => {
+                            if let Some(path) = self.sources.diff.files.get(index).map(|f| f.path.clone())
+                                && let Some(block) = self.blocks.iter().position(|b| b.diff_header.as_deref() == Some(&path))
+                            {
+                                self.cursor = Some(block);
+                                self.follow = false;
+                                self.reveal_cursor = true;
+                                self.focus = Focus::Artifact;
+                            }
+                        }
+                        None => {}
+                    },
+                    Some(Hit::TreeDivider) => self.dragging_tree = true,
                     Some(Hit::Backdrop) => {
                         self.drawer = false;
                         self.focus = Focus::Artifact;
@@ -1523,6 +1544,21 @@ impl App {
                         }
                     }
                     _ => {}
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging_tree => {
+                let area = self.diff_area;
+                let maximum = 60.min(area.width.saturating_sub(40)).max(20);
+                let width = (mouse.column.saturating_sub(area.x) + 1).clamp(20, maximum);
+                self.tree_width = Some(width);
+                self.tree_ratio = Some(width as f64 / area.width.max(1) as f64);
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.dragging_tree => {
+                self.dragging_tree = false;
+                if let (Some(width), Some(ratio)) = (self.tree_width, self.tree_ratio)
+                    && let Err(e) = theme::persist_tree(width, ratio)
+                {
+                    self.toast(format!("Sidebar resized, but could not save: {e}"), Kind::Error);
                 }
             }
             MouseEventKind::Down(MouseButton::Right) => match hit {

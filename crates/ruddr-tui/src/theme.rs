@@ -154,8 +154,19 @@ pub fn read_config() -> TuiConfig {
 
 /// Saves the theme without dropping keys this front end does not know.
 pub fn persist_theme(name: &str) -> std::io::Result<()> {
+    persist(&[("theme", Value::String(name.into()))])
+}
+
+/// Saves the diff sidebar size the way the Bun TUI does.
+pub fn persist_tree(width: u16, ratio: f64) -> std::io::Result<()> {
+    persist(&[("diffTreeWidth", Value::from(width)), ("diffTreeRatio", Value::from(ratio))])
+}
+
+fn persist(updates: &[(&str, Value)]) -> std::io::Result<()> {
     let mut config = read_config();
-    config.raw.insert("theme".into(), Value::String(name.into()));
+    for (key, value) in updates {
+        config.raw.insert(key.to_string(), value.clone());
+    }
     let path = config_path();
     if let Some(dir) = path.parent() {
         ruddr_core::fsutil::create_private_dir(dir)?;

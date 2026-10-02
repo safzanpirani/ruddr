@@ -713,6 +713,7 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
             _ => 30,
         };
         let width = wanted.clamp(20, 60.min(area.width.saturating_sub(40)).max(20));
+        app.diff_area = area;
         let [tree, rest] = Split::horizontal([Constraint::Length(width), Constraint::Min(20)]).areas(area);
         draw_tree(frame, app, tree, &p);
         body = rest;
@@ -868,9 +869,14 @@ fn draw_artifact(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect, p: &Palette) {
     let files = app.sources.diff.files.clone();
-    let block = panel(p, title(p, format!("files · {}", files.len()), false), false);
+    let block = panel(
+        p,
+        title(p, format!("files · {}", files.len()), app.dragging_tree),
+        app.dragging_tree,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let entries = diff_tree(&files, &app.collapsed_dirs);
     // The file that owns the cursor row.
     let current = app.cursor.and_then(|c| {
         app.blocks
@@ -879,53 +885,80 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect, p: &Palette) {
             .rev()
             .find_map(|b| b.diff_header.clone())
     });
-    for (i, file) in files.iter().enumerate().take(inner.height as usize) {
-        let y = inner.y + i as u16;
+    let current_row = entries
+        .iter()
+        .position(|e| matches!(e, TreeEntry::File { index, .. } if Some(&files[*index].path) == current.as_ref()));
+    let rows = inner.height as usize;
+    let offset = current_row
+        .map(|r| r.saturating_sub(rows.saturating_sub(1)))
+        .unwrap_or(0)
+        .min(entries.len().saturating_sub(rows));
+    for (row, entry) in entries.iter().enumerate().skip(offset).take(rows) {
+        let y = inner.y + (row - offset) as u16;
         let rect = Rect { y, height: 1, ..inner };
-        app.hits.push((rect, Hit::TreeFile(i)));
-        let (dir, name) = file
-            .path
-            .rsplit_once('/')
-            .map(|(d, n)| (format!("{d}/"), n.to_string()))
-            .unwrap_or((String::new(), file.path.clone()));
-        let touched = app.sources.diff.touched.contains(&file.path);
-        let stats = format!("{} +{} −{}", file.status, file.added, file.removed);
-        let room = (inner.width as usize).saturating_sub(stats.width() + 5);
-        let mut dir_shown = dir.clone();
-        if dir.width() + name.width() > room {
-            let keep = room.saturating_sub(name.width() + 1);
-            let tail: String = dir.chars().rev().take(keep).collect::<Vec<_>>().into_iter().rev().collect();
-            dir_shown = if keep > 2 { format!("…{tail}") } else { String::new() };
-        }
-        let folded = app.folded.contains(&file.path);
-        let selected = current.as_deref() == Some(&file.path);
-        let name: String = if name.width() > room {
-            name.chars().take(room.saturating_sub(1)).collect::<String>() + "…"
-        } else {
-            name
+        app.hits.push((rect, Hit::TreeRow(row)));
+        let line = match entry {
+            TreeEntry::Dir { name, depth, expanded, .. } => Line::from(vec![
+                Span::raw("  ".repeat(*depth)),
+                Span::styled(if *expanded { "▾ " } else { "▸ " }, Style::new().fg(p.dim.c())),
+                Span::styled(format!("{name}/"), Style::new().fg(p.dim.c())),
+            ]),
+            TreeEntry::File { index, name, depth } => {
+                let file = &files[*index];
+                let touched = app.sources.diff.touched.contains(&file.path);
+                let selected = current.as_deref() == Some(&file.path);
+                let stats = format!("{} +{} −{} ", file.status, file.added, file.removed);
+                let indent = "  ".repeat(*depth);
+                let room = (inner.width as usize).saturating_sub(stats.width() + indent.width() + 3);
+                let name: String = if name.width() > room {
+                    name.chars().take(room.saturating_sub(1)).collect::<String>() + "…"
+                } else {
+                    name.clone()
+                };
+                let gap = (inner.width as usize)
+                    .saturating_sub(indent.width() + name.width() + stats.width() + 2)
+                    .max(1);
+                let status_colour = match file.status {
+                    'A' => p.success,
+                    'D' => p.danger,
+                    'R' => p.warning,
+                    _ => p.dim,
+                };
+                let folded = app.folded.contains(&file.path);
+                Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(
+                        if touched {
+                            "●"
+                        } else if folded {
+                            "▸"
+                        } else {
+                            " "
+                        },
+                        Style::new().fg(if touched { p.accent.c() } else { p.dim.c() }),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(name, Style::new().fg(if selected { p.accent.c() } else { p.text.c() })),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(format!("{} ", file.status), Style::new().fg(status_colour.c())),
+                    Span::styled(format!("+{}", file.added), Style::new().fg(p.success.c())),
+                    Span::styled(format!(" −{} ", file.removed), Style::new().fg(p.danger.c())),
+                ])
+                .style(if selected { Style::new().bg(p.selected.c()) } else { Style::new() })
+            }
         };
-        let gap = (inner.width as usize)
-            .saturating_sub(dir_shown.width() + name.width() + stats.width() + 4)
-            .max(1);
-        let status_colour = match file.status {
-            'A' => p.success,
-            'D' => p.danger,
-            'R' => p.warning,
-            _ => p.dim,
-        };
-        let line = Line::from(vec![
-            Span::styled(if folded { "▸" } else { "▾" }, Style::new().fg(p.dim.c())),
-            Span::styled(if touched { "●" } else { " " }, Style::new().fg(p.accent.c())),
-            Span::styled(dir_shown, Style::new().fg(p.dim.c())),
-            Span::styled(name, Style::new().fg(if selected { p.accent.c() } else { p.text.c() })),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(format!("{} ", file.status), Style::new().fg(status_colour.c())),
-            Span::styled(format!("+{}", file.added), Style::new().fg(p.success.c())),
-            Span::styled(format!(" −{} ", file.removed), Style::new().fg(p.danger.c())),
-        ]);
-        let style = if selected { Style::new().bg(p.selected.c()) } else { Style::new() };
-        frame.render_widget(Paragraph::new(line).style(style), rect);
+        frame.render_widget(Paragraph::new(line), rect);
     }
+    app.tree_entries = entries;
+    // The right border drags to resize the sidebar.
+    app.hits.push((
+        Rect {
+            x: area.right().saturating_sub(1),
+            width: 1,
+            ..area
+        },
+        Hit::TreeDivider,
+    ));
 }
 
 fn help_segments(app: &App) -> Vec<(String, String)> {

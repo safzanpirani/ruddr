@@ -665,6 +665,57 @@ pub fn parse_git_diff(content: &str) -> (Vec<DiffLine>, Vec<DiffFile>) {
     (lines, files)
 }
 
+/// One row of the changed-file tree.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TreeEntry {
+    Dir {
+        path: String,
+        name: String,
+        depth: usize,
+        expanded: bool,
+    },
+    File {
+        index: usize,
+        name: String,
+        depth: usize,
+    },
+}
+
+/// The changed files as a directory tree in diff order. A collapsed
+/// directory hides everything below it.
+pub fn diff_tree(files: &[DiffFile], collapsed: &std::collections::HashSet<String>) -> Vec<TreeEntry> {
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, file) in files.iter().enumerate() {
+        let parts: Vec<&str> = file.path.split('/').collect();
+        let mut hidden = false;
+        for depth in 0..parts.len() - 1 {
+            let path = parts[..=depth].join("/");
+            if seen.insert(path.clone()) {
+                let expanded = !collapsed.contains(&path);
+                entries.push(TreeEntry::Dir {
+                    path: path.clone(),
+                    name: parts[depth].to_string(),
+                    depth,
+                    expanded,
+                });
+            }
+            if collapsed.contains(&path) {
+                hidden = true;
+                break;
+            }
+        }
+        if !hidden {
+            entries.push(TreeEntry::File {
+                index,
+                name: parts[parts.len() - 1].to_string(),
+                depth: parts.len() - 1,
+            });
+        }
+    }
+    entries
+}
+
 fn is_diff_meta(raw: &str) -> bool {
     raw.starts_with("+++")
         || raw.starts_with("---")
@@ -901,6 +952,40 @@ mod tests {
         assert_eq!(lines[8].kind, DiffKind::Meta, "no-newline markers do not advance line numbers");
         assert_eq!(lines.last().unwrap().new, Some(1));
         assert_eq!(diff_file_path("a/dir/old b/dir/new"), "dir/new");
+    }
+
+    #[test]
+    fn builds_a_collapsible_file_tree() {
+        let (_, files) = parse_git_diff(
+            "diff --git a/src/api.ts b/src/api.ts\n@@ -1 +1,2 @@\n-old\n+new\n+next\ndiff --git a/src/ui/view.ts b/src/ui/view.ts\n@@ -1 +1 @@\n-before\n+after\ndiff --git a/README.md b/README.md\n+docs\n",
+        );
+        let dir = |path: &str, name: &str, depth: usize, expanded: bool| TreeEntry::Dir {
+            path: path.into(),
+            name: name.into(),
+            depth,
+            expanded,
+        };
+        let file = |index: usize, name: &str, depth: usize| TreeEntry::File {
+            index,
+            name: name.into(),
+            depth,
+        };
+        assert_eq!(
+            diff_tree(&files, &Default::default()),
+            vec![
+                dir("src", "src", 0, true),
+                file(0, "api.ts", 1),
+                dir("src/ui", "ui", 1, true),
+                file(1, "view.ts", 2),
+                file(2, "README.md", 0)
+            ]
+        );
+        assert_eq!((files[0].added, files[0].removed, files[2].added), (2, 1, 1));
+        let collapsed = std::collections::HashSet::from(["src".to_string()]);
+        assert_eq!(
+            diff_tree(&files, &collapsed),
+            vec![dir("src", "src", 0, false), file(2, "README.md", 0)]
+        );
     }
 
     #[test]
