@@ -914,6 +914,7 @@ async function refreshDiff(force: boolean): Promise<void> {
 // Composer
 
 const drafts = storage.get<Record<string, string>>("drafts", {});
+// TODO(review): Persist draft routes and turn IDs with text; define how legacy drafts without intent must be restored before enabling submission.
 const draftTargets = new Map<string, DraftTarget>();
 
 function composerTarget(session = selectedSession()): DraftTarget | undefined {

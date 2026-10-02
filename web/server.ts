@@ -258,8 +258,11 @@ export async function readAlignedTail(path: string, maxBytes: number): Promise<{
     const buffer = Buffer.alloc(info.size - start);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
     const bytes = buffer.subarray(0, bytesRead);
-    const first = start > 0 ? bytes.indexOf(0x0a) : -1;
-    const skipping = start > 0 && first < 0;
+    const preceding = Buffer.alloc(1);
+    if (start > 0) await handle.read(preceding, 0, 1, start - 1);
+    const partialStart = start > 0 && preceding[0] !== 0x0a;
+    const first = partialStart ? bytes.indexOf(0x0a) : -1;
+    const skipping = partialStart && first < 0;
     const aligned = skipping ? bytes.subarray(bytes.length) : bytes.subarray(first + 1);
     const last = aligned.lastIndexOf(0x0a);
     return {
@@ -273,14 +276,46 @@ export async function readAlignedTail(path: string, maxBytes: number): Promise<{
   } finally { await handle.close(); }
 }
 
-async function readRange(path: string, from: number, to: number): Promise<Buffer> {
+export async function readRange(path: string, from: number, to: number, identity: string): Promise<Buffer | undefined> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    if (!(await handle.stat()).isFile()) throw new Error("The event log must be a regular file");
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error("The event log must be a regular file");
+    if (`${info.ino}:${info.dev}` !== identity || info.size < from) return undefined;
     const buffer = Buffer.alloc(to - from);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
     return buffer.subarray(0, bytesRead);
   } finally { await handle.close(); }
+}
+
+/** Retain only bounded partial records and skip oversized complete records too. */
+export function consumeEventBytes(pending: Buffer, skipping: boolean, chunk: Buffer, maxBytes: number): {
+  text: string; pending: Buffer; skipping: boolean; oversized: boolean;
+} {
+  if (skipping) {
+    const first = chunk.indexOf(0x0a);
+    if (first < 0) return { text: "", pending: Buffer.alloc(0), skipping: true, oversized: false };
+    chunk = chunk.subarray(first + 1);
+  }
+  const combined = Buffer.concat([pending, chunk]);
+  const records: Buffer[] = [];
+  let oversized = false;
+  let start = 0;
+  let keptStart = 0;
+  for (let newline = combined.indexOf(0x0a); newline >= 0; newline = combined.indexOf(0x0a, start)) {
+    const end = newline + 1;
+    if (end - start > maxBytes) {
+      if (start > keptStart) records.push(combined.subarray(keptStart, start));
+      keptStart = end;
+      oversized = true;
+    }
+    start = end;
+  }
+  if (start > keptStart) records.push(combined.subarray(keptStart, start));
+  pending = Buffer.from(combined.subarray(start));
+  skipping = pending.length > maxBytes;
+  if (skipping) { pending = Buffer.alloc(0); oversized = true; }
+  return { text: Buffer.concat(records).toString("utf8"), pending, skipping, oversized };
 }
 
 async function readArtifactTail(path: string, maxBytes: number): Promise<string> {
@@ -329,6 +364,7 @@ export class WebApp {
   private branches = new Map<string, { name?: string; readAt: number }>();
   private static?: Map<string, { body: Uint8Array; type: string }>;
   private indexPath = "/index.html";
+  private verifiedDirectories = new Map<string, { path: string; identity: string }>();
 
   constructor(
     readonly args: WebArguments,
@@ -341,7 +377,19 @@ export class WebApp {
       // Discovery must authorize the directory containing state.json, not a path supplied by that JSON.
       if (resolve(session.stateDir) !== dirname(resolve(session.stateFile))) return undefined;
       try {
-        if (await realpath(session.stateFile) !== join(await realpath(session.stateDir), "state.json")) return undefined;
+        const path = await realpath(session.stateDir);
+        const handle = await open(session.stateDir, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        let identity: string;
+        try {
+          const info = await handle.stat();
+          if (!info.isDirectory()) return undefined;
+          identity = `${info.ino}:${info.dev}`;
+        } finally { await handle.close(); }
+        if (await realpath(session.stateFile) !== join(path, "state.json")) return undefined;
+        const key = resolve(session.stateDir);
+        const previous = this.verifiedDirectories.get(key);
+        if (previous && (previous.path !== path || previous.identity !== identity)) return undefined;
+        this.verifiedDirectories.set(key, { path, identity });
         return session;
       } catch { return undefined; }
     }))).filter((session): session is Session => session !== undefined);
@@ -379,7 +427,23 @@ export class WebApp {
       await this.refreshSessions();
       session = this.sessionFor(stateDir);
     }
+    if (session) {
+      try { await this.verifyDirectory(session); } catch { return undefined; }
+    }
     return session;
+  }
+
+  private async verifyDirectory(session: Session): Promise<string> {
+    const verified = this.verifiedDirectories.get(resolve(session.stateDir));
+    if (!verified || await realpath(session.stateDir) !== verified.path)
+      throw new Error("The verified session directory changed");
+    const handle = await open(verified.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await handle.stat();
+      if (!info.isDirectory() || `${info.ino}:${info.dev}` !== verified.identity)
+        throw new Error("The verified session directory changed");
+    } finally { await handle.close(); }
+    return verified.path;
   }
 
   async branchFor(cwd: string): Promise<string | undefined> {
@@ -529,8 +593,8 @@ export class WebApp {
   private async runEventStream(request: Request, stateDir: string | null): Promise<Response> {
     const session = await this.knownSession(stateDir);
     if (!session) return failure("Unknown session", 404);
-    const eventsPath = join(session.stateDir, "events.jsonl");
-    return eventStream(request, (send) => {
+    const eventsPath = join(await this.verifyDirectory(session), "events.jsonl");
+    return eventStream(request, (send, close) => {
       let offset = 0;
       let identity = "";
       let pending: Buffer = Buffer.alloc(0);
@@ -542,6 +606,7 @@ export class WebApp {
         if (stopped || reading) return;
         reading = true;
         try {
+          try { await this.verifyDirectory(session); } catch { close(); return; }
           let info;
           try {
             info = await stat(eventsPath);
@@ -555,6 +620,7 @@ export class WebApp {
           const nextIdentity = `${info.ino}:${info.dev}`;
           if (nextIdentity !== identity || info.size < offset) {
             const tail = await readAlignedTail(eventsPath, EVENTS_INITIAL_BYTES);
+            try { await this.verifyDirectory(session); } catch { close(); return; }
             identity = tail.identity;
             offset = tail.offset;
             pending = tail.pending;
@@ -563,22 +629,15 @@ export class WebApp {
             return;
           }
           if (info.size === offset) return;
-          const chunk = await readRange(eventsPath, offset, Math.min(info.size, offset + 4 * 1024 * 1024));
+          const chunk = await readRange(eventsPath, offset, Math.min(info.size, offset + 4 * 1024 * 1024), identity);
+          if (!chunk) { identity = ""; return; }
+          try { await this.verifyDirectory(session); } catch { close(); return; }
           offset += chunk.length;
-          let bytes = chunk;
-          if (skipping) {
-            const first = bytes.indexOf(0x0a);
-            if (first < 0) return;
-            bytes = bytes.subarray(first + 1);
-            skipping = false;
-          }
-          const combined = Buffer.concat([pending, bytes]);
-          const lastNewline = combined.lastIndexOf(0x0a);
-          if (lastNewline >= 0) send("append", { text: combined.subarray(0, lastNewline + 1).toString("utf8") });
-          pending = combined.subarray(lastNewline + 1);
-          if (pending.length > EVENTS_INITIAL_BYTES) {
-            pending = Buffer.alloc(0);
-            skipping = true;
+          const next = consumeEventBytes(pending, skipping, chunk, EVENTS_INITIAL_BYTES);
+          pending = next.pending;
+          skipping = next.skipping;
+          if (next.text) send("append", { text: next.text });
+          if (next.oversized) {
             send("problem", { error: "An event exceeded the 6 MiB record limit and was skipped" });
           }
         } catch (error) {
@@ -599,17 +658,20 @@ export class WebApp {
   private async runOutput(stateDir: string | null): Promise<Response> {
     const session = await this.knownSession(stateDir);
     if (!session) return failure("Unknown session", 404);
-    const text = await readArtifactTail(join(session.stateDir, "output.md"), 1024 * 1024);
+    const text = await readArtifactTail(join(await this.verifyDirectory(session), "output.md"), 1024 * 1024);
+    await this.verifyDirectory(session);
     return json({ text });
   }
 
   private async runActivity(stateDir: string | null): Promise<Response> {
     const session = await this.knownSession(stateDir);
     if (!session) return failure("Unknown session", 404);
+    const directory = await this.verifyDirectory(session);
     const [trace, events] = await Promise.all([
-      readArtifactTail(join(session.stateDir, "trace.log"), 512 * 1024),
-      readArtifactTail(join(session.stateDir, "events.jsonl"), 2 * 1024 * 1024),
+      readArtifactTail(join(directory, "trace.log"), 512 * 1024),
+      readArtifactTail(join(directory, "events.jsonl"), 2 * 1024 * 1024),
     ]);
+    await this.verifyDirectory(session);
     const activities = parseTraceActivities(trace);
     const details = attachToolDetails(activities, parseToolEventDetails(events));
     return json({ activities: activities.map((activity, index) => ({ ...activity, detail: details[index] })) });
@@ -628,6 +690,7 @@ export class WebApp {
     for (const match of result.content.matchAll(/^diff --git a\/.+? b\/(.+)$/gm)) paths.add(match[1]);
     for (const path of untracked) paths.add(path);
     const touched = await touchedSince(session.cwd, paths, session.startedAt);
+    await this.verifyDirectory(session);
     return json({ ...result, branch, cwd: session.cwd, untracked, touched: [...touched].sort() });
   }
 
@@ -679,7 +742,7 @@ export class WebApp {
     const message = input.message?.trim();
     if (!message) return failure("The prompt is empty");
     await this.refreshSessions();
-    const session = this.sessionFor(input.stateDir);
+    const session = await this.knownSession(input.stateDir);
     if (!session) return failure("The prompt session is no longer available; the prompt was not sent", 409);
     const route = promptModeForSession(session);
     // Never convert one route into another: a stale page must not turn a
@@ -750,7 +813,7 @@ export class WebApp {
 
   private async stop(input: { stateDir?: string }): Promise<Response> {
     await this.refreshSessions();
-    const session = this.sessionFor(input.stateDir);
+    const session = await this.knownSession(input.stateDir);
     if (!session || (session.status !== "active" && session.status !== "idle"))
       return failure("Only an active or idle session can be stopped", 409);
     const idle = session.status === "idle";
@@ -761,7 +824,7 @@ export class WebApp {
 
   private async delete(input: { stateDir?: string }): Promise<Response> {
     await this.refreshSessions();
-    const session = this.sessionFor(input.stateDir);
+    const session = await this.knownSession(input.stateDir);
     if (!session) return failure("Unknown session", 404);
     const result = await deleteSessionArtifacts(session);
     this.args.stateDirs = this.args.stateDirs.filter((dir) => resolve(dir) !== resolve(session.stateDir));

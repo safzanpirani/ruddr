@@ -7,6 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 )
 
 const webEntryEnvironment = "RUDDR_WEB_ENTRY"
@@ -21,6 +24,9 @@ func webCommand(args []string) error {
 	bunPath, err := exec.LookPath("bun")
 	if err != nil {
 		return errors.New("ruddr web requires Bun 1.4 or newer; install Bun and run again")
+	}
+	if err := checkWebBunVersion(bunPath); err != nil {
+		return err
 	}
 	registerRunningRuddrRuns()
 	entryPath, err := findWebEntry()
@@ -48,6 +54,24 @@ func webCommand(args []string) error {
 		return fmt.Errorf("web server exited: %w", err)
 	}
 	return nil
+}
+
+func checkWebBunVersion(bunPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, bunPath, "--version").Output()
+	if err != nil {
+		return errors.New("ruddr web requires Bun 1.4 or newer; could not check Bun version")
+	}
+	parts := strings.Split(strings.TrimSpace(string(output)), ".")
+	if len(parts) >= 2 {
+		major, majorErr := strconv.Atoi(parts[0])
+		minor, minorErr := strconv.Atoi(parts[1])
+		if majorErr == nil && minorErr == nil && (major > 1 || major == 1 && minor >= 4) {
+			return nil
+		}
+	}
+	return errors.New("ruddr web requires Bun 1.4 or newer; upgrade Bun and run again")
 }
 
 func newWebProcess(bunPath, entryPath, ruddrPath string, args []string) *exec.Cmd {

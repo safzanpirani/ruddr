@@ -22,13 +22,37 @@ test.skipIf(process.env.RUDDR_WEB_BROWSER_TEST !== "1")("browser rejects stale U
     await writeFile(join(stateDir, "events.jsonl"), JSON.stringify({ method: "item/completed", params: { threadId: name, item: { id: name, type: "agentMessage", text: `${name} message <img src=x onerror=alert(1)>` } } }) + "\n", { mode: 0o600 });
     await writeFile(join(stateDir, "output.md"), `${name} output`, { mode: 0o600 });
     app.sessions.push({ version: 2, pid: process.pid, stateDir, stateFile: join(stateDir, "state.json"), status: "active", threadId: name, turnId: "original", cwd: stateDir, provider: "codex" });
+    await writeFile(join(stateDir, "state.json"), JSON.stringify(app.sessions.at(-1)), { mode: 0o600 });
   }
+  const previousRegistry = process.env.RUDDR_REGISTRY_DIR;
+  process.env.RUDDR_REGISTRY_DIR = join(directory, "empty-registry");
+  try { await app.refreshSessions(); } finally {
+    if (previousRegistry === undefined) delete process.env.RUDDR_REGISTRY_DIR;
+    else process.env.RUDDR_REGISTRY_DIR = previousRegistry;
+  }
+  app.sessions.sort((a, b) => a.threadId!.localeCompare(b.threadId!));
   app.refreshSessions = async () => {};
   await app.buildClient();
   const fixtureModule = join(directory, "fixture.ts");
   await writeFile(fixtureModule, `
     import { WorkspaceDiffView } from ${JSON.stringify(join(import.meta.dir, "client/diffs.ts"))};
     import { ChatView } from ${JSON.stringify(join(import.meta.dir, "client/chat.ts"))};
+    import { renderEdit } from ${JSON.stringify(join(import.meta.dir, "client/diffs.ts"))};
+    let fragmentCleanup;
+    export function showFragment() {
+      const host = document.createElement('section');
+      host.id = 'fragment-proof';
+      host.style.cssText = 'position:fixed;inset:90px 30px auto;padding:20px;background:var(--panel);border:1px solid var(--border);z-index:1000';
+      const title = document.createElement('h3');
+      title.textContent = 'Adapter edit fragment: example.ts';
+      host.append(title);
+      const body = document.createElement('div');
+      host.append(body);
+      document.body.append(host);
+      const cleanup = renderEdit(body, { path: 'example.ts', kind: 'update', fragment: true, oldText: 'const before = 1;', newText: 'const after = 2;' }, 'fragment-proof', { style: 'unified', wrap: true, themeType: 'dark' });
+      fragmentCleanup = () => { cleanup(); host.remove(); };
+    }
+    export function hideFragment() { fragmentCleanup?.(); }
     export async function verify() {
       const NativeObserver = globalThis.IntersectionObserver;
       const observers = [];
@@ -81,6 +105,14 @@ test.skipIf(process.env.RUDDR_WEB_BROWSER_TEST !== "1")("browser rejects stale U
         chatObserver.callback([{ isIntersecting: true, target: oldHost }]);
         results.staleObserverIgnored = oldHost.childElementCount === 0;
         results.chatObserversReleased = chatObserver.targets.size === 0;
+        const fragment = document.createElement('div');
+        document.body.append(fragment);
+        const cleanup = renderEdit(fragment, { path: 'fragment.ts', kind: 'update', fragment: true, oldText: 'const before = 1;', newText: 'const after = 2;' }, 'fragment', preferences);
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const shadow = fragment.querySelector('diffs-container').shadowRoot;
+        results.fragmentHasNoNumbers = shadow.querySelector('[data-disable-line-numbers]') !== null;
+        results.fragmentHasNoEOFMarkers = !shadow.textContent.includes('No newline at end of file');
+        cleanup(); fragment.remove();
         return results;
       } finally {
         view?.reset(); view?.element.remove();
@@ -184,6 +216,10 @@ test.skipIf(process.env.RUDDR_WEB_BROWSER_TEST !== "1")("browser rejects stale U
       await mkdir(outputDirectory, { recursive: true });
       await browser("set", "viewport", "1280", "900");
       await browser("screenshot", join(outputDirectory, "desktop.png"));
+      await evaluate("import('/fixture.js').then(module => module.showFragment())");
+      await browser("wait", "--fn", "Boolean(document.querySelector('#fragment-proof diffs-container')?.shadowRoot?.querySelector('[data-disable-line-numbers]'))");
+      await browser("screenshot", join(outputDirectory, "fragment.png"));
+      await evaluate("import('/fixture.js').then(module => module.hideFragment())");
       await browser("set", "viewport", "390", "844");
       await evaluate("document.querySelector('.session.selected').click()");
       await browser("screenshot", join(outputDirectory, "phone.png"));

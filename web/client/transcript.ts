@@ -16,6 +16,8 @@ export interface FileEdit {
   /** Adapter edits carry the old and new text instead of a patch. */
   oldText?: string;
   newText?: string;
+  /** Replacement snippets have no known file offset or EOF position. */
+  fragment?: boolean;
 }
 
 interface EntryBase {
@@ -535,6 +537,7 @@ export function fileEditsFromItem(item: RawItem): FileEdit[] {
     return edits.map((edit) => ({
       path,
       kind: "update",
+      fragment: true,
       oldText: stringField(edit, "old_string", "oldString", "old_str", "oldText") ?? "",
       newText: stringField(edit, "new_string", "newString", "new_str", "newText") ?? "",
     }));
@@ -543,7 +546,7 @@ export function fileEditsFromItem(item: RawItem): FileEdit[] {
   const oldText = stringField(input, "old_string", "oldString", "old_str", "oldText");
   const newText = stringField(input, "new_string", "newString", "new_str", "newText");
   if (oldText !== undefined || newText !== undefined)
-    return [{ path, kind: "update", oldText: oldText ?? "", newText: newText ?? "" }];
+    return [{ path, kind: "update", fragment: true, oldText: oldText ?? "", newText: newText ?? "" }];
   // TODO(review): Distinguish file creation from overwrite when a Write input omits the previous content.
   if (content !== undefined) return [{ path, kind: "add", oldText: "", newText: content }];
   return [{ path, kind: "update" }];
