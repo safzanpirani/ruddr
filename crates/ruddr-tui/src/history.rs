@@ -5,8 +5,8 @@
 //! shows the session's own edits instead of `git diff`.
 
 use crate::core::Session;
-use ruddr_history::{ChangeKind, Event, SessionInfo};
-use serde_json::{Value, json};
+use ruddr_history::SessionInfo;
+use serde_json::json;
 
 pub const PREFIX: &str = "history:";
 
@@ -35,118 +35,12 @@ pub fn run_state(info: &SessionInfo) -> Session {
     .expect("a history run state is valid")
 }
 
-/// Shell tools render as commands; the rest as named tool calls.
-fn is_shell(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "bash" | "shell" | "exec_command" | "execute" | "run_shell_command" | "terminal" | "commandexecution"
-    )
-}
-
-fn command_of(input: &Value) -> Option<String> {
-    match input.get("command").or_else(|| input.get("cmd"))? {
-        Value::String(command) => Some(command.clone()),
-        Value::Array(argv) => Some(argv.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
-        _ => None,
-    }
-}
-
-fn item(method: &str, item: Value) -> String {
-    json!({"method": method, "params": {"item": item}}).to_string()
-}
-
-fn tool_item(id: &str, name: &str, input: &Value, output: Option<&str>, failed: bool) -> Value {
-    let status = if failed { "failed" } else { "completed" };
-    match command_of(input).filter(|_| is_shell(name)) {
-        Some(command) => json!({
-            "type": "commandExecution", "id": id, "command": command, "status": status,
-            "aggregatedOutput": output, "exitCode": if failed { 1 } else { 0 },
-        }),
-        None => json!({
-            "type": "toolCall", "id": id, "toolName": name, "input": input, "status": status,
-            "aggregatedOutput": output,
-        }),
-    }
-}
-
-/// The session as app-server notifications, in order. A tool call starts
-/// where it was made and completes in place when its result arrives.
-pub fn chat_lines(events: &[Event]) -> Vec<String> {
-    let mut lines = Vec::new();
-    // Call ID -> (line ID, name, input) for calls still waiting on a result.
-    let mut open: Vec<(Option<String>, String, String, Value)> = Vec::new();
-    let mut previous_was_call = false;
-    for (index, event) in events.iter().enumerate() {
-        let id = format!("h{index}");
-        let was_call = previous_was_call;
-        previous_was_call = false;
-        match event {
-            Event::User { text } => lines.push(item(
-                "item/completed",
-                json!({"type": "userMessage", "id": id, "content": [{"type": "text", "text": text}]}),
-            )),
-            Event::Assistant { text } => lines.push(item("item/completed", json!({"type": "agentMessage", "id": id, "text": text}))),
-            Event::Thinking { text } => lines.push(item("item/completed", json!({"type": "reasoning", "id": id, "summary": [text]}))),
-            Event::ToolCall { name, input, call_id } => {
-                previous_was_call = true;
-                let mut started = tool_item(&id, name, input, None, false);
-                started["status"] = json!("inProgress");
-                lines.push(item("item/started", started));
-                open.push((call_id.clone(), id, name.clone(), input.clone()));
-            }
-            Event::ToolResult {
-                call_id, output, is_error, ..
-            } => {
-                let position = match call_id {
-                    Some(call) => open.iter().position(|o| o.0.as_deref() == Some(call)),
-                    None => (!open.is_empty()).then(|| open.len() - 1),
-                };
-                if let Some(position) = position {
-                    let (_, line_id, name, input) = open.remove(position);
-                    lines.push(item("item/completed", tool_item(&line_id, &name, &input, Some(output), *is_error)));
-                }
-            }
-            // An edit tool's change already shows as its call.
-            Event::FileChange { path, kind, .. } if !was_call => {
-                let verb = match kind {
-                    ChangeKind::Add => "add",
-                    ChangeKind::Update => "edit",
-                    ChangeKind::Delete => "delete",
-                };
-                lines.push(item(
-                    "item/completed",
-                    json!({"type": "fileChange", "id": id, "toolName": format!("{verb} {path}"), "status": "completed"}),
-                ));
-            }
-            Event::FileChange { .. } => {}
-        }
-    }
-    // Calls the transcript never answered ended with the session.
-    for (_, line_id, name, input) in open {
-        lines.push(item("item/completed", tool_item(&line_id, &name, &input, None, false)));
-    }
-    lines
-}
-
-/// The output tab: every assistant message, in order, as Markdown.
-pub fn output_lines(events: &[Event]) -> Vec<String> {
-    let mut lines = Vec::new();
-    for event in events {
-        if let Event::Assistant { text } = event {
-            if !lines.is_empty() {
-                lines.push(String::new());
-            }
-            lines.extend(text.lines().map(str::to_string));
-        }
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transcript::Transcript;
-    use ruddr_history::Provider;
+    use ruddr_history::app_server::chat_lines;
+    use ruddr_history::{ChangeKind, Event, Provider};
     use std::time::Instant;
 
     #[test]

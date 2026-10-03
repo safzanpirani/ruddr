@@ -61,6 +61,7 @@ pub struct App {
     /// Each session directory's real path and identity when first verified.
     verified: Mutex<HashMap<PathBuf, Verified>>,
     git: Git,
+    history: crate::history::Known,
 }
 
 type RouteResult = Result<Response, String>;
@@ -102,6 +103,7 @@ impl App {
             polling: Mutex::new(false),
             verified: Mutex::new(HashMap::new()),
             git: Git::default(),
+            history: crate::history::Known::default(),
         })
     }
 
@@ -300,6 +302,12 @@ impl App {
                 "/api/run/diff" => self.run_diff(param("dir").as_deref(), http::has_query_param(query, "force")).await,
                 "/api/models" => Ok(self.models().await),
                 "/api/deja" => self.deja(&param("q").unwrap_or_default()).await,
+                "/api/history" => self.history_list().await,
+                "/api/history/find" => {
+                    self.history_find(param("provider").unwrap_or_default(), param("id").unwrap_or_default())
+                        .await
+                }
+                "/api/history/session" => self.history_session(param("dir").unwrap_or_default()).await,
                 "/api/dirs" => Ok(self.directories(param("path").unwrap_or_default()).await),
                 _ => Ok(failure("Not found", StatusCode::NOT_FOUND)),
             };
@@ -535,6 +543,32 @@ impl App {
             &parse_deja_hits(&String::from_utf8_lossy(&output.stdout)),
             StatusCode::OK,
         ))
+    }
+
+    /// Every agent's newest sessions, read-only.
+    async fn history_list(self: &Arc<Self>) -> RouteResult {
+        let app = self.clone();
+        let sessions = blocking(move || Ok(app.history.list())).await?;
+        Ok(json_response(&Value::Array(sessions), StatusCode::OK))
+    }
+
+    /// The history session a deja hit names, at any age.
+    async fn history_find(self: &Arc<Self>, provider: String, id: String) -> RouteResult {
+        let app = self.clone();
+        let found = blocking(move || Ok(app.history.find(&provider, &id))).await?;
+        Ok(match found {
+            Some(session) => json_response(&session, StatusCode::OK),
+            None => failure("No transcript found for that session", StatusCode::NOT_FOUND),
+        })
+    }
+
+    /// One listed or found history session's chat, output, and diff.
+    async fn history_session(self: &Arc<Self>, state_dir: String) -> RouteResult {
+        let Some(info) = self.history.get(&state_dir) else {
+            return Ok(failure("Unknown session", StatusCode::NOT_FOUND));
+        };
+        let body = blocking(move || crate::history::load(&info)).await?;
+        Ok(json_response(&body, StatusCode::OK))
     }
 
     /// Directory completion for the new-session working directory field.

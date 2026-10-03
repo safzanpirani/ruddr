@@ -11,6 +11,8 @@ import {
   formatDuration,
   formatElapsed,
   formatTokens,
+  HISTORY_PREFIX,
+  isHistory,
   isLive,
   isTerminal,
   projectName,
@@ -90,6 +92,23 @@ interface DejaHit {
 
 type ToastKind = "info" | "success" | "warning" | "error";
 
+/** The session list shows every agent's history instead of Ruddr's runs. */
+interface HistoryMode {
+  sessions: Session[];
+  loading: boolean;
+  loadedAt: number;
+  /** The run selected when the history opened, selected again on close. */
+  runsSelected?: string;
+  /** A session opened from deja, kept even when older than the list. */
+  pinned?: Session;
+}
+
+interface HistoryData {
+  chat: string;
+  output: string;
+  diff: WorkspaceDiffData;
+}
+
 const storage = {
   get<T>(key: string, fallback: T): T {
     try {
@@ -121,6 +140,7 @@ const state = {
   continueModel: undefined as string | undefined,
   mobileView: "list" as "list" | "session",
   busy: false,
+  history: undefined as HistoryMode | undefined,
 };
 
 const diffPreferences: DiffPreferences = {
@@ -148,10 +168,11 @@ const filterInput = h("input", {
 const glide = h("div", { class: "glide", "aria-hidden": "true" });
 const sessionList = h("div", { class: "session-list", role: "listbox", "aria-label": "Sessions" }, glide);
 const sidebarCount = h("span", { class: "side-title" });
+const historyToggle = h("button", { class: "chip", type: "button", title: "Every agent's sessions, read-only (H)", onclick: () => toggleHistory() }, "history");
 const sidebar = h(
   "aside",
   { class: "sidebar" },
-  h("div", { class: "side-head" }, sidebarCount, filterInput),
+  h("div", { class: "side-head" }, h("div", { class: "side-row" }, sidebarCount, historyToggle), filterInput),
   sessionList,
 );
 
@@ -344,15 +365,20 @@ function applyTheme(name: string): void {
 // ---------------------------------------------------------------------------
 // Sessions
 
+/** The sessions the list shows: Ruddr's runs, or every agent's history. */
+function listed(): Session[] {
+  return state.history ? state.history.sessions : state.sessions;
+}
+
 function selectedSession(): Session | undefined {
-  return state.sessions.find((session) => session.stateDir === state.selected);
+  return listed().find((session) => session.stateDir === state.selected);
 }
 
 function visibleSessions(): Session[] {
   const needle = state.filter.trim().toLowerCase();
-  if (!needle) return state.sessions;
-  return state.sessions.filter((session) =>
-    [session.status, session.provider, session.cwd, projectName(session), session.threadId, session.turnId, session.model, session.effort]
+  if (!needle) return listed();
+  return listed().filter((session) =>
+    [session.status, session.provider, session.cwd, projectName(session), session.threadId, session.turnId, session.model, session.effort, session.title]
       .filter(Boolean)
       .some((value) => value!.toLowerCase().includes(needle)),
   );
@@ -387,6 +413,16 @@ function sessionRow(session: Session): HTMLElement {
   row.setAttribute("aria-selected", String(selected));
   row.title = shortPath(session.cwd, state.meta?.home ?? "") || session.stateDir;
   clear(row);
+  if (isHistory(session)) {
+    row.append(
+      h("span", { class: "s-line1" },
+        h("span", { class: "glyph completed" }, statusGlyph(session.status)),
+        h("span", { class: "s-name" }, session.title || projectName(session)),
+        h("span", { class: "s-age" }, formatAge(session.updatedAt))),
+      h("span", { class: "s-line2" }, `${session.provider ?? "codex"} · ${projectName(session)}`),
+    );
+    return row;
+  }
   const spinning = session.status === "active" || session.status === "starting";
   row.append(
     h("span", { class: "s-line1" },
@@ -421,13 +457,34 @@ function renderSessions(): void {
   const sessions = visibleSessions();
   const ordered = [...sessions.filter(isLive), ...sessions.filter((session) => !isLive(session))];
   const wanted: HTMLElement[] = [glide, ...ordered.map(sessionRow)];
+  const history = state.history;
+  const loading = Boolean(history && !history.loadedAt);
   if (!sessions.length)
-    wanted.push(h("div", { class: "empty-state small" }, state.filter ? "Nothing matches the filter." : "No sessions yet. Press n to start one."));
+    wanted.push(
+      h(
+        "div",
+        { class: "empty-state small" },
+        state.filter
+          ? "Nothing matches the filter."
+          : loading
+            ? "Reading every agent's sessions…"
+            : history
+              ? "No agent sessions found."
+              : "No sessions yet. Press n to start one.",
+      ),
+    );
   const current = [...sessionList.children];
   if (current.length !== wanted.length || current.some((element, index) => element !== wanted[index])) sessionList.replaceChildren(...wanted);
-  for (const key of sessionRows.keys()) if (!state.sessions.some((session) => session.stateDir === key)) sessionRows.delete(key);
+  for (const key of sessionRows.keys()) if (!listed().some((session) => session.stateDir === key)) sessionRows.delete(key);
   const live = state.sessions.filter(isLive).length;
-  sidebarCount.textContent = `sessions · ${live} live · ${state.sessions.length}`;
+  sidebarCount.textContent = history
+    ? loading
+      ? "history · loading…"
+      : `history · every agent · ${history.sessions.length}`
+    : `sessions · ${live} live · ${state.sessions.length}`;
+  historyToggle.textContent = history ? "runs" : "history";
+  historyToggle.title = history ? "Back to Ruddr sessions (H)" : "Every agent's sessions, read-only (H)";
+  historyToggle.classList.toggle("on", Boolean(history));
   liveCount.classList.toggle("hidden", live === 0);
   liveCount.textContent = `● ${live} live`;
   placeGlide();
@@ -442,7 +499,7 @@ function selectSession(stateDir: string | undefined, fromUser = false): void {
   const changed = stateDir !== state.selected;
   const apply = () => {
     state.selected = stateDir;
-    storage.set("selected", stateDir);
+    if (!stateDir?.startsWith(HISTORY_PREFIX)) storage.set("selected", stateDir);
     state.interruptArmedUntil = 0;
     state.continueModel = undefined;
     if (changed) {
@@ -466,8 +523,20 @@ function selectSession(stateDir: string | undefined, fromUser = false): void {
   else apply();
 }
 
+let historyData: (HistoryData & { stateDir: string }) | undefined;
+
 function connectRun(): void {
   const session = selectedSession();
+  if (session && isHistory(session)) {
+    runStream?.close();
+    runStream = undefined;
+    if (streamedSession === session.stateDir) return;
+    streamedSession = session.stateDir;
+    streamedThread = session.threadId;
+    chat.reset(session.threadId, "", false);
+    void loadHistorySession(session);
+    return;
+  }
   if (!session) {
     runStream?.close();
     runStream = undefined;
@@ -477,6 +546,7 @@ function connectRun(): void {
     return;
   }
   if (streamedSession === session.stateDir && streamedThread === session.threadId && runStream && runStream.readyState !== EventSource.CLOSED) return;
+  historyData = undefined;
   runStream?.close();
   streamedSession = session.stateDir;
   streamedThread = session.threadId;
@@ -500,6 +570,24 @@ function connectRun(): void {
     if (stream !== runStream) return;
     toast(JSON.parse((event as MessageEvent).data).error, "error");
   });
+}
+
+/** Reads a history session once: its chat, assistant messages, and edits. */
+async function loadHistorySession(session: Session): Promise<void> {
+  historyData = undefined;
+  try {
+    const data = await get<HistoryData>(`/api/history/session?dir=${encodeURIComponent(session.stateDir)}`);
+    if (session.stateDir !== state.selected) return;
+    historyData = { ...data, stateDir: session.stateDir };
+    chat.reset(session.threadId, data.chat, false);
+    outputText = data.output;
+    renderOutput(true);
+    diffView.update(data.diff);
+    updateDiffBadge(data.diff);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return showLogin();
+    if (session.stateDir === state.selected) toast(error instanceof Error ? error.message : String(error), "error");
+  }
 }
 
 function markTab(tab: Tab): void {
@@ -542,6 +630,18 @@ function renderHeader(): void {
   }
   headerProject.textContent = projectName(session);
   headerBranch.textContent = branchLabel ? `:${branchLabel}` : "";
+  if (isHistory(session)) {
+    headerModel.textContent = session.provider ?? "codex";
+    headerWork.dataset.state = "history";
+    headerWork.className = "hdr-work completed";
+    headerWork.replaceChildren(h("span", null, "◇ history, read-only"), " ", h("span", { class: "dim" }, `updated ${formatAge(session.updatedAt)}`));
+    stopButton.classList.add("hidden");
+    renderDetails();
+    renderMeter();
+    renderComposer();
+    renderFooter();
+    return;
+  }
   headerModel.textContent = `${session.provider ?? "codex"} ${session.model || "default"}${session.effort ? ` · ${session.effort}` : ""}`;
   const working = session.status === "active";
   const workSignature = working ? "working" : session.status;
@@ -617,6 +717,22 @@ function renderDetails(): void {
           copy ? h("button", { class: "icon-btn tiny", title: `Copy ${label}`, onclick: () => void copyText(value).then(() => toast(`${label} copied`, "success")) }, "⧉") : null,
         )
       : null;
+  if (isHistory(session)) {
+    clear(detailsPanel);
+    append(detailsPanel, [
+      h(
+        "div",
+        { class: "details-grid" },
+        row("status", "◇ history, read-only"),
+        row("provider", session.provider ?? "codex"),
+        row("session", session.threadId, true),
+        row("cwd", session.cwd, true),
+        row("source", session.stateDir.slice(HISTORY_PREFIX.length), true),
+        row("updated", session.updatedAt ? new Date(session.updatedAt).toLocaleString() : undefined),
+      ),
+    ]);
+    return;
+  }
   const usage = session.tokenUsage;
   clear(detailsPanel);
   append(detailsPanel, [
@@ -731,7 +847,15 @@ function refreshTabData(): void {
   clearTimeout(activityTimer);
   clearTimeout(outputTimer);
   clearTimeout(diffTimer);
-  if (!selectedSession()) return;
+  const session = selectedSession();
+  if (!session) return;
+  if (isHistory(session)) {
+    branchLabel = "";
+    if (state.tab === "activity")
+      activityList.replaceChildren(h("div", { class: "empty-state" }, "Agent history has no Ruddr activity log; tool calls are in the chat."));
+    if (state.tab === "output" && historyData?.stateDir === session.stateDir) renderOutput(true);
+    return;
+  }
   if (state.tab === "activity") void refreshActivity();
   if (state.tab === "output") void refreshOutput();
   if (state.tab === "diff") void refreshDiff(false);
@@ -960,14 +1084,16 @@ function renderComposer(): void {
     composerRoute.textContent = labels[route][0];
     composerInput.placeholder = labels[route][1];
   } else {
-    composerRoute.textContent = session ? session.status : "";
+    composerRoute.textContent = session ? (isHistory(session) ? "history" : session.status) : "";
     composerInput.placeholder = !session
       ? "Select a session"
       : session.status === "starting"
         ? "Session is starting…"
         : session.status === "stale"
           ? "This controller is gone; its state is stale"
-          : "This session cannot take a prompt";
+          : isHistory(session)
+            ? "Sessions from agent history are read-only"
+            : "This session cannot take a prompt";
   }
   const showModel = route === "continue";
   composerModel.element.classList.toggle("hidden", !showModel);
@@ -1148,6 +1274,13 @@ function paletteItems(): PaletteItem[] {
     { id: "continue", label: "Continue thread in a new run", key: "R", hint: "finished sessions only", disabled: route === "continue" ? undefined : "select a finished session with a thread", run: () => focusComposer() },
     { id: "model", label: "Choose model", key: "m", hint: "continuation model, or a new session's model", run: () => chooseModel() },
     { id: "find", label: "Find a past session", key: "f", hint: "deja search", disabled: state.meta?.dejaAvailable ? undefined : "deja is not on PATH", run: () => openDeja() },
+    {
+      id: "history",
+      label: state.history ? "Back to Ruddr sessions" : "Browse every agent's sessions",
+      key: "H",
+      hint: "Codex, Claude, Pi, OpenCode, and Droid history, read-only, with each session's diff",
+      run: () => toggleHistory(),
+    },
     { id: "stop", label: session?.status === "idle" ? "End idle session" : "Interrupt turn", key: "x x", disabled: stoppable ? undefined : "no active or idle session", run: () => void requestStop() },
     { id: "tab-chat", label: "Show chat", key: "1", run: () => setTab("chat") },
     { id: "tab-activity", label: "Show activity", key: "2", run: () => setTab("activity") },
@@ -1161,7 +1294,16 @@ function paletteItems(): PaletteItem[] {
     { id: "details", label: "Toggle session details", key: "i", run: () => toggleDetails() },
     { id: "copy", label: "Copy the last agent message", key: "c", run: () => copyLastMessage() },
     { id: "copy-thread", label: "Copy thread ID", disabled: session?.threadId ? undefined : "no thread", run: () => void copyText(session!.threadId!).then(() => toast("Thread ID copied", "success")) },
-    { id: "delete", label: "Delete session files", disabled: session && (isTerminal(session.status) || session.status === "stale") ? undefined : "finished or stale sessions only", run: () => void deleteSession() },
+    {
+      id: "delete",
+      label: "Delete session files",
+      disabled: isHistory(session)
+        ? "sessions from agent history are read-only"
+        : session && (isTerminal(session.status) || session.status === "stale")
+          ? undefined
+          : "finished or stale sessions only",
+      run: () => void deleteSession(),
+    },
     {
       id: "notify",
       label: "Notify me when turns finish",
@@ -1180,12 +1322,14 @@ function paletteItems(): PaletteItem[] {
     },
     { id: "help", label: "Keyboard shortcuts", key: "?", run: () => openHelp() },
   ];
-  for (const candidate of state.sessions.slice(0, 40))
+  for (const candidate of listed().slice(0, 40))
     items.push({
       id: `go:${candidate.stateDir}`,
-      group: "Sessions",
-      label: `${statusGlyph(candidate.status)} ${projectName(candidate)}`,
-      hint: `${candidate.provider ?? "codex"} · ${candidate.model || "default"} · ${formatAge(candidate.updatedAt)}`,
+      group: state.history ? "History" : "Sessions",
+      label: `${statusGlyph(candidate.status)} ${isHistory(candidate) ? candidate.title || projectName(candidate) : projectName(candidate)}`,
+      hint: isHistory(candidate)
+        ? `${candidate.provider ?? "codex"} · ${projectName(candidate)} · ${formatAge(candidate.updatedAt)}`
+        : `${candidate.provider ?? "codex"} · ${candidate.model || "default"} · ${formatAge(candidate.updatedAt)}`,
       run: () => selectSession(candidate.stateDir, true),
     });
   return items;
@@ -1407,7 +1551,7 @@ function openNewSession(prefill: { provider?: string; resumeThreadId?: string; r
 
 function openDeja(): void {
   if (!state.meta?.dejaAvailable) {
-    toast("deja is not on PATH; install it to resume past sessions", "warning");
+    toast("deja is not on PATH; install it to search past sessions", "warning");
     return;
   }
   const input = h("input", { class: "dialog-input", placeholder: "Search past Claude and Codex sessions…", autocomplete: "off" });
@@ -1418,10 +1562,15 @@ function openDeja(): void {
     list.replaceChildren(
       ...hits.map((hit, position) =>
         h(
-          "button",
-          { class: `palette-item deja${position === index ? " active" : ""}`, type: "button", onclick: () => pick(hit) },
-          h("span", { class: "p-label" }, `${hit.provider} · ${hit.project}`),
-          h("span", { class: "p-hint" }, `${hit.date} · ${hit.openingPrompt.slice(0, 120)}`),
+          "div",
+          { class: "deja-row" },
+          h(
+            "button",
+            { class: `palette-item deja${position === index ? " active" : ""}`, type: "button", title: "Open the session (Enter)", onclick: () => pick(hit) },
+            h("span", { class: "p-label" }, `${hit.provider} · ${hit.project}`),
+            h("span", { class: "p-hint" }, `${hit.date} · ${hit.openingPrompt.slice(0, 120)}`),
+          ),
+          h("button", { class: "chip", type: "button", title: "Resume in a new run (Ctrl+R)", onclick: () => resume(hit) }, "resume"),
         ),
       ),
     );
@@ -1429,10 +1578,20 @@ function openDeja(): void {
   const pick = (hit: DejaHit | undefined) => {
     if (!hit) return;
     close();
+    void openHistoryHit(hit);
+  };
+  const resume = (hit: DejaHit | undefined) => {
+    if (!hit) return;
+    close();
     openNewSession({ provider: hit.provider, resumeThreadId: hit.sessionId, resumeLabel: `${hit.provider} ${hit.sessionId.slice(0, 12)} · ${hit.project} · ${hit.openingPrompt.slice(0, 80)}` });
   };
   input.addEventListener("keydown", async (event) => {
     if (event.key === "Escape") return close();
+    if (event.ctrlKey && event.key.toLowerCase() === "r") {
+      event.preventDefault();
+      if (hits.length && input.dataset.searched === input.value) resume(hits[index]);
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       index = Math.max(0, Math.min(hits.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
@@ -1447,13 +1606,16 @@ function openDeja(): void {
       hits = await get<DejaHit[]>(`/api/deja?q=${encodeURIComponent(input.value)}`);
       input.dataset.searched = input.value;
       index = 0;
-      if (!hits.length) list.replaceChildren(h("div", { class: "empty-state small" }, `No resumable sessions matched “${input.value}”.`));
+      if (!hits.length) list.replaceChildren(h("div", { class: "empty-state small" }, `No past sessions matched “${input.value}”.`));
       else render();
     } catch (error) {
       list.replaceChildren(h("div", { class: "empty-state small" }, error instanceof Error ? error.message : String(error)));
     }
   });
-  const close = openDialog(h("div", { class: "palette" }, h("div", { class: "dialog-title" }, "deja find"), input, list), { className: "top" });
+  const close = openDialog(
+    h("div", { class: "palette" }, h("div", { class: "dialog-title" }, "deja find", h("span", { class: "dim small" }, " · Enter opens · Ctrl+R resumes")), input, list),
+    { className: "top" },
+  );
   input.focus();
 }
 
@@ -1560,6 +1722,7 @@ function openHelp(): void {
     ["/", "Search this pane, then Enter and Shift+Enter"],
     ["F", "Filter sessions"],
     ["f", "Find a past session with deja"],
+    ["H", "Every agent's sessions, read-only"],
     ["t", "Theme"],
     ["r", "Refresh sessions"],
     ["c", "Copy the last agent message"],
@@ -1673,7 +1836,7 @@ function focusComposer(): void {
     applyMobileView();
   }
   if (!composerInput.disabled) composerInput.focus();
-  else toast("This session cannot take a prompt", "warning");
+  else toast(isHistory(selectedSession()) ? "Sessions from agent history are read-only" : "This session cannot take a prompt", "warning");
 }
 
 /** `m`: the continuation model for a finished session, otherwise a new session's model. */
@@ -1766,6 +1929,9 @@ document.addEventListener("keydown", (event) => {
       case "F":
         focusFilter();
         return true;
+      case "H":
+        toggleHistory();
+        return true;
       case "x":
         void requestStop();
         return true;
@@ -1825,6 +1991,106 @@ filterInput.addEventListener("keydown", (event) => {
 });
 
 // ---------------------------------------------------------------------------
+// Every agent's history
+
+/** How often an open history list re-reads the stores. */
+const HISTORY_REFRESH_MS = 60_000;
+
+function withPinned(sessions: Session[], pinned: Session | undefined): Session[] {
+  return pinned && !sessions.some((session) => session.stateDir === pinned.stateDir) ? [...sessions, pinned] : sessions;
+}
+
+function clearFilter(): void {
+  filterInput.value = "";
+  state.filter = "";
+}
+
+/** Switches the list to history, keeping the run selection for later. */
+function startHistory(): HistoryMode {
+  const history: HistoryMode = { sessions: [], loading: false, loadedAt: 0, runsSelected: state.selected };
+  state.history = history;
+  clearFilter();
+  void loadHistory();
+  return history;
+}
+
+function leaveHistory(select?: string): void {
+  const history = state.history;
+  if (!history) return;
+  state.history = undefined;
+  clearFilter();
+  const wanted = select ?? history.runsSelected;
+  const fallback = state.sessions.find((session) => session.stateDir === wanted) ?? state.sessions.find(isLive) ?? state.sessions[0];
+  selectSession(fallback?.stateDir);
+}
+
+function toggleHistory(): void {
+  if (state.history) {
+    leaveHistory();
+    toast("Showing Ruddr sessions");
+    return;
+  }
+  startHistory();
+  toast("Loading sessions from every agent…");
+  selectSession(undefined);
+}
+
+async function loadHistory(): Promise<void> {
+  const history = state.history;
+  if (!history || history.loading) return;
+  history.loading = true;
+  renderSessions();
+  const first = !history.loadedAt;
+  try {
+    const sessions = await get<Session[]>("/api/history");
+    if (state.history !== history) return;
+    history.sessions = withPinned(sessions, history.pinned);
+    history.loadedAt = Date.now();
+    if (first) {
+      const counts = new Map<string, number>();
+      for (const session of sessions) counts.set(session.provider ?? "codex", (counts.get(session.provider ?? "codex") ?? 0) + 1);
+      toast(counts.size ? [...counts].map(([provider, count]) => `${count} ${provider}`).join(" · ") : "No agent sessions found");
+    }
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return showLogin();
+    if (state.history === history) {
+      history.loadedAt = Date.now();
+      toast(error instanceof Error ? error.message : String(error), "error");
+    }
+  } finally {
+    history.loading = false;
+  }
+  if (state.history !== history) return;
+  if (!selectedSession()) selectSession(history.sessions[0]?.stateDir);
+  else {
+    renderSessions();
+    renderHeader();
+    // A deja hit opened during the first load sits at the end of the list.
+    if (first && state.selected) sessionRows.get(state.selected)?.scrollIntoView({ block: "nearest" });
+  }
+}
+
+/** A deja hit opens read-only in the history list, at any age. */
+async function openHistoryHit(hit: DejaHit): Promise<void> {
+  let session: Session;
+  try {
+    session = await get<Session>(`/api/history/find?provider=${encodeURIComponent(hit.provider)}&id=${encodeURIComponent(hit.sessionId)}`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return showLogin();
+    toast(error instanceof Error ? error.message : String(error), "error");
+    return;
+  }
+  const history = state.history ?? startHistory();
+  history.pinned = session;
+  history.sessions = withPinned(history.sessions, session);
+  clearFilter();
+  // The selection applies inside a view transition; scroll the row in first.
+  renderSessions();
+  sessionRows.get(session.stateDir)?.scrollIntoView({ block: "nearest" });
+  selectSession(session.stateDir, true);
+}
+
+// ---------------------------------------------------------------------------
 // Connection and boot
 
 let sessionStream: EventSource | undefined;
@@ -1850,6 +2116,7 @@ function notifyFinishedTurns(before: Session[], after: Session[]): void {
     });
     note.onclick = () => {
       window.focus();
+      if (state.history) leaveHistory(session.stateDir);
       selectSession(session.stateDir, true);
       note.close();
     };
@@ -1871,6 +2138,13 @@ function renderTitle(): void {
 }
 
 function applySessions(sessions: Session[]): void {
+  if (state.history) {
+    notifyFinishedTurns(state.sessions, sessions);
+    state.sessions = sessions;
+    renderSessions();
+    renderTitle();
+    return;
+  }
   const previous = selectedSession();
   notifyFinishedTurns(state.sessions, sessions);
   state.sessions = sessions;
@@ -1954,6 +2228,7 @@ setInterval(() => {
   const session = selectedSession();
   if (session && isLive(session)) renderHeader();
   if (tickCount % 10 === 0) renderSessions();
+  if (state.history?.loadedAt && Date.now() - state.history.loadedAt >= HISTORY_REFRESH_MS) void loadHistory();
 }, 1000);
 
 window.addEventListener("resize", () => {

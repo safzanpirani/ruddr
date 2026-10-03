@@ -9,6 +9,7 @@ pub mod args;
 pub mod assets;
 pub mod files;
 pub mod git;
+pub mod history;
 pub mod http;
 pub mod launch;
 pub mod sse;
@@ -130,7 +131,8 @@ Usage:
 Serves the TUI's sessions dashboard to a browser: live chat with streaming
 tool calls, inline diffs for available edit patches, activity, output, and the working
 tree diff with a file tree. It can steer, prompt, continue, interrupt, and
-start sessions, and it shares the TUI's theme.
+start sessions, and it shares the TUI's theme. Press H to browse every
+agent's local sessions (Codex, Claude, Pi, OpenCode, Droid) read-only.
 
 Every API call needs the access token in ~/.config/ruddr/web-token, created
 on first use. Open the printed link once; it stores the token in a cookie.

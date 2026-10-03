@@ -133,6 +133,28 @@ pub fn list_sessions(stores: &Stores, limit: usize) -> Vec<SessionInfo> {
     sessions
 }
 
+/// The JSONL session a provider's ID names, at any age. Transcript file
+/// names end with the session ID, so only matching files are read.
+pub fn find_session(stores: &Stores, provider: Provider, id: &str) -> Option<SessionInfo> {
+    if id.is_empty() {
+        return None;
+    }
+    stores
+        .transcript_files()
+        .into_iter()
+        .filter(|(p, path, _)| *p == provider && path.file_stem().is_some_and(|s| s.to_string_lossy().ends_with(id)))
+        .find_map(|(provider, path, mtime)| {
+            let mut info = match provider {
+                Provider::Claude | Provider::Droid => claude::info(provider, &path),
+                Provider::Codex => codex::info(&path),
+                Provider::Pi => pi::info(&path),
+                Provider::OpenCode => None,
+            }?;
+            info.updated_ms = mtime;
+            (info.id == id).then_some(info)
+        })
+}
+
 /// Reads a whole session.
 pub fn load(info: &SessionInfo) -> Result<Transcript, String> {
     let events = match info.provider {
@@ -336,5 +358,29 @@ mod tests {
         );
         assert_eq!(title_from("<task>fix it</task>"), "fix it");
         assert_eq!(title_from("a < b and c > d"), "a < b and c > d");
+    }
+
+    #[test]
+    fn sessions_are_found_by_id_at_any_age() {
+        let home = std::env::temp_dir().join(format!("ruddr-history-find-{}", ruddr_core::fsutil::random_hex(4)));
+        let claude = home.join(".claude/projects/-w");
+        let codex = home.join(".codex/sessions/2020/01/02");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&codex).unwrap();
+        let id = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+        std::fs::write(claude.join("c1.jsonl"), "{\"cwd\":\"/w\"}\n").unwrap();
+        std::fs::write(
+            codex.join(format!("rollout-2020-01-02T03-04-05-{id}.jsonl")),
+            json!({"type": "session_meta", "payload": {"id": id, "cwd": "/w"}}).to_string() + "\n",
+        )
+        .unwrap();
+        let stores = Stores::from_env(&|_: &str| None, &home);
+        let found = find_session(&stores, Provider::Codex, id).unwrap();
+        assert_eq!((found.provider, found.id.as_str(), found.cwd.as_str()), (Provider::Codex, id, "/w"));
+        assert!(found.updated_ms > 0);
+        assert_eq!(find_session(&stores, Provider::Claude, "c1").unwrap().id, "c1");
+        assert!(find_session(&stores, Provider::Claude, id).is_none(), "the provider must match");
+        assert!(find_session(&stores, Provider::Codex, "").is_none());
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

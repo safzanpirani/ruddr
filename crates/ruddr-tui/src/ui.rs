@@ -16,7 +16,8 @@ use ruddr_core::state::Status;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
-const LOGO: [&str; 3] = ["┏━┓╻ ╻╺┳┓╺┳┓┏━┓", "┣┳┛┃ ┃ ┃┃ ┃┃┣┳┛", "╹┗╸┗━┛╺┻┛╺┻┛╹┗╸"];
+/// The splash wordmark, letter-spaced.
+const WORDMARK: &str = "r   u   d   d   r";
 /// Smooth transitions (easing, sliding) run at this frame interval.
 const TRANSITION: Duration = Duration::from_millis(16);
 
@@ -240,47 +241,51 @@ fn draw_splash(frame: &mut Frame, app: &mut App, area: Rect) {
     app.animate(TRANSITION);
     let p = *app.palette();
     let t = progress(app.started, 900);
-    let width = LOGO[0].chars().count() as u16;
-    let x = area.x + area.width.saturating_sub(width) / 2;
-    let y = area.y + area.height.saturating_sub(6) / 2;
-    for (row, text) in LOGO.iter().enumerate() {
-        let chars: Vec<char> = text.chars().collect();
-        let spans: Vec<Span> = chars
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                // Each glyph rises in along a diagonal wave.
-                let local = ((t * 1.6) - (i as f32 / chars.len() as f32) * 0.8 - row as f32 * 0.08).clamp(0.0, 1.0);
-                let colour = p
-                    .background
-                    .mix(p.accent.mix(p.success, i as f32 / chars.len() as f32), ease_out(local));
-                Span::styled(
-                    if local > 0.05 { c.to_string() } else { " ".into() },
-                    Style::new().fg(colour.c()).bold(),
-                )
-            })
-            .collect();
+    // A mark, the wordmark, a rule, and the tagline, fading in top to bottom.
+    let y = area.y + area.height.saturating_sub(5) / 2;
+    let centered = |frame: &mut Frame, row: u16, line: Line, width: usize| {
+        let width = (width as u16).min(area.width);
         frame.render_widget(
-            Paragraph::new(Line::from(spans)),
+            Paragraph::new(line),
             Rect {
-                x,
-                y: y + row as u16,
-                width: width.min(area.width),
+                x: area.x + area.width.saturating_sub(width) / 2,
+                y: y + row,
+                width,
                 height: 1,
             },
         );
-    }
+    };
+    let mark = ease_out(t / 0.35);
+    centered(
+        frame,
+        0,
+        Line::styled("◆", Style::new().fg(p.background.mix(p.accent, mark).c())),
+        1,
+    );
+    let letters: Vec<char> = WORDMARK.chars().collect();
+    let spans: Vec<Span> = letters
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let at = i as f32 / letters.len() as f32;
+            let local = ease_out((t - 0.1 - at * 0.35) / 0.4);
+            let colour = p.background.mix(p.text.mix(p.accent, at * 0.6), local);
+            Span::styled(c.to_string(), Style::new().fg(colour.c()))
+        })
+        .collect();
+    centered(frame, 2, Line::from(spans), letters.len());
+    // The rule draws outward from the middle.
+    let full = letters.len() + 6;
+    let drawn = ((full as f32) * ease_out((t - 0.3) / 0.45)).round() as usize;
+    let drawn = drawn - drawn % 2 + full % 2;
+    centered(frame, 3, Line::styled("─".repeat(drawn), Style::new().fg(p.border.c())), drawn);
     let tag = "steer your agents";
-    let fade = ease_out((t - 0.45) / 0.55);
-    let tag_x = area.x + area.width.saturating_sub(tag.len() as u16) / 2;
-    frame.render_widget(
-        Paragraph::new(Span::styled(tag, Style::new().fg(p.background.mix(p.dim, fade).c()).italic())),
-        Rect {
-            x: tag_x,
-            y: y + 4,
-            width: (tag.len() as u16).min(area.width),
-            height: 1,
-        },
+    let fade = ease_out((t - 0.5) / 0.5);
+    centered(
+        frame,
+        4,
+        Line::styled(tag, Style::new().fg(p.background.mix(p.dim, fade).c()).italic()),
+        tag.len(),
     );
 }
 
@@ -435,12 +440,18 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let visible: Vec<Session> = app.visible().into_iter().cloned().collect();
     let live = visible.iter().filter(|s| is_live(s.status)).count();
     let history = app.history.as_ref().map(|h| h.loading && h.loaded_at.is_none());
-    let header = match (history, app.filter.is_empty()) {
+    let edits_only = app.history.as_ref().is_some_and(|h| h.edits_only);
+    let scanning = app.history.as_ref().is_some_and(|h| h.scanning);
+    let mut header = match (history, app.filter.is_empty()) {
         (_, false) => format!("{} · /{}", if history.is_some() { "history" } else { "sessions" }, app.filter),
         (Some(true), true) => "history · loading…".to_string(),
+        (Some(false), true) if edits_only => format!("history · with edits · {}", visible.len()),
         (Some(false), true) => format!("history · every agent · {}", visible.len()),
         (None, true) => format!("sessions · {live} live · {}", visible.len()),
     };
+    if edits_only && scanning {
+        header.push_str(" · scanning…");
+    }
     let block = panel(&p, title(&p, header, focused), focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -448,6 +459,10 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         let scratch = std::env::current_dir().unwrap_or_default().join(".scratch");
         let text = if history == Some(true) {
             "Reading Codex, Claude, Pi,\nOpenCode, and Droid sessions…".to_string()
+        } else if edits_only && scanning {
+            "Looking for sessions\nthat edited files…".to_string()
+        } else if edits_only {
+            "No session edited files.\n\nPress e to show them all.".to_string()
         } else if history.is_some() && app.filter.is_empty() {
             "No agent sessions found.\n\nPress H to go back to\nRuddr sessions.".to_string()
         } else if app.filter.is_empty() {
@@ -537,7 +552,25 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         {
             meta.push_str(&format!(" · {}", format_token_count(usage.total_tokens)));
         }
-        let line2 = Line::from(Span::styled(meta, Style::new().fg(p.dim.c())));
+        // A history session's edits sit at the right, like the age above.
+        let stat = app
+            .history
+            .as_ref()
+            .and_then(|h| h.edit_stat(&session.state_dir))
+            .filter(|(added, removed)| added + removed > 0);
+        let stat_width = stat.map_or(0, |(a, r)| format!("+{a} −{r}").width());
+        let room = (inner.width as usize).saturating_sub(stat_width + 2);
+        if stat.is_some() && meta.width() > room {
+            meta = meta.chars().take(room.saturating_sub(1)).collect::<String>() + "…";
+        }
+        let mut line2 = vec![Span::styled(meta.clone(), Style::new().fg(p.dim.c()))];
+        if let Some((added, removed)) = stat {
+            let gap = (inner.width as usize).saturating_sub(meta.width() + stat_width);
+            line2.push(Span::raw(" ".repeat(gap)));
+            line2.push(Span::styled(format!("+{added}"), Style::new().fg(p.success.c())));
+            line2.push(Span::styled(format!(" −{removed}"), Style::new().fg(p.danger.c())));
+        }
+        let line2 = Line::from(line2);
         frame.render_widget(Paragraph::new(vec![line1, line2]).style(Style::new().bg(bg.c())), rect);
     }
     // Draw the gliding highlight over the rows it covers.
@@ -1022,6 +1055,10 @@ fn help_segments(app: &App) -> Vec<(String, String)> {
     if app.deja_available {
         segments.push(("f", "find"));
     }
+    segments.push(("H", if app.history.is_some() { "runs" } else { "history" }));
+    if let Some(history) = &app.history {
+        segments.push(("e", if history.edits_only { "all" } else { "edits" }));
+    }
     if can_stop {
         segments.push(("x x", "stop"));
     }
@@ -1465,13 +1502,14 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
         .border_style(Style::new().fg(p.border.mix(edge, ease_out(progress(picker.opened, 220))).c()))
         .style(Style::new().bg(p.panel.c()).fg(p.text.c()))
         .title(Span::styled(format!(" {} ", picker.title), Style::new().fg(edge.c()).bold()));
-    let block = if picker.kind == PickerKind::Model {
-        block.title_bottom(Line::from(Span::styled(
-            " ←/→ effort · enter pick · esc ",
-            Style::new().fg(p.dim.c()),
-        )))
-    } else {
-        block
+    let footer = match picker.kind {
+        PickerKind::Model => Some(" ←/→ effort · enter pick · esc "),
+        PickerKind::Deja => Some(" enter open · ^r resume · esc "),
+        _ => None,
+    };
+    let block = match footer {
+        Some(footer) => block.title_bottom(Line::from(Span::styled(footer, Style::new().fg(p.dim.c())))),
+        None => block,
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1637,6 +1675,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
                 ("m", "choose model + effort"),
                 ("f", "find a past session (deja)"),
                 ("H", "browse every agent's sessions + diffs"),
+                ("e", "history: only sessions that edited files"),
                 ("x x", "interrupt turn / end idle session"),
                 ("D", "delete finished session"),
             ],

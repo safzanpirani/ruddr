@@ -134,6 +134,8 @@ kbd {
 .sidebar { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--hairline); background: var(--background); }
 .side-head { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 6px; }
 .side-title { color: var(--dim); font-weight: 700; }
+.side-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.side-row .chip { padding: 1px 8px; }
 .filter, .field, .dialog-input, .pane-search-input {
   width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--hairline);
   background: var(--background); outline: none; transition: border-color 0.15s, box-shadow 0.15s;
@@ -525,6 +527,8 @@ diffs-container, .edit-diff > *, .diff-file-body > * {
 .p-hint { flex: 1; min-width: 0; color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette-item.deja { flex-direction: column; align-items: flex-start; gap: 0; }
 .palette-item.deja .p-hint { white-space: normal; width: 100%; }
+.deja-row { display: flex; align-items: center; gap: 8px; }
+.deja-row .palette-item { flex: 1; min-width: 0; }
 .swatches { display: flex; gap: 3px; }
 .swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--hairline); }
 .new-session { display: flex; flex-direction: column; gap: 6px; }

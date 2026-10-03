@@ -221,10 +221,11 @@ GitHub release, and publishes the npm package.
 
 [dejavu](https://github.com/safzanpirani/dejavu) searches past Codex, Claude
 Code, Pi, OpenCode, and Factory Droid transcripts on the same machine. Ruddr
-uses it in two places: the TUI's `f` key runs `deja find` to look up an
-earlier session and continue it under Ruddr, and agents driving Ruddr use
+uses it in two places: the TUI's and the web dashboard's `f` key runs `deja
+find` to look up an earlier session, open it read-only, or continue it under
+Ruddr, and agents driving Ruddr use
 `dejavu` to recall what earlier runs decided or changed before they delegate
-new work. The TUI's `H` history browser reads the same stores with parsers
+new work. The `H` history browser in the TUI and the web dashboard reads the same stores with parsers
 that follow dejavu's. dejavu is a separate single binary; install it from its
 latest release and keep it current with `dejavu self-update`:
 
@@ -721,7 +722,9 @@ current directory, in `.scratch/ruddr-tui/<YYYYMMDD-HHMMSS>-<hex>`. New
 sessions stay pinned at the top of the list. `m` opens the same picker to
 override the model for continuations, and `←`/`→` change the effort. When the
 `deja` CLI from [dejavu](#companion-dejavu) is installed, `f` searches past
-agent transcripts and resumes a chosen session under Ruddr.
+agent transcripts. Enter on a hit opens that session read-only in the history
+list below, even when it is older than the 400 sessions the list loads, so its
+chat and diff can be read. `Ctrl+R` on a hit resumes it under Ruddr instead.
 
 `H` (or "Browse every agent's sessions" in the palette) switches the sessions
 list to every agent's local history, whether or not Ruddr started the session:
@@ -734,8 +737,10 @@ messages in Output, and every file edit it made in Diff, with the same file
 tree. Claude and Pi follow the active branch of their transcript trees. Codex
 and Claude diffs come from the patches they recorded; other providers' diffs
 are rebuilt from their edit-tool inputs, so their hunk line numbers count from
-the edited fragment. History sessions are read-only: prompts, stops, and
-deletes are disabled for them. Ruddr reads only transcripts, never the auth
+the edited fragment. Each row shows the lines a session added and removed once a
+background scan has read it, and `e` (or "Only sessions that edited files" in
+the palette) hides the sessions with an empty diff. History sessions are
+read-only: prompts, stops, and deletes are disabled for them. Ruddr reads only transcripts, never the auth
 files stored beside them. Press `H` again to return to Ruddr's runs.
 
 `/` filters by project, thread, status, model, provider, working directory,
@@ -837,7 +842,12 @@ ruddr web --port 8080 --root ~/work/.scratch --open
 ```
 
 It has the TUI's sessions list, Chat, Activity, Output, and Diff tabs, prompt
-routing, new sessions, `deja` resumes, themes, and keyboard shortcuts. The
+routing, new sessions, `deja` search, themes, and keyboard shortcuts. `H`, the
+"history" button above the sessions list, or "Browse every agent's sessions"
+in the palette switches the list to every agent's local history, as in the
+TUI: the newest 400 sessions, read-only, with each session's chat, output, and
+file edits. In the `f` dialog, Enter or a click opens a hit there, and
+`Ctrl+R` or its "resume" button continues it in a new run. The
 Chat tab streams agent messages, reasoning, and command output as they arrive.
 Command output keeps its ANSI colors. A finished run of three or more commands,
 searches, or tool calls folds into one row; click it to expand the run. A

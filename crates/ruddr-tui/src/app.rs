@@ -12,8 +12,9 @@ use crate::view::{self, Block};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ruddr_core::state::Status;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -102,6 +103,7 @@ pub enum Cmd {
     Details,
     Sessions,
     History,
+    EditsOnly,
     Theme,
     Refresh,
     Copy,
@@ -296,7 +298,58 @@ pub enum Msg {
     },
     /// The newest sessions from every agent's history.
     History(Vec<ruddr_history::SessionInfo>),
+    /// A past session found for a deja hit, to show in the history list.
+    Found(Result<ruddr_history::SessionInfo, String>),
+    /// Lines added and removed by history sessions, keyed by state directory
+    /// with the `updated_ms` they were read at; `done` ends a scan.
+    HistoryEdits {
+        stats: Vec<(String, i64, u32, u32)>,
+        done: bool,
+    },
+    /// A history session read on a background thread.
+    HistoryLoaded {
+        generation: u64,
+        state_dir: String,
+        loaded: Arc<LoadedHistory>,
+    },
 }
+
+/// A history session read once: its chat lines, its assistant messages, and
+/// its edits as a unified diff.
+#[derive(Debug)]
+pub struct LoadedHistory {
+    pub chat: Vec<String>,
+    pub output: Vec<String>,
+    pub diff: Result<String, String>,
+}
+
+/// The history sessions read most recently, newest first, so moving back to
+/// one shows it without another read.
+#[derive(Debug, Default)]
+pub struct HistoryCache(VecDeque<(String, Arc<LoadedHistory>)>);
+
+impl HistoryCache {
+    const CAPACITY: usize = 32;
+
+    pub fn get(&mut self, state_dir: &str) -> Option<Arc<LoadedHistory>> {
+        let index = self.0.iter().position(|(dir, _)| dir == state_dir)?;
+        let entry = self.0.remove(index)?;
+        let loaded = entry.1.clone();
+        self.0.push_front(entry);
+        Some(loaded)
+    }
+
+    pub fn insert(&mut self, state_dir: String, loaded: Arc<LoadedHistory>) {
+        self.0.retain(|(dir, _)| *dir != state_dir);
+        self.0.push_front((state_dir, loaded));
+        self.0.truncate(Self::CAPACITY);
+    }
+}
+
+/// How long the screen keeps the previous frame while a history session
+/// loads. Most loads finish well inside it, so switching sessions never
+/// draws an empty pane first.
+pub const LOAD_HOLD: Duration = Duration::from_millis(150);
 
 /// The session list shows every agent's history instead of Ruddr's runs.
 #[derive(Debug, Default)]
@@ -308,6 +361,35 @@ pub struct HistoryMode {
     pub loaded_at: Option<Instant>,
     /// The run selected when the history opened, selected again on close.
     pub runs_selected: Option<String>,
+    /// A session opened from a deja search, kept in the list even when it
+    /// is older than the newest sessions the list loads.
+    pub pinned: Option<ruddr_history::SessionInfo>,
+    /// State directory -> (`updated_ms` when read, lines added, lines
+    /// removed) of the session's file edits.
+    pub edits: HashMap<String, (i64, u32, u32)>,
+    pub scanning: bool,
+    /// The list shows only sessions whose edits are known and non-empty.
+    pub edits_only: bool,
+}
+
+impl HistoryMode {
+    /// Lines added and removed by a session, once its scan has read it.
+    pub fn edit_stat(&self, state_dir: &str) -> Option<(u32, u32)> {
+        self.edits.get(state_dir).map(|&(_, added, removed)| (added, removed))
+    }
+
+    fn has_edits(&self, state_dir: &str) -> bool {
+        self.edit_stat(state_dir).is_some_and(|(added, removed)| added + removed > 0)
+    }
+
+    fn keep_pinned(&mut self) {
+        let Some(info) = &self.pinned else { return };
+        let dir = format!("{}{}", crate::history::PREFIX, info.locator);
+        if !self.infos.contains_key(&dir) {
+            self.runs.push(crate::history::run_state(info));
+            self.infos.insert(dir, info.clone());
+        }
+    }
 }
 
 /// How often an open history list re-reads the stores.
@@ -472,6 +554,10 @@ pub struct App {
     pub sources: Sources,
     pub cache: RenderCache,
     pub tail_generation: u64,
+    pub history_cache: HistoryCache,
+    /// When the oldest history load still pending started; draws wait for
+    /// it up to `LOAD_HOLD`.
+    pub loading_since: Option<Instant>,
     pub branches: HashMap<String, String>,
 
     pub list_offset: usize,
@@ -591,6 +677,8 @@ impl App {
             sources: Sources::default(),
             cache: RenderCache::default(),
             tail_generation: 0,
+            history_cache: HistoryCache::default(),
+            loading_since: None,
             branches: HashMap::new(),
             list_offset: 0,
             sel_anim: 0.0,
@@ -657,6 +745,9 @@ impl App {
 
     pub fn visible(&self) -> Vec<&Session> {
         let mut sessions = filter_sessions(&self.sessions, &self.filter);
+        if let Some(history) = self.history.as_ref().filter(|h| h.edits_only) {
+            sessions.retain(|s| history.has_edits(&s.state_dir));
+        }
         prioritize_explicit(&mut sessions, &self.args.state_dirs);
         sessions
     }
@@ -762,6 +853,8 @@ impl App {
             .into_iter()
             .map(|info| (format!("{}{}", crate::history::PREFIX, info.locator), info))
             .collect();
+        history.keep_pinned();
+        self.scan_edits();
         if first {
             self.toasts.retain(|t| !t.text.starts_with("Loading sessions"));
             let text = if counts.is_empty() {
@@ -771,6 +864,81 @@ impl App {
             };
             self.toast(text, Kind::Info);
         }
+        self.refresh();
+    }
+
+    /// Reads every listed session whose edits are unknown or out of date on
+    /// a background thread, sending their line counts in batches.
+    fn scan_edits(&mut self) {
+        let Some(history) = &mut self.history else { return };
+        if history.scanning {
+            return;
+        }
+        let mut stale: Vec<(String, ruddr_history::SessionInfo)> = history
+            .infos
+            .iter()
+            .filter(|(dir, info)| history.edits.get(*dir).is_none_or(|e| e.0 != info.updated_ms))
+            .map(|(dir, info)| (dir.clone(), info.clone()))
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        // Newest first, so the top of the list fills in first.
+        stale.sort_by_key(|(_, info)| std::cmp::Reverse(info.updated_ms));
+        history.scanning = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let mut stats = Vec::new();
+            for (index, (dir, info)) in stale.iter().enumerate() {
+                let (added, removed) = match ruddr_history::load(info) {
+                    Ok(transcript) => parse_git_diff(&ruddr_history::unified_diff(&transcript))
+                        .1
+                        .iter()
+                        .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed)),
+                    Err(_) => (0, 0),
+                };
+                stats.push((dir.clone(), info.updated_ms, added, removed));
+                let done = index + 1 == stale.len();
+                if done || stats.len() == 25 {
+                    let batch = Msg::HistoryEdits {
+                        stats: std::mem::take(&mut stats),
+                        done,
+                    };
+                    if tx.send(batch).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    fn on_history_edits(&mut self, stats: Vec<(String, i64, u32, u32)>, done: bool) {
+        let Some(history) = &mut self.history else { return };
+        for (dir, updated_ms, added, removed) in stats {
+            history.edits.insert(dir, (updated_ms, added, removed));
+        }
+        if done {
+            history.scanning = false;
+        }
+        if history.edits_only {
+            // The filtered list grew; keep the selection on a visible row.
+            self.refresh();
+        }
+    }
+
+    /// Limits the history list to sessions that edited files, or shows all.
+    fn toggle_edits_only(&mut self) {
+        let Some(history) = &mut self.history else {
+            return self.toast("The edits filter works in the history list; press H first", Kind::Warning);
+        };
+        history.edits_only = !history.edits_only;
+        let text = if history.edits_only {
+            "Showing only sessions that edited files"
+        } else {
+            "Showing every session"
+        };
+        self.toast(text, Kind::Info);
+        self.list_offset = 0;
         self.refresh();
     }
 
@@ -792,6 +960,35 @@ impl App {
         }
         self.filter.clear();
         self.list_offset = 0;
+        self.reset_artifact();
+        self.refresh();
+    }
+
+    /// Finds a deja hit's session on a background thread; `Msg::Found`
+    /// selects it in the history list so its chat and diff can be read.
+    fn show_deja_hit(&mut self, hit: DejaHit) {
+        let Some(provider) = ruddr_history::Provider::ALL.into_iter().find(|p| p.name() == hit.provider) else {
+            return self.toast(format!("Cannot open {} sessions", hit.provider), Kind::Warning);
+        };
+        self.toast("Opening session…", Kind::Info);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let found = ruddr_history::find_session(&ruddr_history::Stores::discover(), provider, &hit.session_id)
+                .ok_or_else(|| format!("No {} transcript found for {}", hit.provider, hit.session_id));
+            let _ = tx.send(Msg::Found(found));
+        });
+    }
+
+    fn on_found(&mut self, info: ruddr_history::SessionInfo) {
+        let history = self.history.get_or_insert_with(|| HistoryMode {
+            runs_selected: self.selected.clone(),
+            ..Default::default()
+        });
+        history.pinned = Some(info.clone());
+        history.keep_pinned();
+        self.toasts.retain(|t| t.text != "Opening session…");
+        self.filter.clear();
+        self.selected = Some(format!("{}{}", crate::history::PREFIX, info.locator));
         self.reset_artifact();
         self.refresh();
     }
@@ -818,6 +1015,7 @@ impl App {
     /// changes. History loads first; later lines stream.
     pub fn ensure_sources(&mut self) {
         let Some(session) = self.current().cloned() else {
+            self.loading_since = None;
             if self.sources.tailer.is_some() || !self.sources.scope.0.is_empty() {
                 self.sources = Sources::default();
                 self.dirty = true;
@@ -832,6 +1030,7 @@ impl App {
         if crate::history::is_history(&session.state_dir) {
             return self.load_history_session(scope);
         }
+        self.loading_since = None;
         let files = vec![
             (Source::Events, events_path(&session)),
             (Source::Trace, trace_path(&session)),
@@ -862,7 +1061,8 @@ impl App {
     }
 
     /// Reads a history session once: its chat, its assistant messages as the
-    /// output, and its edits as the diff. Nothing streams afterwards.
+    /// output, and its edits as the diff. Nothing streams afterwards. A
+    /// session read recently comes from the cache before the next draw.
     fn load_history_session(&mut self, scope: (String, Option<String>, PathBuf)) {
         let state_dir = scope.0.clone();
         let info = self.history.as_ref().and_then(|h| h.infos.get(&state_dir)).cloned();
@@ -879,36 +1079,66 @@ impl App {
         };
         self.expanded.clear();
         self.dirty = true;
-        let Some(info) = info else { return };
+        if let Some(loaded) = self.history_cache.get(&state_dir) {
+            return self.apply_history(generation, &state_dir, &loaded);
+        }
+        let Some(info) = info else {
+            self.loading_since = None;
+            return;
+        };
+        self.loading_since.get_or_insert_with(Instant::now);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let batch = |source, lines| {
-                Msg::Tail(Batch {
-                    generation,
-                    source,
-                    reset: false,
-                    history_done: true,
-                    lines,
-                })
+            let loaded = match ruddr_history::load(&info) {
+                Ok(transcript) => LoadedHistory {
+                    chat: ruddr_history::app_server::chat_lines(&transcript.events),
+                    output: ruddr_history::app_server::output_lines(&transcript.events),
+                    diff: Ok(ruddr_history::unified_diff(&transcript)),
+                },
+                Err(e) => LoadedHistory {
+                    chat: vec![],
+                    output: vec![],
+                    diff: Err(e),
+                },
             };
-            let (chat, output, diff) = match ruddr_history::load(&info) {
-                Ok(transcript) => (
-                    crate::history::chat_lines(&transcript.events),
-                    crate::history::output_lines(&transcript.events),
-                    Ok(ruddr_history::unified_diff(&transcript)),
-                ),
-                Err(e) => (vec![], vec![], Err(e)),
-            };
-            let _ = tx.send(batch(Source::Events, chat));
-            let _ = tx.send(batch(Source::Output, output));
-            let _ = tx.send(batch(Source::Trace, vec![]));
-            let _ = tx.send(Msg::Diff {
+            let _ = tx.send(Msg::HistoryLoaded {
+                generation,
                 state_dir,
-                result: diff,
-                touched: vec![],
-                recorded: None,
+                loaded: Arc::new(loaded),
             });
         });
+    }
+
+    fn on_history_loaded(&mut self, generation: u64, state_dir: String, loaded: Arc<LoadedHistory>) {
+        self.history_cache.insert(state_dir.clone(), loaded.clone());
+        self.apply_history(generation, &state_dir, &loaded);
+    }
+
+    /// Shows a loaded history session if it is still the selected one.
+    fn apply_history(&mut self, generation: u64, state_dir: &str, loaded: &LoadedHistory) {
+        if self.sources.generation != generation || self.sources.scope.0 != state_dir {
+            return;
+        }
+        for (source, lines) in [
+            (Source::Events, loaded.chat.clone()),
+            (Source::Output, loaded.output.clone()),
+            (Source::Trace, vec![]),
+        ] {
+            self.on_tail(Batch {
+                generation,
+                source,
+                reset: false,
+                history_done: true,
+                lines,
+            });
+        }
+        self.on_diff(state_dir.to_string(), loaded.diff.clone(), vec![], None);
+        self.loading_since = None;
+    }
+
+    /// Whether drawing now would show a history session before it loads.
+    pub fn holding(&self, now: Instant) -> bool {
+        self.loading_since.is_some_and(|t| now.duration_since(t) < LOAD_HOLD)
     }
 
     pub fn on_tail(&mut self, batch: Batch) {
@@ -1378,6 +1608,7 @@ impl App {
             }
             KeyCode::Char('D') => self.ask_delete_selected(),
             KeyCode::Char('H') => self.run(Cmd::History),
+            KeyCode::Char('e') => self.run(Cmd::EditsOnly),
             KeyCode::Char(c @ (']' | '[')) => self.bracket = Some(c),
             KeyCode::Tab | KeyCode::BackTab => self.run(Cmd::Sessions),
             KeyCode::Esc => {
@@ -1524,6 +1755,14 @@ impl App {
                 self.picker = None;
                 return;
             }
+            KeyCode::Char('r') if picker.kind == PickerKind::Deja && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(Action::Deja(hit)) = picker.selected().map(|i| picker.items[i].action.clone()) {
+                    self.picker = None;
+                    let hit = self.deja_hits[hit].clone();
+                    self.open_new_prompt(Some(hit));
+                }
+                return;
+            }
             KeyCode::Backspace if picker.filterable => {
                 picker.query.pop();
                 picker.index = 0;
@@ -1580,7 +1819,7 @@ impl App {
             }
             Action::Deja(hit) => {
                 let hit = self.deja_hits[hit].clone();
-                self.open_new_prompt(Some(hit));
+                self.show_deja_hit(hit);
             }
         }
     }
@@ -1821,7 +2060,7 @@ impl App {
             Cmd::Model => self.open_model_picker(),
             Cmd::Find => {
                 if !self.deja_available {
-                    self.toast("deja is not on PATH; install it to resume past sessions", Kind::Warning);
+                    self.toast("deja is not on PATH; install it to search past sessions", Kind::Warning);
                 } else {
                     self.search = Some(Search {
                         target: SearchTarget::Deja,
@@ -1891,6 +2130,7 @@ impl App {
                 }
             }
             Cmd::History => self.toggle_history(),
+            Cmd::EditsOnly => self.toggle_edits_only(),
             Cmd::Theme => self.open_theme_picker(),
             Cmd::Refresh => {
                 self.refresh();
@@ -1991,6 +2231,17 @@ impl App {
                 Cmd::History,
             )
             .hint("Codex, Claude, Pi, OpenCode, and Droid history, read-only, with each session's diff"),
+            cmd(
+                if self.history.as_ref().is_some_and(|h| h.edits_only) {
+                    "Show every history session"
+                } else {
+                    "Only sessions that edited files"
+                },
+                "e",
+                Cmd::EditsOnly,
+            )
+            .hint("history list: hide sessions with an empty diff")
+            .disabled_if(self.history.is_none(), "open the history list with H first"),
             cmd(
                 if session.as_ref().is_some_and(|s| s.status == Status::Idle) {
                     "End idle session"
@@ -2508,6 +2759,14 @@ impl App {
             }
             Msg::Models(models) => self.models = models,
             Msg::History(sessions) => self.on_history(sessions),
+            Msg::Found(Ok(info)) => self.on_found(info),
+            Msg::Found(Err(e)) => self.toast(e, Kind::Error),
+            Msg::HistoryEdits { stats, done } => self.on_history_edits(stats, done),
+            Msg::HistoryLoaded {
+                generation,
+                state_dir,
+                loaded,
+            } => self.on_history_loaded(generation, state_dir, loaded),
             Msg::Branch(cwd, branch) => {
                 self.branches.insert(cwd, branch);
             }
@@ -2518,7 +2777,7 @@ impl App {
                 recorded,
             } => self.on_diff(state_dir, result, touched, recorded),
             Msg::Deja(Err(e)) => self.toast(e, Kind::Error),
-            Msg::Deja(Ok(hits)) if hits.is_empty() => self.toast("No resumable sessions matched", Kind::Warning),
+            Msg::Deja(Ok(hits)) if hits.is_empty() => self.toast("No past sessions matched", Kind::Warning),
             Msg::Deja(Ok(hits)) => {
                 let items = hits
                     .iter()
@@ -2533,9 +2792,9 @@ impl App {
                         .key(h.provider.clone())
                     })
                     .collect();
-                self.toast(format!("{} resumable sessions found", hits.len()), Kind::Success);
+                self.toast(format!("{} past sessions found", hits.len()), Kind::Success);
                 self.deja_hits = hits;
-                self.picker = Some(Picker::new(PickerKind::Deja, "resume a past session", items, true));
+                self.picker = Some(Picker::new(PickerKind::Deja, "find a past session", items, true));
             }
             Msg::Updated(result) => {
                 self.updating = false;
@@ -2659,6 +2918,69 @@ mod tests {
         assert_eq!(texts, vec!["# Title", "```sh\na\n\nb\n```", "tail"]);
         let ids: HashSet<u64> = doc.paragraphs.iter().map(|p| p.0).collect();
         assert_eq!(ids.len(), 3, "paragraph ids are unique");
+    }
+
+    #[test]
+    fn a_pinned_history_session_survives_a_reload() {
+        let info = |id: &str| ruddr_history::SessionInfo {
+            provider: ruddr_history::Provider::Claude,
+            locator: format!("/p/{id}.jsonl"),
+            id: id.into(),
+            cwd: "/w".into(),
+            title: String::new(),
+            updated_ms: 1,
+        };
+        let mut history = HistoryMode {
+            pinned: Some(info("old")),
+            ..Default::default()
+        };
+        history.keep_pinned();
+        history.keep_pinned();
+        assert_eq!(history.runs.len(), 1, "pinned once");
+        assert!(history.infos.contains_key("history:/p/old.jsonl"));
+        // A reload that already lists the session does not add it twice.
+        history.runs = vec![crate::history::run_state(&info("new")), crate::history::run_state(&info("old"))];
+        history.infos = [info("new"), info("old")]
+            .into_iter()
+            .map(|i| (format!("history:{}", i.locator), i))
+            .collect();
+        history.keep_pinned();
+        assert_eq!(history.runs.len(), 2);
+    }
+
+    #[test]
+    fn the_history_cache_keeps_the_most_recent_sessions() {
+        let loaded = |text: &str| {
+            Arc::new(LoadedHistory {
+                chat: vec![text.into()],
+                output: vec![],
+                diff: Ok(String::new()),
+            })
+        };
+        let mut cache = HistoryCache::default();
+        for i in 0..HistoryCache::CAPACITY {
+            cache.insert(format!("history:{i}"), loaded(&i.to_string()));
+        }
+        // Reading the oldest makes it the newest, so the next insert evicts "1".
+        assert_eq!(cache.get("history:0").unwrap().chat, ["0"]);
+        cache.insert("history:new".into(), loaded("new"));
+        assert!(cache.get("history:1").is_none());
+        assert!(cache.get("history:0").is_some());
+        // A reload replaces the entry instead of adding a second one.
+        cache.insert("history:0".into(), loaded("again"));
+        assert_eq!(cache.get("history:0").unwrap().chat, ["again"]);
+        assert_eq!(cache.0.len(), HistoryCache::CAPACITY);
+    }
+
+    #[test]
+    fn the_edits_filter_keeps_only_scanned_sessions_with_changes() {
+        let mut history = HistoryMode::default();
+        history.edits.insert("history:a".into(), (1, 12, 3));
+        history.edits.insert("history:b".into(), (1, 0, 0));
+        assert_eq!(history.edit_stat("history:a"), Some((12, 3)));
+        assert!(history.has_edits("history:a"));
+        assert!(!history.has_edits("history:b"), "an empty diff is filtered out");
+        assert!(!history.has_edits("history:c"), "an unscanned session waits for its scan");
     }
 
     #[test]

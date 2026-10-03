@@ -32,9 +32,18 @@ export interface Session {
   updatedAt?: string;
   completedAt?: string;
   error?: string;
+  /** History sessions only: the provider's title or first user message. */
+  title?: string;
 }
 
 export type PromptRoute = "steer" | "prompt" | "continue";
+
+/** Another agent's past session: listed read-only, never prompted. */
+export const HISTORY_PREFIX = "history:";
+
+export function isHistory(session: Session | undefined): boolean {
+  return Boolean(session?.stateDir.startsWith(HISTORY_PREFIX));
+}
 
 export function basename(path: string | undefined): string {
   if (!path) return "";
@@ -56,7 +65,7 @@ export function isTerminal(status: string): boolean {
 }
 
 export function promptRoute(session: Session | undefined): PromptRoute | undefined {
-  if (!session) return undefined;
+  if (!session || isHistory(session)) return undefined;
   if (session.status === "active") return session.turnId ? "steer" : undefined;
   if (session.status === "idle") return "prompt";
   if (isTerminal(session.status) && session.threadId && session.cwd) return "continue";

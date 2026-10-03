@@ -50,7 +50,8 @@ override. The default layout keeps the sessions dashboard visible. Terminals
 action bar; --mobile or RUDDR_TUI_MOBILE=1 forces it, and mobileWidthThreshold
 in tui.json changes the width.
 Press H to browse every agent's local sessions (Codex, Claude, Pi, OpenCode,
-Droid) read-only, with each session's chat and file diff.
+Droid) read-only, with each session's chat and file diff. In that list, e shows
+only the sessions that edited files.
 ";
 
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
@@ -152,7 +153,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
         // Sleep until the soonest of: a frame we owe, an animation frame, a
         // streaming drain tick, a diff poll, or the session refresh.
         let mut wake = app.last_refresh + app.args.interval;
-        if app.dirty {
+        if let Some(since) = app.loading_since.filter(|_| app.holding(now)) {
+            // The load's message wakes the loop; this caps the wait.
+            wake = wake.min(since + app::LOAD_HOLD);
+        } else if app.dirty {
             wake = wake.min(last_draw + FRAME);
         }
         for deadline in [app.next_frame, app.drain_deadline(), app.diff_deadline()].into_iter().flatten() {
@@ -183,7 +187,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
             app.next_frame = None;
             app.dirty = true;
         }
-        if app.dirty && now.duration_since(last_draw) >= FRAME && !app.quit {
+        if app.dirty && now.duration_since(last_draw) >= FRAME && !app.holding(now) && !app.quit {
             app.dirty = false;
             last_draw = now;
             terminal.draw(|frame| ui::draw(frame, app))?;
