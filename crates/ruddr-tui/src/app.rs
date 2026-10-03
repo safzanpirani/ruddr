@@ -90,6 +90,7 @@ impl Toast {
 pub enum Cmd {
     Prompt,
     New,
+    ChangeDir,
     Continue,
     Model,
     Find,
@@ -504,6 +505,8 @@ pub struct Args {
 pub struct App {
     pub args: Args,
     pub exe: PathBuf,
+    /// Where new sessions start; `/cd` in the new-session prompt moves it.
+    pub launch_cwd: PathBuf,
     pub started: Instant,
     pub sessions: Vec<Session>,
     pub selected: Option<String>,
@@ -632,6 +635,7 @@ impl App {
             update: args.update.clone(),
             args,
             exe: actions::ruddr_exe(),
+            launch_cwd: std::env::current_dir().unwrap_or_default(),
             started: Instant::now(),
             sessions: vec![],
             selected: None,
@@ -1695,6 +1699,7 @@ impl App {
                 search.text.pop();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => search.text.clear(),
+            KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => return,
             KeyCode::Char(c) => search.text.push(c),
             _ => return,
         }
@@ -1767,7 +1772,7 @@ impl App {
                 picker.query.pop();
                 picker.index = 0;
             }
-            KeyCode::Char(c) if picker.filterable => {
+            KeyCode::Char(c) if picker.filterable && !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 picker.query.push(c);
                 picker.index = 0;
             }
@@ -1836,7 +1841,8 @@ impl App {
             KeyCode::Enter => self.submit(),
             KeyCode::Tab if !matches!(prompt.kind, PromptKind::Route(PromptRoute::Steer | PromptRoute::Prompt)) => self.run(Cmd::Model),
             KeyCode::Backspace if alt || ctrl => prompt.delete_word(),
-            KeyCode::Char('w') if ctrl => prompt.delete_word(),
+            // Most terminals send Ctrl+Backspace as Ctrl+H.
+            KeyCode::Char('w' | 'h') if ctrl => prompt.delete_word(),
             KeyCode::Char('u') if ctrl => {
                 prompt.text.drain(..prompt.cursor);
                 prompt.cursor = 0;
@@ -1862,7 +1868,7 @@ impl App {
             KeyCode::End => prompt.cursor = prompt.line_end(),
             KeyCode::Up => prompt.vertical(-1),
             KeyCode::Down => prompt.vertical(1),
-            KeyCode::Char(c) => prompt.insert(c),
+            KeyCode::Char(c) if !ctrl => prompt.insert(c),
             _ => {}
         }
     }
@@ -2057,6 +2063,13 @@ impl App {
                 self.open_new_prompt(None);
                 self.run(Cmd::Model);
             }
+            Cmd::ChangeDir => {
+                self.open_new_prompt(None);
+                if let Some(prompt) = &mut self.prompt {
+                    prompt.text = "/cd ".chars().collect();
+                    prompt.cursor = prompt.text.len();
+                }
+            }
             Cmd::Model => self.open_model_picker(),
             Cmd::Find => {
                 if !self.deja_available {
@@ -2214,6 +2227,10 @@ impl App {
                 .hint("steer, prompt, or continue the selected session")
                 .disabled_if(route.is_none(), "no promptable session selected"),
             cmd("New session", "n", Cmd::New).hint("pick a provider and model, then type the first prompt"),
+            cmd("Change new-session directory", "", Cmd::ChangeDir).hint(format!(
+                "now {}; or type /cd DIR in a new-session prompt",
+                short_path(&self.launch_cwd)
+            )),
             cmd("Continue thread in a new run", "R", Cmd::Continue)
                 .hint("finished sessions only")
                 .disabled_if(route != Some(PromptRoute::Continue), "select a finished session with a thread"),
@@ -2568,13 +2585,30 @@ impl App {
             self.prompt = Some(prompt);
             return;
         }
+        if prompt.kind == PromptKind::New
+            && let Some(arg) = cd_argument(&message)
+        {
+            let start = std::env::current_dir().unwrap_or_default();
+            let mut prompt = prompt;
+            match resolve_cd(arg, &self.launch_cwd, &start, &ruddr_core::paths::home_dir()) {
+                Ok(dir) => {
+                    prompt.text.clear();
+                    prompt.cursor = 0;
+                    self.toast(format!("New sessions start in {}", short_path(&dir)), Kind::Info);
+                    self.launch_cwd = dir;
+                }
+                Err(error) => self.toast(error, Kind::Warning),
+            }
+            self.prompt = Some(prompt);
+            return;
+        }
         let (exe, tx) = (self.exe.clone(), self.tx.clone());
         let overrides = LaunchOverrides {
             model: prompt.model.as_ref().and_then(|m| m.id.clone()),
             effort: prompt.effort.clone(),
         };
         if prompt.kind == PromptKind::New {
-            let cwd = std::env::current_dir().unwrap_or_default();
+            let cwd = self.launch_cwd.clone();
             let provider = prompt.provider.clone();
             let resume = prompt.resume.clone();
             self.toast(

@@ -1280,10 +1280,13 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
         PromptKind::New if prompt.resume.is_some() => ("resume a past session", p.success),
         PromptKind::New => ("new session", p.success),
     };
-    let cwd = std::env::current_dir().unwrap_or_default();
     let place = match &prompt.target {
         Some(t) => project_name(t),
-        None => cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        None => app
+            .launch_cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
     };
     let model = prompt
         .model
@@ -1407,10 +1410,13 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
     if prompt.text.is_empty() {
         let hint = match prompt.kind {
             PromptKind::Route(PromptRoute::Steer) => "Redirect the agent mid-turn…",
-            PromptKind::New => "Describe the task for the new session…",
+            PromptKind::New => "Describe the task for the new session… (/cd DIR changes directory)",
             _ => "Type your message…",
         };
-        frame.render_widget(Paragraph::new(Span::styled(hint, Style::new().fg(p.dim.c()).italic())), text_area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(hint, Style::new().fg(p.dim.c()).italic())).wrap(ratatui::widgets::Wrap { trim: true }),
+            text_area,
+        );
     } else {
         let shown: Vec<Line> = lines
             .iter()
@@ -1671,6 +1677,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
             &[
                 ("s  Enter", "steer, prompt, or continue"),
                 ("n", "new session"),
+                ("/cd DIR", "in a new-session prompt: set its dir"),
                 ("R", "continue thread in a new run"),
                 ("m", "choose model + effort"),
                 ("f", "find a past session (deja)"),

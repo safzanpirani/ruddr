@@ -386,6 +386,40 @@ pub fn new_session_args(
     args
 }
 
+/// The argument of a `/cd` draft in the new-session prompt: the whole draft
+/// is one line that is `/cd` or starts with `/cd `.
+pub fn cd_argument(draft: &str) -> Option<&str> {
+    let draft = draft.trim();
+    if draft.contains('\n') {
+        return None;
+    }
+    match draft.strip_prefix("/cd") {
+        Some("") => Some(""),
+        Some(rest) if rest.starts_with(char::is_whitespace) => Some(rest.trim()),
+        _ => None,
+    }
+}
+
+/// Resolves a `/cd` argument to an existing directory. An empty argument
+/// returns `start`, the directory the TUI was launched from; `~` expands to
+/// `home`; a relative path joins `current`.
+pub fn resolve_cd(arg: &str, current: &Path, start: &Path, home: &Path) -> Result<PathBuf, String> {
+    let path = match arg {
+        "" => start.to_path_buf(),
+        "~" => home.to_path_buf(),
+        _ => match arg.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => current.join(arg),
+        },
+    };
+    let path = ruddr_core::paths::normalize(&path);
+    if path.is_dir() {
+        Ok(path)
+    } else {
+        Err(format!("{arg} is not a directory"))
+    }
+}
+
 // --- models ---------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -764,6 +798,37 @@ pub mod tests_support {
 mod tests {
     use super::tests_support::session;
     use super::*;
+
+    #[test]
+    fn cd_drafts_are_single_line_commands() {
+        assert_eq!(cd_argument("/cd ../api"), Some("../api"));
+        assert_eq!(cd_argument("  /cd   ~/work  "), Some("~/work"));
+        assert_eq!(cd_argument("/cd"), Some(""));
+        assert_eq!(cd_argument("/cdx"), None);
+        assert_eq!(cd_argument("/cd x\nfix the bug"), None, "a multi-line draft is a prompt");
+        assert_eq!(cd_argument("please /cd x"), None);
+    }
+
+    #[test]
+    fn cd_resolves_relative_home_and_reset_paths() {
+        let root = std::env::temp_dir().join(format!("ruddr-tui-cd-{}", std::process::id()));
+        let (start, other, home) = (root.join("start"), root.join("other"), root.join("home"));
+        for dir in [&start, &other, &home.join("repo")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        assert_eq!(resolve_cd("../other", &start, &start, &home).unwrap(), other);
+        assert_eq!(resolve_cd(other.to_str().unwrap(), &start, &start, &home).unwrap(), other);
+        assert_eq!(resolve_cd("~/repo", &other, &start, &home).unwrap(), home.join("repo"));
+        assert_eq!(resolve_cd("~", &other, &start, &home).unwrap(), home);
+        assert_eq!(
+            resolve_cd("", &other, &start, &home).unwrap(),
+            start,
+            "a bare /cd returns to the launch directory"
+        );
+        let missing = resolve_cd("nope", &start, &start, &home).unwrap_err();
+        assert_eq!(missing, "nope is not a directory");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn routes_never_cross() {

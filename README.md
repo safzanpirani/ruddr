@@ -718,7 +718,13 @@ in older Codex event logs.
 
 `n` starts a brand-new session. Pick a provider and model in the picker, type
 the first prompt, and the TUI starts a detached `ruddr run --idle` in the
-current directory, in `.scratch/ruddr-tui/<YYYYMMDD-HHMMSS>-<hex>`. New
+current directory, in `.scratch/ruddr-tui/<YYYYMMDD-HHMMSS>-<hex>`. To start
+it somewhere else, send `/cd DIR` as the whole prompt: the TUI checks that the
+directory exists, keeps the prompt open, and starts this and later new
+sessions there, so that repository's project skills and instructions load.
+`DIR` may be absolute, relative to the current choice, or start with `~`; a
+bare `/cd` returns to the directory the TUI started in. "Change new-session
+directory" in the palette opens the prompt with `/cd ` typed. New
 sessions stay pinned at the top of the list. `m` opens the same picker to
 override the model for continuations, and `←`/`→` change the effort. When the
 `deja` CLI from [dejavu](#companion-dejavu) is installed, `f` searches past
