@@ -5,9 +5,9 @@
 Ruddr is a single native binary that keeps a live handle on long-running Codex,
 Claude Code, OpenCode 2, Pi, and Factory Droid sessions. An orchestrating agent
 launches a turn in the background, reads its progress from plain files, and
-redirects it mid-flight over a local socket — no waiting for it to finish, no killing it and starting
-over. Every command works the same from a human shell, so a person can watch or
-steer too, but the primary operator is another agent.
+redirects it over a local socket while it runs, without waiting for it to
+finish or restarting it. Every command works the same from a human shell, so a
+person can watch or steer too, but the primary operator is another agent.
 
 ![ruddr TUI dashboard](demo/tui-dashboard.png)
 
@@ -19,45 +19,45 @@ ruddr tui                                           # every session, live
 ruddr web                                           # the same, in a browser
 ```
 
-## Why?
+## Why it exists
 
 Agent harnesses increasingly delegate: one agent plans, spawns a coding agent
-for the long turn, and keeps working while it runs. `codex exec --json` breaks
-that loop — it is observable, but its stdin closes after the initial prompt, so
-the orchestrator can only wait for the turn or kill it. Both waste the work
+for the long turn, and keeps working while it runs. `codex exec --json` cannot
+support that loop. Its output is observable, but its stdin closes after the
+initial prompt, so the orchestrator can only wait for the turn or kill it. Both waste the work
 already done, and mid-flight discoveries (a wrong assumption, new user input, a
 better plan) cannot reach the running turn.
 
-Ruddr instead owns the provider connection and exposes a small local control
-socket, so any later command — issued by the orchestrating agent, a cron job,
-or a human — can steer the turn that is already in flight.
+Ruddr owns the provider connection and exposes a small local control socket.
+A later command from the orchestrating agent, a cron job, or a human can steer
+the turn that is already running.
 
-Agent-first by construction:
+Ruddr is built for agents first:
 
-- **State is plain files** (`state.json`, `events.jsonl`, `output.md`) — an
-  orchestrator polls or tails them without a TTY.
-- **Commands speak JSON** where metadata matters (`ruddr thread ...`), so
-  skills and scripts consume results without scraping.
-- **Steering is just another CLI call** against the socket, safe to issue from
-  a background task; it fails loudly if the turn is gone rather than starting a
+- **State is plain files.** An orchestrator polls or tails `state.json`,
+  `events.jsonl`, and `output.md` without a TTY.
+- **Commands print JSON where metadata matters.** Skills and scripts read
+  `ruddr thread ...` results without scraping text.
+- **Steering is a CLI call.** It talks to the socket, is safe to issue from a
+  background task, and fails loudly when the turn is gone instead of starting a
   replacement.
-- The TUI and human steering sit on top of the same contract, as the optional
-  layer.
+- The TUI, the web dashboard, and human steering use the same files and
+  socket. They are optional.
 
 Providers:
 
-- **Codex** — Ruddr owns a `codex app-server` connection and calls `turn/steer`
+- **Codex.** Ruddr owns a `codex app-server` connection and calls `turn/steer`
   on the running turn.
-- **Claude Code** — Ruddr drives the `claude` CLI directly over its
+- **Claude Code.** Ruddr drives the `claude` CLI directly over its
   stream-json protocol. A persistent streaming-input queue makes steering
   part of the same live session, and the structured events expose summarized
   reasoning, assistant updates, and tool lifecycle to the same TUI used for
   Codex.
-- **OpenCode 2** — Ruddr runs a private v2 server and uses its durable session
+- **OpenCode 2.** Ruddr runs a private v2 server and uses its durable session
   inbox. Steering uses `delivery: "steer"` on the active session.
-- **Pi** — Ruddr runs Pi in JSONL RPC mode. Pi exposes native steering,
+- **Pi.** Ruddr runs Pi in JSONL RPC mode. Pi exposes native steering,
   interruption, session persistence, streamed tool events, and usage totals.
-- **Factory Droid** — Ruddr runs `droid exec` in stream JSON-RPC mode. A steer
+- **Factory Droid.** Ruddr runs `droid exec` in stream JSON-RPC mode. A steer
   is a user message that Droid queues and reads at its next step.
 
 All providers use the same state directory, commands, and TUI. Codex speaks
@@ -74,13 +74,13 @@ task launcher ──stdio JSON-RPC──> provider app-server or adapter
       └── local control socket <── ruddr steer "focus on the failing test first"
 ```
 
-The name is literal: Ruddr does not replace the engine, model, or auth
-provider. It changes the heading of an in-flight turn.
+Ruddr does not replace the engine, model, or auth provider. Like a ship's
+rudder, it changes the heading of a turn that is already running.
 
 ## Status
 
-Early working prototype. Each provider protocol evolves quickly. Reverify
-Ruddr after provider upgrades. OpenCode support targets the 2.0 preview CLI
+Ruddr is an early working prototype. Provider protocols change quickly, so
+reverify Ruddr after provider upgrades. OpenCode support targets the 2.0 preview CLI
 through `opencode2` or `opencode-next`. Ruddr does not support OpenCode 1 yet.
 
 Ruddr 0.6.0 is a Rust rewrite. One binary holds the CLI, the run controller,
@@ -542,7 +542,7 @@ the two Sol models also support `ultra`. Select one with `--model`, for example
 The delegate skill defaults to that model and effort; the CLI catalog default
 is `gpt-6-astra`.
 
-Ruddr ships a short built-in list. Add the models you actually use, change a
+Ruddr ships a short built-in list. Add the models you use, change a
 default, or hide one you never pick; Ruddr does not import every model a
 provider knows about. `opencode models` and similar provider commands list the
 IDs to choose from.
@@ -896,13 +896,16 @@ sessions and continuations as detached `ruddr run --idle` processes in
 
 Run artifacts:
 
-- `.ruddr.claim` — atomic ownership marker that prevents state-directory reuse.
-- `state.json` — IDs, status, paths, and timestamps; no prompt or output text.
-- `events.jsonl` — raw provider protocol events plus Ruddr prompt decisions.
-- `trace.log` — compact human-readable progress.
-- `output.md` — all completed `agentMessage` items appended in order.
-- `provider.stderr.log` — child diagnostics (legacy runs retain their persisted
-  `app-server.stderr.log` path).
+- `.ruddr.claim` is an atomic ownership marker that prevents state-directory
+  reuse.
+- `state.json` holds IDs, status, paths, and timestamps, and no prompt or
+  output text.
+- `events.jsonl` holds the raw provider protocol events and Ruddr's prompt
+  decisions.
+- `trace.log` is compact human-readable progress.
+- `output.md` has every completed `agentMessage` item, appended in order.
+- `provider.stderr.log` holds child diagnostics. Legacy runs keep their
+  persisted `app-server.stderr.log` path.
 
 The run directory and all files are owner-only (`0700` / `0600`). On Unix the
 control channel is a `0600` Unix socket. It lives inside the run directory
@@ -1063,10 +1066,9 @@ provider-exposed reasoning. Ruddr does not expose hidden raw chain of thought.
 
 ## Agent setup guide
 
-Hand this to Claude Code, Codex, Cursor, or any agent with shell access. It is
-written to be pasted verbatim, and it covers both installing Ruddr and
-operating it afterwards, so the agent ends up able to run and steer provider
-sessions, not just build a binary.
+Paste this verbatim into Claude Code, Codex, Cursor, or any agent with shell
+access. Part 1 installs and verifies Ruddr. Part 2 teaches the agent to run and
+steer provider sessions afterwards.
 
 ````text
 Set up Ruddr (https://github.com/safzanpirani/ruddr) on this machine, verify
@@ -1077,7 +1079,7 @@ disk and exposes a control socket so you can redirect or stop a turn while it
 runs. Follow Part 1 in order and stop at the first failure; keep Part 2 as your
 operating manual.
 
-PART 1 — INSTALL AND VERIFY
+PART 1: INSTALL AND VERIFY
 
 1. Check prerequisites. Report the version of each and stop if any is missing:
    - At least one provider CLI: `codex --version`, `claude --version`,
@@ -1123,7 +1125,7 @@ PART 1 — INSTALL AND VERIFY
    authenticated, and the exact output of any step that failed. Do not modify
    my shell configuration without telling me what you changed.
 
-PART 2 — HOW TO OPERATE RUDDR
+PART 2: HOW TO OPERATE RUDDR
 
 Browser dashboard. Run `ruddr web` and open its printed access link.
 The page can steer, prompt, continue, interrupt, and start sessions.
@@ -1134,7 +1136,7 @@ steering turn IDs. Continuations create detached runs for the same thread.
 Core model. One `ruddr run` owns one provider session. Its --state-dir holds
 everything about the run; without the flag Ruddr creates
 .scratch/ruddr/<time>-<id> under --cwd and prints the path:
-   state.json      status, thread/turn IDs, token usage — never prompt text
+   state.json      status, thread/turn IDs, token usage; never prompt text
    events.jsonl    every raw provider event, append-only
    trace.log       human-readable activity trace
    output.md       completed agent messages, in order
@@ -1169,7 +1171,7 @@ Steering. While a turn is active you can redirect it without restarting:
    ruddr steer --state-dir DIR --message-file FILE   (multiline/shell-unsafe)
 Use steer when new information arrives mid-turn. To abort a wrong-premise turn
 use `ruddr interrupt --state-dir DIR`, never kill -9. A rejected steer means
-the turn already ended — read the output; do not silently start a new run.
+the turn already ended. Read the output, and do not silently start a new run.
 
 Multi-turn (idle) sessions. Add --idle to `ruddr run` and the process stays
 alive after each turn instead of exiting:
@@ -1179,14 +1181,14 @@ alive after each turn instead of exiting:
 status "idle" means ready for the next prompt; "active" means a turn is
 running (steer, don't prompt). Poll the status field. The boolean `idle`
 field only says the run was started with --idle. Prompt and steer are
-different commands with different semantics — never substitute one for the
+different commands with different semantics. Never substitute one for the
 other. Use idle mode when
 you expect follow-up turns: it keeps one process and one thread instead of
 spawning a fresh run per message.
 
 Continuing past work. Threads persist in the provider's own store:
    ruddr thread list --cwd-filter "$PWD"       recent threads for this repo
-   ruddr thread search "keywords"              global search — verify cwd
+   ruddr thread search "keywords"              global search; verify cwd
    ruddr thread read --include-turns ID        inspect before resuming
    ruddr run --resume-thread ID ...            continue a thread in a new run
    ruddr run --fork-thread ID ...              branch it, preserving original
@@ -1221,7 +1223,7 @@ Ground rules:
   what a run cost.
 - state.json is intentionally content-redacted; never write prompt or
   completion text into it or rely on it being there.
-- One state dir, one run, ever. New run, new dir.
+- Use a fresh state dir for every run, and never reuse one.
 ````
 
 ## Agent skill: delegate work through Ruddr
