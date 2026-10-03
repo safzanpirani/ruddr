@@ -168,3 +168,11 @@ While monitoring the Ruddr 0.4.8 release, gh repo view returned HTTP 401 even af
 
 Timing a dashboard load with agent-browser: a 3 MB Server-Sent Events history took 15 s to reach the page under agent-browser but ~110 ms in a bare headless Chromium driven over CDP without the Network domain. agent-browser's always-on network capture appears to relay every EventSource message payload, so page-load timings of SSE-heavy pages are not trustworthy under it.
 
+## 78ac81 · 2026-10-03T06:46:44.225Z — claude-code — claude-opus-5-5
+
+- **Directory:** `/Users/safzan/Development/projects/codex-rudder`
+- **About:** `vhs`
+- **Tags:** `screenshot`
+
+vhs 0.12.0 on the Mac prints 'Creating shot.gif...' and exits 0 but writes neither the Output gif nor the Screenshot png (sandboxed and unsandboxed, relative and quoted absolute paths; unquoted absolute paths starting with / fail to parse). Worked around with tmux capture-pane -e -> ANSI-to-HTML -> headless Chrome --screenshot, which also never exits on its own after writing the file.
+
