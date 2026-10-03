@@ -62,13 +62,22 @@ comment that says what it owns.
   end to end, including `--remote` through a fake `ssh`.
 - `crates/ruddr-tui` — `ruddr tui`, a ratatui front end. `lib.rs` holds the
   usage text and entry point, `app.rs` the state and input handling, `ui.rs`
-  the rendering, including the mobile layout, and `tail.rs` the per-session
-  reader thread that streams appended `events.jsonl` lines.
+  the rendering, including the mobile layout, `tail.rs` the per-session
+  reader thread that streams appended `events.jsonl` lines, and `history.rs`
+  the `H` list of every agent's past sessions, read-only, with the `e`
+  filter for sessions that edited files.
+- `crates/ruddr-history` — reads every local agent's session transcripts
+  (Codex, Claude Code, Pi, OpenCode, Factory Droid) whether or not Ruddr
+  started them, and rebuilds their file edits as unified diffs. The parsers
+  follow dejavu's. It never opens the auth files stored beside transcripts.
+  The TUI and the web server both use it.
 - `crates/ruddr-web` — `ruddr web`, the browser dashboard server (axum and
   tokio, the only async code in the workspace). It gates every API call on
   the token in `~/.config/ruddr/web-token` and serves the browser client
-  embedded from `assets/`. `tests/bundle.rs` fails when `web/client` changed
-  without a rebuilt bundle.
+  embedded from `assets/`. `history.rs` serves the read-only history list
+  and reads only sessions it listed or found itself, never a path the client
+  sends. `tests/bundle.rs` fails when `web/client` changed without a rebuilt
+  bundle.
 - `web/index.html`, `web/client/` — the browser client, still TypeScript.
   `transcript.ts` folds `events.jsonl` into chat entries, `diffs.ts` wraps
   `@pierre/diffs` and `@pierre/trees`, and `markdown.ts` escapes all model
