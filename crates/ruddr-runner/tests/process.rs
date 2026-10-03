@@ -205,6 +205,7 @@ fn a_detached_run_lives_on_after_the_launcher_returns() {
     fx.wait_state(|s| s.status == Status::Idle);
     let stop = Request {
         command: Command::Stop,
+        images: vec![],
         text: None,
         expected_turn_id: None,
     };

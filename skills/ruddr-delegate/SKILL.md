@@ -210,6 +210,11 @@ turn is active, forward it immediately into the same turn:
 ruddr steer --state-dir .scratch/<task-slug>/run "<exact update, literals preserved>"
 ```
 
+When the user hands you a screenshot or other image the agent needs, attach it
+with `--image FILE` (repeatable; png, jpg, gif, or webp) on `run`, `steer`, or
+`prompt`. Codex sees the image directly; the other providers get its path and
+open it themselves, so keep the file inside the run's `--cwd`.
+
 Use `--message-file` for multiline or shell-sensitive text. A rejected steer
 means the turn already ended — read the output; never silently start a
 replacement run. To abort a wrong-premise turn use `ruddr interrupt`, not

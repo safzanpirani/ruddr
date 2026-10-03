@@ -6,6 +6,7 @@ pub mod control;
 pub mod duration;
 pub mod error;
 pub mod fsutil;
+pub mod images;
 pub mod jsonrpc;
 pub mod models;
 pub mod paths;

@@ -47,6 +47,10 @@ pub fn run_command(args: Vec<String>) -> Result<()> {
         return Err(Error::usage("--prompt-file is required"));
     }
     config::configure_provider_defaults(&mut cfg, child_args.as_deref().unwrap_or_default())?;
+    // Checked here too so a detached launch reports a bad image at once.
+    for image in &cfg.images {
+        ruddr_core::images::checked_image(image).map_err(Error::usage)?;
+    }
     if cfg.state_dir.as_os_str().is_empty() {
         let dir = config::default_state_dir(&cfg.cwd)?;
         args::set_flag(&mut tokens, "state-dir", &dir.to_string_lossy());

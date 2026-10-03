@@ -237,18 +237,32 @@ pub fn read_text_input(value: Option<&Value>) -> AResult<String> {
     let items = value
         .and_then(Value::as_array)
         .ok_or_else(|| AdapterError::invalid("input must be an array"))?;
-    let text = items
-        .iter()
-        .filter_map(Value::as_object)
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let items: Vec<_> = items.iter().filter_map(Value::as_object).collect();
+    let field = |kind: &str, key: &str| -> Vec<String> {
+        items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some(kind))
+            .filter_map(|item| item.get(key).and_then(Value::as_str))
+            .map(String::from)
+            .collect()
+    };
+    let text = field("text", "text").join("\n");
     let text = text.trim();
     if text.is_empty() {
         return Err(AdapterError::invalid("input must contain text"));
     }
-    Ok(text.to_string())
+    // These providers get no image items, so the agent opens each file
+    // with its own read tool.
+    let images = field("localImage", "path");
+    if images.is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut prompt = text.to_string();
+    prompt.push_str("\n\nAttached images (open each one with your file-reading tool):");
+    for path in images {
+        prompt.push_str(&format!("\n- {path}"));
+    }
+    Ok(prompt)
 }
 
 /// A finite JSON number, or 0.
@@ -511,6 +525,23 @@ pub mod tests {
         let lines = collect(chunks, MAX_LINE_BYTES).unwrap();
         assert_eq!(lines[0].len(), 32 * 1024 * 1024);
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn text_input_lists_attached_images_as_paths() {
+        let input = serde_json::json!([
+            {"type": "text", "text": "what is wrong here?"},
+            {"type": "localImage", "path": "/tmp/shot.png"},
+            {"type": "localImage", "path": "/tmp/two.jpg"},
+        ]);
+        assert_eq!(
+            read_text_input(Some(&input)).unwrap(),
+            "what is wrong here?\n\nAttached images (open each one with your file-reading tool):\n- /tmp/shot.png\n- /tmp/two.jpg"
+        );
+        let plain = serde_json::json!([{"type": "text", "text": " hi "}]);
+        assert_eq!(read_text_input(Some(&plain)).unwrap(), "hi");
+        let image_only = serde_json::json!([{"type": "localImage", "path": "/tmp/shot.png"}]);
+        assert!(read_text_input(Some(&image_only)).is_err(), "an image still needs a prompt");
     }
 
     #[test]

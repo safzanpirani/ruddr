@@ -647,6 +647,7 @@ fn steer_sends_the_observed_turn_and_rejects_a_changed_one() {
         requests[0],
         Request {
             command: Command::Steer,
+            images: vec![],
             text: Some("focus on parser.go".into()),
             expected_turn_id: Some("turn-1".into())
         }
@@ -694,10 +695,29 @@ fn steer_and_prompt_never_swap_routes() {
         idle_controller.requests()[0],
         Request {
             command: Command::Prompt,
+            images: vec![],
             text: Some("next task".into()),
             expected_turn_id: None
         }
     );
+
+    let shot = root.path().join("shot.png");
+    std::fs::write(&shot, b"png").unwrap();
+    let idle_arg = idle.display().to_string();
+    steering::prompt(
+        &mut Vec::new(),
+        strings(&["--state-dir", &idle_arg, "--image", &shot.display().to_string(), "look"]),
+        &mut std::io::empty(),
+    )
+    .unwrap();
+    assert_eq!(idle_controller.requests()[1].images, [shot.display().to_string()]);
+    let missing = steering::prompt(
+        &mut Vec::new(),
+        strings(&["--state-dir", &idle_arg, "--image", "nope.png", "look"]),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit_of(&missing), Exit::Usage);
+    assert_eq!(idle_controller.requests().len(), 2, "a missing image never reaches the controller");
 }
 
 #[test]
@@ -750,6 +770,7 @@ fn interrupt_captures_the_current_turn() {
         controller.requests()[0],
         Request {
             command: Command::Interrupt,
+            images: vec![],
             text: None,
             expected_turn_id: Some("turn-7".into())
         }
@@ -798,6 +819,7 @@ fn group_commands_drive_several_live_runs() {
             controller.requests(),
             vec![Request {
                 command: Command::Stop,
+                images: vec![],
                 text: None,
                 expected_turn_id: None
             }]

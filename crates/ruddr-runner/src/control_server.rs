@@ -273,13 +273,19 @@ fn write_response(
 fn dispatch(controller: &Controller, request: &Value) -> std::result::Result<(), String> {
     let text = request.get("text").and_then(Value::as_str).unwrap_or_default();
     let expected = request.get("expectedTurnId").and_then(Value::as_str).unwrap_or_default();
+    let images: Vec<String> = match request.get("images") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(String::from).collect(),
+        Some(_) => return Err("images must be an array of paths".into()),
+    };
+    let images = ruddr_core::images::checked_images(&images)?;
     match request.get("command").and_then(Value::as_str).unwrap_or_default() {
         "status" => Ok(()),
         "steer" if text.is_empty() => Err("steering text is empty".into()),
-        "steer" => steer(controller, text, expected),
+        "steer" => steer(controller, text, &images, expected),
         "interrupt" => interrupt(controller, expected),
         "prompt" if text.is_empty() => Err("prompt text is empty".into()),
-        "prompt" => prompt(controller, text),
+        "prompt" => prompt(controller, text, &images),
         // Go clients send "shutdown"; ruddr_core::control sends "stop".
         "stop" | "shutdown" => stop(controller),
         other => Err(format!("unknown control command {other:?}")),
@@ -296,7 +302,7 @@ fn visible_status(controller: &Controller) -> String {
 
 /// Adds direction to the active turn. Every turn/steer carries the thread and
 /// the expected turn; a rejected steer is reported, never retried as a turn.
-pub fn steer(controller: &Controller, text: &str, expected: &str) -> std::result::Result<(), String> {
+pub fn steer(controller: &Controller, text: &str, images: &[String], expected: &str) -> std::result::Result<(), String> {
     let state = controller.store.snapshot();
     let (Some(thread), Some(turn)) = (state.thread_id.clone(), state.turn_id.clone()) else {
         return Err(format!("turn is not steerable: status={}", visible_status(controller)));
@@ -307,7 +313,7 @@ pub fn steer(controller: &Controller, text: &str, expected: &str) -> std::result
     if !expected.is_empty() && turn != expected {
         return Err(format!("active turn changed from {expected} to {turn}; steer was not sent"));
     }
-    let params = json!({"threadId": thread, "expectedTurnId": turn, "input": [{"type": "text", "text": text}]});
+    let params = json!({"threadId": thread, "expectedTurnId": turn, "input": ruddr_core::images::user_input(text, images)});
     let result = controller
         .call("turn/steer", params, Duration::from_secs(30))
         .map_err(|e| e.to_string())?;
@@ -328,7 +334,7 @@ pub fn steer(controller: &Controller, text: &str, expected: &str) -> std::result
 
 /// Starts the next turn of an idle session. Valid only while idle; it is
 /// never converted into a steer.
-pub fn prompt(controller: &Controller, text: &str) -> std::result::Result<(), String> {
+pub fn prompt(controller: &Controller, text: &str, images: &[String]) -> std::result::Result<(), String> {
     if !controller.cfg.idle {
         return Err("session was not started with --idle; use a new run to continue the thread".into());
     }
@@ -356,6 +362,7 @@ pub fn prompt(controller: &Controller, text: &str) -> std::result::Result<(), St
         lifecycle.prompt_slot = Some(PromptRequest {
             id,
             text: text.to_string(),
+            images: images.to_vec(),
             observed_turns: state.turns,
         });
         lifecycle.idle_waiting = false;

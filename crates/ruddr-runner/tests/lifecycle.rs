@@ -7,7 +7,7 @@
 use ruddr_core::control::{self, Command, Request, Response};
 use ruddr_core::state::{self, RunState, Status};
 use ruddr_runner::{CancelToken, RunConfig, run_controller};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -134,6 +134,7 @@ impl Fixture {
             command,
             text: text.map(String::from),
             expected_turn_id: expected.map(String::from),
+            images: vec![],
         };
         control::send(&self.state_dir, &request, Duration::from_secs(10)).unwrap()
     }
@@ -291,6 +292,42 @@ fn ephemeral_runs_pass_the_thread_option() {
     assert_eq!(fx.request("thread/start")["params"]["ephemeral"], true);
     assert_eq!(fx.request("turn/start")["params"]["effort"], "high");
     assert_eq!(fx.state().effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn images_ride_with_the_first_turn_and_steers() {
+    let fx = Fixture::new("Initially say ORIGINAL");
+    let (first, second) = (fx.root.join("first.png"), fx.root.join("second.jpg"));
+    std::fs::write(&first, b"png").unwrap();
+    std::fs::write(&second, b"jpg").unwrap();
+    let run = start(RunConfig {
+        images: vec![first.clone()],
+        ..fx.config(&[])
+    });
+    fx.wait_status(Status::Active);
+    let send = |images: Vec<String>| {
+        let request = Request {
+            command: Command::Steer,
+            text: Some("Say STEERED".into()),
+            expected_turn_id: None,
+            images,
+        };
+        control::send(&fx.state_dir, &request, Duration::from_secs(10)).unwrap()
+    };
+    let missing = send(vec![fx.root.join("gone.png").to_string_lossy().into_owned()]);
+    assert!(
+        !missing.ok && missing.error.as_deref().unwrap_or_default().contains("not a readable file"),
+        "{missing:?}"
+    );
+    assert!(fx.requests_for("turn/steer").is_empty(), "a bad image never reaches the provider");
+    let response = send(vec![second.to_string_lossy().into_owned()]);
+    assert!(response.ok, "{response:?}");
+    run.finish().unwrap();
+    let image = |path: &Path| json!({"type": "localImage", "path": path.to_string_lossy()});
+    let turn = fx.request("turn/start")["params"]["input"].clone();
+    assert_eq!(turn, json!([{"type": "text", "text": "Initially say ORIGINAL"}, image(&first)]));
+    let steer = fx.request("turn/steer")["params"]["input"].clone();
+    assert_eq!(steer, json!([{"type": "text", "text": "Say STEERED"}, image(&second)]));
 }
 
 #[test]
@@ -665,6 +702,7 @@ fn an_output_persistence_failure_fails_the_run() {
         &fx.state_dir,
         &Request {
             command: Command::Steer,
+            images: vec![],
             text: Some("finish now".into()),
             expected_turn_id: None,
         },
@@ -756,6 +794,7 @@ fn an_idle_interrupt_waits_for_the_provider_to_settle() {
     std::thread::spawn(move || {
         let request = Request {
             command: Command::Interrupt,
+            images: vec![],
             text: None,
             expected_turn_id: None,
         };
@@ -940,6 +979,7 @@ fn concurrent_idle_prompts_accept_one_generation() {
                 barrier.wait();
                 let request = Request {
                     command: Command::Prompt,
+                    images: vec![],
                     text: Some(text.into()),
                     expected_turn_id: None,
                 };
@@ -962,6 +1002,7 @@ fn stop_rejects_a_later_prompt() {
     assert!(fx.send(Command::Stop, None, None).ok);
     let request = Request {
         command: Command::Prompt,
+        images: vec![],
         text: Some("too late".into()),
         expected_turn_id: None,
     };
@@ -983,6 +1024,7 @@ fn a_delayed_interrupt_error_does_not_stop_the_new_turn() {
     std::thread::spawn(move || {
         let request = Request {
             command: Command::Interrupt,
+            images: vec![],
             text: None,
             expected_turn_id: None,
         };
@@ -1081,6 +1123,7 @@ fn control_requests_fail_promptly_on_stale_state() {
     let started = Instant::now();
     let request = Request {
         command: Command::Steer,
+        images: vec![],
         text: Some("new direction".into()),
         expected_turn_id: None,
     };

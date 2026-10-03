@@ -43,7 +43,8 @@ Shows live runs first, then every finished run from the global registry plus
 --all is accepted for compatibility and has no effect.
 The refresh interval accepts milliseconds or seconds and must be at least 100ms.
 Press n for a new session. It starts in the current directory; send /cd DIR as
-the prompt to start it and later new sessions in DIR instead.
+the prompt to start it and later new sessions in DIR instead. In any prompt,
+Ctrl+V attaches the clipboard image, and dropped image files attach as images.
 Press t inside the TUI to preview and save a theme. --theme overrides the saved
 theme for one launch; RUDDR_TUI_THEME provides the same environment override.
 --beta enables the chat-first layout; RUDDR_TUI_BETA=1 provides the same

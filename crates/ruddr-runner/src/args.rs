@@ -42,6 +42,12 @@ const SPECS: &[Spec] = &[
         help: "file containing the initial task; - reads it from stdin",
     },
     Spec {
+        name: "image",
+        kind: Kind::Repeat,
+        value: "FILE",
+        help: "attach a png, jpg, gif, or webp image to the initial task (repeatable)",
+    },
+    Spec {
         name: "state-dir",
         kind: Kind::Text,
         value: "DIR",
@@ -292,6 +298,7 @@ fn apply(parsed: &mut Parsed, spec: &Spec, value: &str) -> Result<()> {
         "provider" => cfg.provider = value.into(),
         "cwd" => cfg.cwd = PathBuf::from(value),
         "prompt-file" => cfg.prompt_file = PathBuf::from(value),
+        "image" => cfg.images.push(PathBuf::from(value)),
         "state-dir" => cfg.state_dir = PathBuf::from(value),
         "model" => cfg.model = value.into(),
         "effort" => cfg.effort = value.into(),
@@ -411,6 +418,9 @@ mod tests {
             "--config",
             "a=b",
             "--config=c=d",
+            "--image",
+            "a.png",
+            "--image=/b.jpg",
         ]))
         .unwrap();
         let cfg = &parsed.cfg;
@@ -437,6 +447,7 @@ mod tests {
         assert_eq!(cfg.turn_timeout, std::time::Duration::from_secs(1200));
         assert_eq!(cfg.idle_timeout, std::time::Duration::ZERO);
         assert_eq!(cfg.codex_config, ["a=b", "c=d"]);
+        assert_eq!(cfg.images, [PathBuf::from("a.png"), PathBuf::from("/b.jpg")]);
         assert!(parsed.child_args.is_none());
     }
 

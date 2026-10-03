@@ -258,6 +258,8 @@ pub struct Prompt {
     pub model: Option<ModelInfo>,
     pub effort: Option<String>,
     pub resume: Option<DejaHit>,
+    /// Absolute paths of the images sent with this prompt.
+    pub images: Vec<PathBuf>,
     pub opened: Instant,
     pub typed: Instant,
 }
@@ -284,8 +286,11 @@ pub enum Msg {
     Bounced {
         state_dir: String,
         text: String,
+        images: Vec<PathBuf>,
         error: String,
     },
+    /// A clipboard image saved for the open prompt, or why none was.
+    Attached(Result<PathBuf, String>),
     Models(Vec<ModelInfo>),
     Deja(Result<Vec<DejaHit>, String>),
     Updated(Result<String, String>),
@@ -1840,6 +1845,10 @@ impl App {
             KeyCode::Char('j') if ctrl => prompt.insert('\n'),
             KeyCode::Enter => self.submit(),
             KeyCode::Tab if !matches!(prompt.kind, PromptKind::Route(PromptRoute::Steer | PromptRoute::Prompt)) => self.run(Cmd::Model),
+            KeyCode::Char('v') if ctrl => self.paste_image(),
+            KeyCode::Backspace if prompt.cursor == 0 && !prompt.images.is_empty() => {
+                prompt.images.pop();
+            }
             KeyCode::Backspace if alt || ctrl => prompt.delete_word(),
             // Most terminals send Ctrl+Backspace as Ctrl+H.
             KeyCode::Char('w' | 'h') if ctrl => prompt.delete_word(),
@@ -1875,6 +1884,16 @@ impl App {
 
     fn on_paste(&mut self, text: String) {
         let clean = text.replace("\r\n", "\n").replace('\r', "\n");
+        if self.prompt.is_some() {
+            // A terminal pastes nothing for a copied image, and pastes the
+            // paths of files dropped on it.
+            if clean.trim().is_empty() {
+                return self.paste_image();
+            }
+            if let Some(paths) = pasted_image_paths(&clean) {
+                return self.attach_images(paths);
+            }
+        }
         if let Some(prompt) = &mut self.prompt {
             for c in clean.chars() {
                 prompt.insert(c);
@@ -2548,6 +2567,7 @@ impl App {
             model,
             effort,
             resume: None,
+            images: vec![],
             opened: Instant::now(),
             typed: Instant::now(),
         });
@@ -2573,15 +2593,61 @@ impl App {
             model,
             effort,
             resume,
+            images: vec![],
             opened: Instant::now(),
             typed: Instant::now(),
         });
+    }
+
+    /// Reads the clipboard image on a helper thread. It is saved under the
+    /// directory the prompt's session runs in, so a sandboxed agent can
+    /// read it.
+    fn paste_image(&mut self) {
+        let Some(prompt) = &self.prompt else { return };
+        let cwd = match &prompt.target {
+            Some(session) if !session.cwd.is_empty() => PathBuf::from(&session.cwd),
+            _ => self.launch_cwd.clone(),
+        };
+        let tx = self.tx.clone();
+        self.toast("Reading the clipboard…", Kind::Info);
+        std::thread::spawn(move || {
+            let base = ruddr_core::paths::launch_runs_dir(&cwd);
+            let result = ruddr_core::paths::ensure_ignored_runs_dir(&base)
+                .map_err(|e| format!("create {}: {e}", base.display()))
+                .and_then(|()| actions::paste_clipboard_image(&base.join("images")));
+            let _ = tx.send(Msg::Attached(result));
+        });
+    }
+
+    fn attach_images(&mut self, paths: Vec<PathBuf>) {
+        let Some(prompt) = &mut self.prompt else { return };
+        let mut added = 0;
+        for path in paths {
+            if prompt.images.len() >= ruddr_core::images::MAX_IMAGES {
+                return self.toast(
+                    format!("A prompt carries at most {} images", ruddr_core::images::MAX_IMAGES),
+                    Kind::Warning,
+                );
+            }
+            if !prompt.images.contains(&path) {
+                prompt.images.push(path);
+                added += 1;
+            }
+        }
+        prompt.typed = Instant::now();
+        if added > 0 {
+            let count = prompt.images.len();
+            self.toast(format!("{count} image{} attached", if count == 1 { "" } else { "s" }), Kind::Info);
+        }
     }
 
     fn submit(&mut self) {
         let Some(prompt) = self.prompt.take() else { return };
         let message: String = prompt.text.iter().collect::<String>().trim().to_string();
         if message.is_empty() {
+            if !prompt.images.is_empty() {
+                self.toast("Type a message to send with the images", Kind::Warning);
+            }
             self.prompt = Some(prompt);
             return;
         }
@@ -2603,9 +2669,12 @@ impl App {
             return;
         }
         let (exe, tx) = (self.exe.clone(), self.tx.clone());
+        let images: Vec<String> = prompt.images.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let draft_images = prompt.images.clone();
         let overrides = LaunchOverrides {
             model: prompt.model.as_ref().and_then(|m| m.id.clone()),
             effort: prompt.effort.clone(),
+            images: images.clone(),
         };
         if prompt.kind == PromptKind::New {
             let cwd = self.launch_cwd.clone();
@@ -2664,7 +2733,7 @@ impl App {
             let state_dir = session.state_dir.clone();
             let result = match route {
                 PromptRoute::Steer | PromptRoute::Prompt => {
-                    actions::send_prompt(Path::new(&state_dir), route, observed_turn.as_deref(), &message)
+                    actions::send_prompt(Path::new(&state_dir), route, observed_turn.as_deref(), &message, &images)
                 }
                 PromptRoute::Continue => {
                     let spawned = tx.clone();
@@ -2686,6 +2755,7 @@ impl App {
                 Err(error) if route != PromptRoute::Continue => Msg::Bounced {
                     state_dir,
                     text: message,
+                    images: draft_images,
                     error,
                 },
                 Err(error) => Msg::Toast(error, Kind::Error),
@@ -2780,7 +2850,12 @@ impl App {
                 self.reset_artifact();
                 self.refresh();
             }
-            Msg::Bounced { state_dir, text, error } => {
+            Msg::Bounced {
+                state_dir,
+                text,
+                images,
+                error,
+            } => {
                 self.toast(format!("{error}; the draft is back in the editor"), Kind::Error);
                 self.refresh();
                 if self.prompt.is_none() && self.selected.as_deref() == Some(&state_dir) {
@@ -2788,9 +2863,12 @@ impl App {
                     if let Some(prompt) = &mut self.prompt {
                         prompt.text = text.chars().collect();
                         prompt.cursor = prompt.text.len();
+                        prompt.images = images;
                     }
                 }
             }
+            Msg::Attached(Ok(path)) => self.attach_images(vec![path]),
+            Msg::Attached(Err(error)) => self.toast(error, Kind::Warning),
             Msg::Models(models) => self.models = models,
             Msg::History(sessions) => self.on_history(sessions),
             Msg::Found(Ok(info)) => self.on_found(info),
@@ -3028,6 +3106,7 @@ mod tests {
             model: None,
             effort: None,
             resume: None,
+            images: vec![],
             opened: Instant::now(),
             typed: Instant::now(),
         };

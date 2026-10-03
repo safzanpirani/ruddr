@@ -225,7 +225,7 @@ fn a_rejected_interrupt_writes_nothing_to_the_provider() {
     c.attach_stdin(Box::new(recorder.clone()));
     let error = crate::control_server::interrupt(&c, "turn-1").unwrap_err();
     assert!(error.contains("interrupt was not sent"), "{error}");
-    let steer = crate::control_server::steer(&c, "go", "turn-1").unwrap_err();
+    let steer = crate::control_server::steer(&c, "go", &[], "turn-1").unwrap_err();
     assert!(steer.contains("steer was not sent"), "{steer}");
     assert!(recorder.text().is_empty(), "{}", recorder.text());
 }

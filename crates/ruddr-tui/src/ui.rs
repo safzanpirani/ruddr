@@ -1332,7 +1332,8 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
         }
     }
     let text_rows = lines.len().clamp(3, 12) as u16;
-    let height = text_rows + 5;
+    let image_row = u16::from(!prompt.images.is_empty());
+    let height = text_rows + 5 + image_row;
     let area = modal_rect(screen, width, height, opened, None);
     // Soft shadow under the modal.
     dim_region(
@@ -1377,6 +1378,9 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
             footer.extend([key("tab"), note(" model · ")]);
         }
     }
+    if area.width >= 76 {
+        footer.extend([key("ctrl+v"), note(" image · ")]);
+    }
     footer.extend([key("esc"), note(" cancel ")]);
     let footer_width: usize = footer.iter().map(|s| s.content.width()).sum();
     let mut block = Block::default()
@@ -1402,6 +1406,25 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, screen: Rect) {
             Paragraph::new(Span::styled(chip_text.trim().to_string(), Style::new().fg(p.dim.c()))),
             Rect { height: 1, ..text_area },
         );
+        text_area.y += 1;
+        text_area.height = text_area.height.saturating_sub(1);
+    }
+    if image_row > 0 {
+        let mut spans = vec![];
+        for (i, path) in prompt.images.iter().enumerate() {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            spans.push(Span::styled(
+                format!(" ▣ {name} "),
+                Style::new().fg(p.background.c()).bg(p.accent.c()),
+            ));
+            if i + 1 < prompt.images.len() {
+                spans.push(Span::raw(" "));
+            }
+        }
+        if prompt.cursor == 0 {
+            spans.push(Span::styled("  backspace removes", Style::new().fg(p.dim.c())));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), Rect { height: 1, ..text_area });
         text_area.y += 1;
         text_area.height = text_area.height.saturating_sub(1);
     }
@@ -1678,6 +1701,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
                 ("s  Enter", "steer, prompt, or continue"),
                 ("n", "new session"),
                 ("/cd DIR", "in a new-session prompt: set its dir"),
+                ("^v  drop", "in a prompt: attach an image"),
                 ("R", "continue thread in a new run"),
                 ("m", "choose model + effort"),
                 ("f", "find a past session (deja)"),

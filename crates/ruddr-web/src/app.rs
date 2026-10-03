@@ -627,6 +627,7 @@ impl App {
                 let expected = turn.unwrap_or_default();
                 let request = control::Request {
                     command: Command::Steer,
+                    images: vec![],
                     text: Some(message),
                     expected_turn_id: Some(expected.clone()),
                 };
@@ -651,6 +652,7 @@ impl App {
             _ => {
                 let request = control::Request {
                     command: Command::Prompt,
+                    images: vec![],
                     text: Some(message),
                     expected_turn_id: None,
                 };
@@ -752,6 +754,7 @@ impl App {
             if idle {
                 let request = control::Request {
                     command: Command::Stop,
+                    images: vec![],
                     text: None,
                     expected_turn_id: None,
                 };
@@ -766,6 +769,7 @@ impl App {
             let turn = live.turn_id.unwrap_or_default();
             let request = control::Request {
                 command: Command::Interrupt,
+                images: vec![],
                 text: None,
                 expected_turn_id: Some(turn.clone()).filter(|t| !t.is_empty()),
             };

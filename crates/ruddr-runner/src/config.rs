@@ -39,6 +39,8 @@ pub struct RunConfig {
     pub child_command: Vec<String>,
     /// `--config KEY=VALUE` overrides for the default codex app-server.
     pub codex_config: Vec<String>,
+    /// `--image FILE` attachments for the first turn, absolute after validation.
+    pub images: Vec<PathBuf>,
     /// Record the run in the global registry the TUI and web dashboard read.
     pub register_run: bool,
     /// Test seams that keep lifecycle tests fast and deterministic.
@@ -73,6 +75,7 @@ impl Default for RunConfig {
             idle_timeout: Duration::from_secs(4 * 3600),
             child_command: Vec::new(),
             codex_config: Vec::new(),
+            images: Vec::new(),
             register_run: false,
             idle_turn_start_timeout: None,
             interrupt_timeout: None,
@@ -103,6 +106,9 @@ pub fn validate_run_config(cfg: &mut RunConfig) -> Result<()> {
         return Err(Error::failed("provider command is empty"));
     }
     cfg.cwd = ruddr_core::paths::absolute(&cfg.cwd);
+    for image in &mut cfg.images {
+        *image = ruddr_core::images::checked_image(image).map_err(Error::failed)?;
+    }
     if provider == Provider::Codex && cfg.model.is_empty() {
         return Err(Error::failed("model is required"));
     }

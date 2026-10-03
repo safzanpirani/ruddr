@@ -32,6 +32,11 @@ fn read_message(parsed: &args::Parsed, stdin: &mut dyn Read) -> Result<String> {
     Ok(String::from_utf8_lossy(&raw).trim().to_string())
 }
 
+/// The `--image` files, checked and made absolute before any request goes out.
+fn attached_images(parsed: &args::Parsed) -> Result<Vec<String>> {
+    ruddr_core::images::checked_images(&parsed.all("image")).map_err(Error::usage)
+}
+
 fn state_dir_flag(parsed: &args::Parsed) -> Result<String> {
     parsed
         .string("state-dir")
@@ -56,6 +61,7 @@ pub fn steer(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> Re
     let specs = [
         args::value("state-dir", "DIR", "Ruddr run state directory"),
         args::value("message-file", "FILE", "read steering text from this file; - reads stdin"),
+        args::multi("image", "FILE", "attach a png, jpg, gif, or webp image (repeatable)"),
         args::value("expected-turn-id", "ID", "reject the steer if the active turn changed"),
         args::value("timeout", "DURATION", "control request timeout (default 30s)"),
     ];
@@ -66,6 +72,7 @@ pub fn steer(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> Re
     if message.is_empty() {
         return Err(Error::usage("steering text is required"));
     }
+    let images = attached_images(&parsed)?;
     let state = live_state(Path::new(&state_dir))?;
     if state.status != Status::Active {
         return Err(Error::failed(format!("turn is not steerable: status={}", state.status)));
@@ -84,6 +91,7 @@ pub fn steer(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> Re
     let expected = expected.unwrap_or_else(|| turn_of(&state).to_string());
     let request = Request {
         command: Command::Steer,
+        images,
         text: Some(message),
         expected_turn_id: Some(expected),
     };
@@ -96,6 +104,7 @@ pub fn prompt(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> R
     let specs = [
         args::value("state-dir", "DIR", "Ruddr run state directory"),
         args::value("message-file", "FILE", "read prompt text from this file; - reads stdin"),
+        args::multi("image", "FILE", "attach a png, jpg, gif, or webp image (repeatable)"),
         args::value("timeout", "DURATION", "control request timeout (default 1m0s)"),
     ];
     let parsed = args::parse("prompt", &specs, &argv)?;
@@ -105,6 +114,7 @@ pub fn prompt(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> R
     if message.is_empty() {
         return Err(Error::usage("prompt text is required"));
     }
+    let images = attached_images(&parsed)?;
     let state = live_state(Path::new(&state_dir))?;
     match state.status {
         Status::Idle => {}
@@ -113,6 +123,7 @@ pub fn prompt(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> R
     }
     let request = Request {
         command: Command::Prompt,
+        images,
         text: Some(message),
         expected_turn_id: None,
     };
@@ -135,6 +146,7 @@ pub fn stop(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
     let state_dir = single.ok_or_else(|| Error::usage("--state-dir is required"))?;
     let request = Request {
         command: Command::Stop,
+        images: vec![],
         text: None,
         expected_turn_id: None,
     };
@@ -173,6 +185,7 @@ pub fn interrupt(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
     let expected = expected.unwrap_or_else(|| turn_of(&state).to_string());
     let request = Request {
         command: Command::Interrupt,
+        images: vec![],
         text: None,
         expected_turn_id: Some(expected.clone()),
     };
@@ -224,11 +237,13 @@ pub fn broadcast(out: &mut dyn Write, refs: &[RunRef], action: Action, timeout: 
         let request = match action {
             Action::Stop => Request {
                 command: Command::Stop,
+                images: vec![],
                 text: None,
                 expected_turn_id: None,
             },
             Action::Interrupt => Request {
                 command: Command::Interrupt,
+                images: vec![],
                 text: None,
                 expected_turn_id: Some(turn_of(state).to_string()),
             },

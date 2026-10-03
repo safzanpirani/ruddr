@@ -317,6 +317,19 @@ ruddr run --prompt-file task.md --model gpt-6-sol \
 `--config` works with the default `codex app-server` command. With a custom
 command after `--`, add `-c KEY=VALUE` to that command instead.
 
+`--image FILE` (repeatable, up to 10) attaches a png, jpg, gif, or webp image
+to the first turn. `steer` and `prompt` take the same flag. Ruddr checks that
+each file exists before it sends anything, and an invalid path exits 2. Codex
+receives each image as a `localImage` input. Claude Code, OpenCode, Pi, and
+Droid get the absolute paths listed under the prompt text, and the agent opens
+them with its own file-reading tool, so keep images somewhere the provider's
+sandbox can read:
+
+```bash
+ruddr run --prompt-file task.md --image .scratch/screens/login-bug.png
+ruddr steer --state-dir .scratch/demo/run --image after.png "Now it looks like this."
+```
+
 Commands exit with distinct codes, so scripts can branch without parsing
 text:
 
@@ -725,7 +738,13 @@ sessions there, so that repository's project skills and instructions load.
 `DIR` may be absolute, relative to the current choice, or start with `~`; a
 bare `/cd` returns to the directory the TUI started in. "Change new-session
 directory" in the palette opens the prompt with `/cd ` typed. New
-sessions stay pinned at the top of the list. `m` opens the same picker to
+sessions stay pinned at the top of the list. Any prompt box takes images:
+`Ctrl+V` (or a paste that carries no text) attaches the clipboard image, or the
+image file copied in Finder or Explorer, and dropping image files on the
+terminal attaches them instead of typing their paths. Clipboard images are
+saved as private PNGs under the session's `.scratch/ruddr-tui/images`. On Linux
+this needs `wl-paste` or `xclip`. Attached images show above the draft, and
+Backspace at the start of the draft removes the last one. `m` opens the same picker to
 override the model for continuations, and `←`/`→` change the effort. When the
 `deja` CLI from [dejavu](#companion-dejavu) is installed, `f` searches past
 agent transcripts. Enter on a hit opens that session read-only in the history
@@ -977,7 +996,8 @@ ruddr --remote ampere tui
   Ruddr passes a leading `~/` through unquoted so the remote shell expands it.
   Relative paths resolve against the remote home directory.
 - `--prompt-file` and `--message-file` name local files. Ruddr sends their
-  contents over stdin and the remote side reads them with `-`.
+  contents over stdin and the remote side reads them with `-`. `--image`
+  names a remote file; copy the image to the remote machine first.
 - `run` always starts detached and requires `--cwd`, so the session outlives
   the SSH connection. Follow it with `peek`, `wait`, or the TUI.
 - `tui` runs on the remote machine under `ssh -t`. From a phone, its width
@@ -1175,7 +1195,9 @@ watch with `ruddr peek --state-dir DIR -n 25` and block bounded with
 Steering. While a turn is active you can redirect it without restarting:
    ruddr steer --state-dir DIR "the correction, exact literals preserved"
    ruddr steer --state-dir DIR --message-file FILE   (multiline/shell-unsafe)
-Use steer when new information arrives mid-turn. To abort a wrong-premise turn
+   ruddr steer --state-dir DIR --image shot.png "what the screenshot shows"
+`run`, `steer`, and `prompt` take `--image FILE` (repeatable) for screenshots
+and other images. Keep the file inside the run's `--cwd`. Use steer when new information arrives mid-turn. To abort a wrong-premise turn
 use `ruddr interrupt --state-dir DIR`, never kill -9. A rejected steer means
 the turn already ended. Read the output, and do not silently start a new run.
 

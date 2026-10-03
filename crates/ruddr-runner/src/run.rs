@@ -120,7 +120,10 @@ fn initialize(controller: &Controller, prompt: &str) -> std::result::Result<(), 
         .update(|state| state.thread_id = Some(thread_id.clone()))
         .map_err(|e| format!("persist thread id: {e}"))?;
     controller.trace(format!("[thread] {mode} {thread_id}"));
-    controller.start_turn(prompt, Duration::from_secs(60)).map_err(|e| e.message)
+    let images: Vec<String> = controller.cfg.images.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    controller
+        .start_turn(prompt, &images, Duration::from_secs(60))
+        .map_err(|e| e.message)
 }
 
 /// The thread/start, thread/resume, or thread/fork parameters for a run.
@@ -293,7 +296,7 @@ fn start_prompted_turn(controller: &Controller, request: crate::controller::Prom
     };
     if result.is_ok() {
         let timeout = controller.cfg.idle_turn_start_timeout.unwrap_or(DEFAULT_IDLE_TURN_START_TIMEOUT);
-        result = controller.start_turn(&request.text, timeout);
+        result = controller.start_turn(&request.text, &request.images, timeout);
     }
     let Err(error) = result else {
         reply(Ok(()));

@@ -28,7 +28,8 @@ comment that says what it owns.
   (`jsonrpc.rs`), the global run registry (`registry.rs`), session discovery
   for multi-run commands and the dashboards (`session.rs`), well-known paths
   and environment overrides (`paths.rs`), owner-only file helpers
-  (`fsutil.rs`), Go-syntax durations (`duration.rs`), provider selection and
+  (`fsutil.rs`), image attachments and the `localImage` input items
+  (`images.rs`), Go-syntax durations (`duration.rs`), provider selection and
   executable lookup (`provider.rs`), the model catalog (`models.rs`), and the
   theme list shared by the TUI and the web dashboard (`themes.json`).
 - `crates/ruddr-runner` — `ruddr run`: flag parsing and usage text

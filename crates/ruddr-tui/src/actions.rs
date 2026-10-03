@@ -20,17 +20,25 @@ const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(35);
 /// checked again against fresh state right before sending, and a steer
 /// carries the turn the user saw. A mismatch returns an error; it never
 /// becomes a different kind of request.
-pub fn send_prompt(state_dir: &Path, route: PromptRoute, observed_turn: Option<&str>, text: &str) -> Result<String, String> {
+pub fn send_prompt(
+    state_dir: &Path,
+    route: PromptRoute,
+    observed_turn: Option<&str>,
+    text: &str,
+    images: &[String],
+) -> Result<String, String> {
     let fresh = ruddr_core::state::read_state(state_dir).map_err(|e| e.message)?.displayed();
     revalidate_route(&fresh, route, observed_turn)?;
     let request = match route {
         PromptRoute::Steer => Request {
             command: ControlCommand::Steer,
+            images: images.to_vec(),
             text: Some(text.into()),
             expected_turn_id: fresh.turn_id.clone(),
         },
         PromptRoute::Prompt => Request {
             command: ControlCommand::Prompt,
+            images: images.to_vec(),
             text: Some(text.into()),
             expected_turn_id: None,
         },
@@ -57,6 +65,7 @@ pub fn stop(state_dir: &Path, observed: Status, observed_turn: Option<&str>) -> 
     let request = match observed {
         Status::Idle => Request {
             command: ControlCommand::Stop,
+            images: vec![],
             text: None,
             expected_turn_id: None,
         },
@@ -66,6 +75,7 @@ pub fn stop(state_dir: &Path, observed: Status, observed_turn: Option<&str>) -> 
             }
             Request {
                 command: ControlCommand::Interrupt,
+                images: vec![],
                 text: None,
                 expected_turn_id: fresh.turn_id.clone(),
             }
@@ -139,6 +149,125 @@ pub fn launch(
         });
     }
     Ok(dir)
+}
+
+const CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// macOS: a copied image file wins over its Finder icon; otherwise the
+/// clipboard's PNG data goes into the file named by the first argument.
+#[cfg(target_os = "macos")]
+const MAC_CLIPBOARD_SCRIPT: &[&str] = &[
+    "on run argv",
+    "try",
+    "return \"file:\" & POSIX path of (the clipboard as «class furl»)",
+    "end try",
+    "set png to the clipboard as «class PNGf»",
+    "set f to open for access (POSIX file (item 1 of argv)) with write permission",
+    "set eof f to 0",
+    "write png to f",
+    "close access f",
+    "return \"png\"",
+    "end run",
+];
+
+#[cfg(windows)]
+const WINDOWS_CLIPBOARD_SCRIPT: &str = "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; \
+    $files = [System.Windows.Forms.Clipboard]::GetFileDropList(); \
+    if ($files.Count -gt 0) { Write-Output ('file:' + $files[0]); exit 0 }; \
+    $image = [System.Windows.Forms.Clipboard]::GetImage(); if ($null -eq $image) { exit 3 }; \
+    $image.Save($env:RUDDR_PASTE_PATH, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'png'";
+
+/// Saves the clipboard's image as a private PNG in `dir`, or returns the
+/// image file the clipboard holds a copy of. The terminal never sees image
+/// data, so this asks the platform clipboard tool directly.
+pub fn paste_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
+    ruddr_core::fsutil::create_private_dir(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let target = PathBuf::from(format!("{}.png", ruddr_core::paths::new_run_dir_name(dir).display()));
+    let file = ruddr_core::fsutil::create_private_file_new(&target).map_err(|e| e.to_string())?;
+    let result = read_clipboard_into(&target, file);
+    let saved = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+    let outcome = match result {
+        Ok(Some(copied)) => {
+            let _ = std::fs::remove_file(&target);
+            return ruddr_core::images::checked_image(&copied)
+                .map_err(|_| "The copied file is not a png, jpg, gif, or webp image".to_string());
+        }
+        Ok(None) if saved > 0 => Ok(target.clone()),
+        Ok(None) => Err("The clipboard holds no image".to_string()),
+        Err(error) => Err(error),
+    };
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&target);
+    }
+    outcome
+}
+
+/// Fills `target` with the clipboard image, or returns the path of a copied
+/// file instead.
+fn read_clipboard_into(target: &Path, file: std::fs::File) -> Result<Option<PathBuf>, String> {
+    let copied = |stdout: &str| stdout.trim().strip_prefix("file:").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    {
+        drop(file);
+        let mut command = Command::new("osascript");
+        for line in MAC_CLIPBOARD_SCRIPT {
+            command.args(["-e", line]);
+        }
+        command.arg(target);
+        let (stdout, _, ok, _) = run_bounded(command, CLIPBOARD_TIMEOUT, 64 * 1024)?;
+        if !ok {
+            return Err("The clipboard holds no image".into());
+        }
+        Ok(copied(&stdout))
+    }
+    #[cfg(windows)]
+    {
+        drop(file);
+        let mut command = Command::new("powershell.exe");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", WINDOWS_CLIPBOARD_SCRIPT])
+            .env("RUDDR_PASTE_PATH", target);
+        let (stdout, _, ok, _) = run_bounded(command, CLIPBOARD_TIMEOUT, 64 * 1024)?;
+        if !ok {
+            return Err("The clipboard holds no image".into());
+        }
+        Ok(copied(&stdout))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (target, copied);
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() && on_path("wl-paste");
+        let mut command = if wayland {
+            let mut c = Command::new("wl-paste");
+            c.args(["--no-newline", "--type", "image/png"]);
+            c
+        } else if on_path("xclip") {
+            let mut c = Command::new("xclip");
+            c.args(["-selection", "clipboard", "-t", "image/png", "-o"]);
+            c
+        } else {
+            return Err("Install wl-clipboard or xclip to paste images".into());
+        };
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(file)
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + CLIPBOARD_TIMEOUT;
+        loop {
+            match child.try_wait().map_err(|e| e.to_string())? {
+                Some(status) if status.success() => return Ok(None),
+                Some(_) => return Err("The clipboard holds no image".into()),
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("Reading the clipboard timed out".into());
+                }
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
 }
 
 /// Runs a command with a deadline and bounded output, like the Bun TUI's
@@ -392,16 +521,16 @@ mod tests {
         state.turn_id = Some("t1".into());
         state.pid = std::process::id() as i64;
         ruddr_core::state::persist_state(&state).unwrap();
-        let error = send_prompt(&dir, PromptRoute::Steer, Some("t0"), "go").unwrap_err();
+        let error = send_prompt(&dir, PromptRoute::Steer, Some("t0"), "go", &[]).unwrap_err();
         assert!(error.contains("turn changed"), "{error}");
-        let error = send_prompt(&dir, PromptRoute::Prompt, None, "go").unwrap_err();
+        let error = send_prompt(&dir, PromptRoute::Prompt, None, "go", &[]).unwrap_err();
         assert!(error.contains("now active"), "{error}");
         let error = stop(&dir, Status::Idle, None).unwrap_err();
         assert!(error.contains("now active"), "{error}");
         // A dead controller reads as stale: no route, nothing sent.
         state.pid = 0;
         ruddr_core::state::persist_state(&state).unwrap();
-        let error = send_prompt(&dir, PromptRoute::Steer, Some("t1"), "go").unwrap_err();
+        let error = send_prompt(&dir, PromptRoute::Steer, Some("t1"), "go", &[]).unwrap_err();
         assert!(error.contains("stale"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -431,7 +560,7 @@ mod tests {
             line
         });
         assert_eq!(
-            send_prompt(&dir, PromptRoute::Steer, Some("turn-9"), "go left").unwrap(),
+            send_prompt(&dir, PromptRoute::Steer, Some("turn-9"), "go left", &[]).unwrap(),
             "Steer delivered"
         );
         let request: serde_json::Value = serde_json::from_str(server.join().unwrap().trim()).unwrap();
@@ -463,7 +592,7 @@ mod tests {
             std::thread::sleep(control::DEFAULT_TIMEOUT + Duration::from_millis(100));
             stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
         });
-        let result = send_prompt(&dir, PromptRoute::Prompt, None, "next turn");
+        let result = send_prompt(&dir, PromptRoute::Prompt, None, "next turn", &[]);
         server.join().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         assert_eq!(result.unwrap(), "Prompt sent");

@@ -68,6 +68,7 @@ impl TurnStartError {
 pub struct PromptRequest {
     pub id: u64,
     pub text: String,
+    pub images: Vec<String>,
     pub observed_turns: u32,
 }
 
@@ -276,13 +277,13 @@ impl Controller {
         }
     }
 
-    fn record_prompt_attempt(&self, id: &str, text: &str) -> io::Result<()> {
+    fn record_prompt_attempt(&self, id: &str, text: &str, images: &[String]) -> io::Result<()> {
         let thread = self.store.snapshot().thread_id.unwrap_or_default();
         let event = json!({
             "method": "item/completed",
             "params": {
                 "threadId": thread,
-                "item": {"id": id, "type": "userMessage", "text": text, "origin": "ruddr", "status": "pending"},
+                "item": {"id": id, "type": "userMessage", "text": text, "images": images, "origin": "ruddr", "status": "pending"},
             },
         });
         self.append_event(&json_line(&event))
@@ -817,7 +818,7 @@ impl Controller {
     /// Opens a turn and sends turn/start. Turn one reuses the first
     /// generation; later turns (idle mode) open a new one. The prompt text
     /// reaches only events.jsonl and a truncated trace line.
-    pub fn start_turn(&self, prompt: &str, timeout: Duration) -> Result<(), TurnStartError> {
+    pub fn start_turn(&self, prompt: &str, images: &[String], timeout: Duration) -> Result<(), TurnStartError> {
         let turn_number = {
             let mut lifecycle = self.lock();
             lifecycle.turn_count += 1;
@@ -845,12 +846,12 @@ impl Controller {
         }
         let state = self.store.snapshot();
         let thread = state.thread_id.clone().unwrap_or_default();
-        let mut params = json!({"threadId": thread, "input": [{"type": "text", "text": prompt}]});
+        let mut params = json!({"threadId": thread, "input": ruddr_core::images::user_input(prompt, images)});
         if !self.cfg.effort.is_empty() {
             params["effort"] = Value::String(self.cfg.effort.clone());
         }
         let prompt_id = format!("ruddr-prompt-{}", self.prompt_event_id.fetch_add(1, Ordering::SeqCst) + 1);
-        if let Err(e) = self.record_prompt_attempt(&prompt_id, prompt) {
+        if let Err(e) = self.record_prompt_attempt(&prompt_id, prompt, images) {
             return Err(TurnStartError::plain(match self.rollback_rejected_turn(turn_number) {
                 Ok(()) => format!("record prompt attempt: {e}"),
                 Err(rollback) => format!("record prompt attempt: {e}; rollback: {rollback}"),

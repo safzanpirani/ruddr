@@ -303,6 +303,8 @@ pub fn revalidate_route(fresh: &Session, route: PromptRoute, observed_turn: Opti
 pub struct LaunchOverrides {
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Absolute image paths for the first turn.
+    pub images: Vec<String>,
 }
 
 pub fn continuation_args(session: &Session, prompt_file: &str, state_dir: &str, overrides: &LaunchOverrides) -> Vec<String> {
@@ -344,6 +346,7 @@ pub fn continuation_args(session: &Session, prompt_file: &str, state_dir: &str, 
     if let Some(effort) = effort {
         args.extend(["--effort".into(), effort]);
     }
+    push_images(&mut args, overrides);
     args
 }
 
@@ -383,7 +386,81 @@ pub fn new_session_args(
     if let Some(effort) = &overrides.effort {
         args.extend(["--effort".into(), effort.clone()]);
     }
+    push_images(&mut args, overrides);
     args
+}
+
+fn push_images(args: &mut Vec<String>, overrides: &LaunchOverrides) {
+    for image in &overrides.images {
+        args.extend(["--image".into(), image.clone()]);
+    }
+}
+
+/// The image files a paste names, when the whole paste is image paths: what
+/// a terminal sends when files are dropped on it. Paths may be quoted,
+/// backslash-escaped, or `file://` URLs.
+pub fn pasted_image_paths(text: &str) -> Option<Vec<PathBuf>> {
+    let mut words = vec![];
+    let mut word = String::new();
+    let (mut quote, mut started) = (None, false);
+    let mut chars = text.trim().chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, '\'' | '"') => (quote, started) = (Some(c), true),
+            (Some(q), c) if c == q => quote = None,
+            (None | Some('"'), '\\') => {
+                word.extend(chars.next());
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (_, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if started {
+        words.push(word);
+    }
+    let paths: Vec<PathBuf> = words
+        .into_iter()
+        .map(|w| match w.strip_prefix("file://") {
+            Some(url) => PathBuf::from(percent_decode(url)),
+            None => PathBuf::from(w),
+        })
+        .collect();
+    let all_images = paths
+        .iter()
+        .all(|p| p.is_absolute() && ruddr_core::images::has_image_extension(p) && p.is_file());
+    (!paths.is_empty() && all_images).then_some(paths)
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok());
+        match (bytes[i], hex.and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The argument of a `/cd` draft in the new-session prompt: the whole draft
@@ -800,6 +877,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dropped_image_files_paste_as_attachments() {
+        let root = std::env::temp_dir().join(format!("ruddr-tui-drop-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("my shots")).unwrap();
+        let (a, b) = (root.join("my shots/a b.png"), root.join("c.JPG"));
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        std::fs::write(root.join("notes.txt"), b"x").unwrap();
+        let (a_s, b_s) = (a.display().to_string(), b.display().to_string());
+        assert_eq!(pasted_image_paths(&format!("'{a_s}' {b_s}\n")), Some(vec![a.clone(), b.clone()]));
+        assert_eq!(pasted_image_paths(&a_s.replace(' ', "\\ ")), Some(vec![a.clone()]));
+        assert_eq!(pasted_image_paths(&format!("\"{a_s}\"")), Some(vec![a.clone()]));
+        assert_eq!(
+            pasted_image_paths(&format!("file://{}", a_s.replace(' ', "%20"))),
+            Some(vec![a.clone()])
+        );
+        assert_eq!(pasted_image_paths(&format!("look at {b_s}")), None, "prose stays text");
+        assert_eq!(pasted_image_paths(&root.join("notes.txt").display().to_string()), None);
+        assert_eq!(pasted_image_paths(&root.join("gone.png").display().to_string()), None);
+        assert_eq!(pasted_image_paths("c.JPG"), None, "relative paths stay text");
+        assert_eq!(pasted_image_paths(""), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn launches_attach_images_with_the_image_flag() {
+        let overrides = LaunchOverrides {
+            images: vec!["/a.png".into(), "/b.png".into()],
+            ..Default::default()
+        };
+        let args = new_session_args("codex", "/w", "/p", "/d", &overrides, None).join(" ");
+        assert!(args.ends_with("--image /a.png --image /b.png"), "{args}");
+        let mut s = session(Status::Completed);
+        s.thread_id = Some("t".into());
+        s.cwd = "/w".into();
+        assert!(
+            continuation_args(&s, "/p", "/d", &overrides)
+                .join(" ")
+                .ends_with("--image /a.png --image /b.png")
+        );
+    }
+
+    #[test]
     fn cd_drafts_are_single_line_commands() {
         assert_eq!(cd_argument("/cd ../api"), Some("../api"));
         assert_eq!(cd_argument("  /cd   ~/work  "), Some("~/work"));
@@ -892,6 +1011,7 @@ mod tests {
             &LaunchOverrides {
                 model: Some("gpt-6-luna".into()),
                 effort: None,
+                ..Default::default()
             },
         );
         assert!(
@@ -915,6 +1035,7 @@ mod tests {
             &LaunchOverrides {
                 model: Some("m".into()),
                 effort: Some("low".into()),
+                ..Default::default()
             },
             Some("t"),
         );

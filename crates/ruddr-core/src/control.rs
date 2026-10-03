@@ -47,6 +47,9 @@ pub struct Request {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_turn_id: Option<String>,
+    /// Absolute image paths sent with a steer or prompt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -160,6 +163,7 @@ mod tests {
     fn requests_serialize_like_go() {
         let request = Request {
             command: Command::Steer,
+            images: vec![],
             text: Some("go left".into()),
             expected_turn_id: Some("t1".into()),
         };
@@ -169,6 +173,7 @@ mod tests {
         );
         let request = Request {
             command: Command::Stop,
+            images: vec![],
             text: None,
             expected_turn_id: None,
         };
