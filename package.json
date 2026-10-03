@@ -1,6 +1,6 @@
 {
   "name": "ruddr",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Thin control plane for Codex, Claude Code, OpenCode, Pi, and Factory Droid agent sessions: run, steer, observe, and a live TUI and web dashboard with diffs. One native binary.",
   "license": "MIT",
   "type": "module",

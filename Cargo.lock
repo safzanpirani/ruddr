@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-adapters"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "libc",
  "ruddr-core",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "interprocess",
  "libc",
@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "getrandom 0.4.3",
  "interprocess",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-history"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "ruddr-core",
  "rusqlite",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-runner"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "interprocess",
  "libc",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-tui"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -1538,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "ruddr-web"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "getrandom 0.4.3",
