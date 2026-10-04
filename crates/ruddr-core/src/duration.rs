@@ -3,6 +3,10 @@
 
 use std::time::{Duration, Instant};
 
+// Go's time.Duration stores signed 64-bit nanoseconds. Use the same ceiling
+// on every platform, regardless of the representation of Instant.
+const MAX_DURATION: Duration = Duration::from_nanos(i64::MAX as u64);
+
 pub fn parse(text: &str) -> Result<Duration, String> {
     let original = text;
     let text = text.trim();
@@ -38,6 +42,9 @@ pub fn parse(text: &str) -> Result<Duration, String> {
     }
     let out_of_range = || format!("duration {original:?} is out of range");
     let duration = Duration::try_from_secs_f64(total).map_err(|_| out_of_range())?;
+    if duration > MAX_DURATION {
+        return Err(out_of_range());
+    }
     // CLI durations become deadlines throughout the controller and commands.
     // Instant has a smaller platform-dependent range than Duration.
     Instant::now().checked_add(duration).ok_or_else(out_of_range)?;
@@ -95,6 +102,18 @@ mod tests {
             format!("{}h", "9".repeat(400)),
         ] {
             assert!(parse(&text).unwrap_err().contains("out of range"));
+        }
+    }
+
+    #[test]
+    fn enforces_a_platform_independent_limit() {
+        // Whole seconds avoid f64 rounding at the nanosecond boundary.
+        let seconds = (i64::MAX as u64) / 1_000_000_000;
+        let largest_whole_seconds = parse(&format!("{seconds}s")).unwrap();
+        assert_eq!(largest_whole_seconds, Duration::from_secs(seconds));
+        assert!(Instant::now().checked_add(largest_whole_seconds).is_some());
+        for text in [format!("{}s", seconds + 1), format!("{seconds}s1s"), "2562048h".into()] {
+            assert!(parse(&text).unwrap_err().contains("out of range"), "{text}");
         }
     }
 

@@ -398,7 +398,8 @@ fn push_images(args: &mut Vec<String>, overrides: &LaunchOverrides) {
 
 /// The image files a paste names, when the whole paste is image paths: what
 /// a terminal sends when files are dropped on it. Paths may be quoted,
-/// backslash-escaped, or `file://` URLs.
+/// backslash-escaped on Unix, or `file://` URLs. Windows paths keep their
+/// backslashes, including inside double quotes.
 pub fn pasted_image_paths(text: &str) -> Option<Vec<PathBuf>> {
     let mut words = vec![];
     let mut word = String::new();
@@ -406,9 +407,10 @@ pub fn pasted_image_paths(text: &str) -> Option<Vec<PathBuf>> {
     let mut chars = text.trim().chars();
     while let Some(c) = chars.next() {
         match (quote, c) {
-            (None, '\'' | '"') => (quote, started) = (Some(c), true),
+            (None, '"') => (quote, started) = (Some(c), true),
+            (None, '\'') if !cfg!(windows) => (quote, started) = (Some(c), true),
             (Some(q), c) if c == q => quote = None,
-            (None | Some('"'), '\\') => {
+            (None | Some('"'), '\\') if !cfg!(windows) => {
                 word.extend(chars.next());
                 started = true;
             }
@@ -880,13 +882,33 @@ mod tests {
     fn dropped_image_files_paste_as_attachments() {
         let root = std::env::temp_dir().join(format!("ruddr-tui-drop-{}", std::process::id()));
         std::fs::create_dir_all(root.join("my shots")).unwrap();
-        let (a, b) = (root.join("my shots/a b.png"), root.join("c.JPG"));
+        let (a, b) = (root.join("my shots").join("a b.png"), root.join("c.JPG"));
         std::fs::write(&a, b"x").unwrap();
         std::fs::write(&b, b"x").unwrap();
         std::fs::write(root.join("notes.txt"), b"x").unwrap();
         let (a_s, b_s) = (a.display().to_string(), b.display().to_string());
-        assert_eq!(pasted_image_paths(&format!("'{a_s}' {b_s}\n")), Some(vec![a.clone(), b.clone()]));
-        assert_eq!(pasted_image_paths(&a_s.replace(' ', "\\ ")), Some(vec![a.clone()]));
+        #[cfg(unix)]
+        {
+            assert_eq!(pasted_image_paths(&format!("'{a_s}' {b_s}\n")), Some(vec![a.clone(), b.clone()]));
+            assert_eq!(pasted_image_paths(&a_s.replace(' ', "\\ ")), Some(vec![a.clone()]));
+        }
+        #[cfg(windows)]
+        {
+            // Windows Terminal quotes paths containing spaces and leaves
+            // directory separators intact. The temp directory may have spaces.
+            let quote = |s: &str| if s.contains(' ') { format!("\"{s}\"") } else { s.to_owned() };
+            assert_eq!(
+                pasted_image_paths(&format!("{} {}\r\n", quote(&a_s), quote(&b_s))),
+                Some(vec![a.clone(), b.clone()])
+            );
+            assert_eq!(pasted_image_paths(&quote(&b_s)), Some(vec![b.clone()]));
+            let apostrophe = root.join("O'Brien.png");
+            std::fs::write(&apostrophe, b"x").unwrap();
+            assert_eq!(
+                pasted_image_paths(&quote(&apostrophe.display().to_string())),
+                Some(vec![apostrophe])
+            );
+        }
         assert_eq!(pasted_image_paths(&format!("\"{a_s}\"")), Some(vec![a.clone()]));
         assert_eq!(
             pasted_image_paths(&format!("file://{}", a_s.replace(' ', "%20"))),
