@@ -130,10 +130,8 @@ mod tests {
         let shim = root.join("provider.cmd");
         std::fs::write(&shim, "@echo off\r\n").unwrap();
         for provider in ["CLAUDE", "OPENCODE", "PI", "DROID"] {
-            assert_eq!(
-                resolve_executable(Some(root.join("provider").to_string_lossy().into_owned()), provider, &["unused"]),
-                shim.to_string_lossy()
-            );
+            let resolved = resolve_executable(Some(root.join("provider").to_string_lossy().into_owned()), provider, &["unused"]);
+            assert_eq!(std::fs::canonicalize(resolved).unwrap(), std::fs::canonicalize(&shim).unwrap());
         }
         std::fs::remove_dir_all(root).unwrap();
     }
