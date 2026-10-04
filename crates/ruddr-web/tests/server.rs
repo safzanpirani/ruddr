@@ -45,7 +45,8 @@ impl Fixture {
         std::fs::write(
             &fake,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nfor a in \"$@\"; do if [ -f \"$a\" ]; then cat \"$a\" >> '{log}'; fi; done\n\
+                "#!/bin/sh\nwhile [ -d '{log}.gate' ]; do sleep 0.01; done\nprintf '%s\\n' \"$*\" >> '{log}'\nfor a in \"$@\"; do if [ -f \"$a\" ]; then cat \"$a\" >> '{log}'; fi; done\n\
+                 printf done > '{log}.done'\n\
                  if [ \"$1\" = models ]; then echo '[{{\"provider\":\"codex\",\"id\":\"fake-model\",\"available\":true}}]'; exit 0; fi\n\
                  if [ \"$1\" = update ]; then echo 'update failed' >&2; exit 1; fi\necho accepted\n",
                 log = argv_log.display()
@@ -122,6 +123,18 @@ impl Fixture {
 
     fn argv_log(&self) -> String {
         std::fs::read_to_string(&self.argv_log).unwrap()
+    }
+
+    async fn completed_argv_log(&self) -> String {
+        let done = self.argv_log.with_extension("log.done");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !done.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake ruddr did not finish writing argv within 10 seconds");
+        self.argv_log()
     }
 
     fn dir_param(&self) -> String {
@@ -825,7 +838,7 @@ async fn new_sessions_validate_cwd_and_continuations_launch_detached_with_privat
     assert_eq!(mode(&started.join("prompt.md")), 0o600);
     assert_eq!(mode(&started.join("launch.stderr.log")), 0o600);
     assert_eq!(std::fs::read_to_string(started.join("prompt.md")).unwrap(), "follow-up\n");
-    let log = f.argv_log();
+    let log = f.completed_argv_log().await;
     let expected = format!(
         "run --detach --provider codex --cwd {root} --resume-thread thread-1 --prompt-file {dir}/prompt.md --state-dir {dir} \
          --sandbox workspace-write --approval-policy never --idle --model gpt-x --effort high\nfollow-up\n",
@@ -858,7 +871,41 @@ async fn new_sessions_launch_with_the_chosen_provider_and_model() {
         work = work.display(),
         dir = started.display()
     );
-    assert_eq!(f.argv_log(), expected);
+    assert_eq!(f.completed_argv_log().await, expected);
+}
+
+#[tokio::test]
+async fn launch_log_waits_for_the_fake_after_the_startup_window() {
+    let f = Fixture::new().await;
+    let gate = f.argv_log.with_extension("log.gate");
+    std::fs::create_dir(&gate).unwrap();
+    let dir = ruddr_web::launch::launch_session(
+        &f.root.join("fake-ruddr"),
+        &f.root,
+        "gated prompt",
+        |prompt, state| {
+            Ok(vec![
+                "run".into(),
+                "--prompt-file".into(),
+                prompt.display().to_string(),
+                "--state-dir".into(),
+                state.display().to_string(),
+            ])
+        },
+        |_| {},
+        Duration::ZERO,
+    )
+    .unwrap();
+    // The accepted launch still has a live child. HTTP acceptance cannot fence log reads.
+    assert_eq!(f.argv_log(), "");
+    std::fs::remove_dir(gate).unwrap();
+    assert_eq!(
+        f.completed_argv_log().await,
+        format!(
+            "run --detach --prompt-file {dir}/prompt.md --state-dir {dir}\ngated prompt\n",
+            dir = dir.display()
+        )
+    );
 }
 
 #[tokio::test]
