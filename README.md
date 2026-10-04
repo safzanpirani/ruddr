@@ -1020,10 +1020,10 @@ ruddr run \
   --model gpt-6-astra \
   --sandbox workspace-write \
   -- \
-  /Users/safzan/Development/projects/codex-auth-broker-private/codex-auth-broker \
+  /path/to/codex-auth-broker \
     app-server-bridge \
-    -broker-auth-url http://100.121.157.57:8765/v1/codex/auth \
-    -secret-file /Users/safzan/.codex/codex-auth-broker.secret
+    -broker-auth-url https://broker.example.com/v1/codex/auth \
+    -secret-file /path/to/broker.secret
 ```
 
 The process chain is:
