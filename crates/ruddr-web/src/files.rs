@@ -4,6 +4,8 @@
 //! decoding UTF-8, and pins the log's identity so a rotation between a size
 //! probe and a read cannot splice two files together.
 
+pub use ruddr_core::fsutil::directory_identity;
+use ruddr_core::fsutil::file_identity;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -29,43 +31,6 @@ pub fn open_no_follow(path: &Path) -> io::Result<File> {
         return Err(io::Error::other("refusing to follow a symbolic link"));
     }
     options.open(path)
-}
-
-/// A stable name for the file behind `metadata`: inode and device on Unix.
-pub fn identity(metadata: &Metadata) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        format!("{}:{}", metadata.ino(), metadata.dev())
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows has no stable inode in std; the creation time stands in.
-        let created = metadata
-            .created()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .unwrap_or_default();
-        format!("created:{}", created.as_nanos())
-    }
-}
-
-/// The identity of the directory at `path`, refusing a symbolic link.
-pub fn directory_identity(path: &Path) -> io::Result<String> {
-    #[cfg(unix)]
-    let metadata = open_no_follow(path)?.metadata()?;
-    #[cfg(not(unix))]
-    let metadata = {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() {
-            return Err(io::Error::other("refusing to follow a symbolic link"));
-        }
-        metadata
-    };
-    if !metadata.is_dir() {
-        return Err(io::Error::other("not a directory"));
-    }
-    Ok(identity(&metadata))
 }
 
 fn open_regular(path: &Path, what: &str) -> io::Result<(File, Metadata)> {
@@ -138,7 +103,7 @@ pub fn read_aligned_tail(path: &Path, max_bytes: u64) -> io::Result<AlignedTail>
         truncated: start > 0,
         pending: aligned[complete..].to_vec(),
         skipping,
-        identity: identity(&metadata),
+        identity: file_identity(&file)?,
     })
 }
 
@@ -146,7 +111,7 @@ pub fn read_aligned_tail(path: &Path, max_bytes: u64) -> io::Result<AlignedTail>
 /// `identity` and has not shrunk below `from`. `None` means it was replaced.
 pub fn read_range(path: &Path, from: u64, to: u64, expected_identity: &str) -> io::Result<Option<Vec<u8>>> {
     let (mut file, metadata) = open_regular(path, "event log")?;
-    if identity(&metadata) != expected_identity || metadata.len() < from {
+    if file_identity(&file)? != expected_identity || metadata.len() < from {
         return Ok(None);
     }
     Ok(Some(read_at(&mut file, from, to.saturating_sub(from))?))
@@ -272,9 +237,9 @@ impl EventTail {
     }
 
     fn try_tick(&mut self, path: &Path, verify: Verify) -> io::Result<Tick> {
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(_) => {
+        let (file, metadata) = match open_regular(path, "event log") {
+            Ok(opened) => opened,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 if self.offset == 0 && self.identity.is_empty() {
                     self.identity = "missing".into();
                     return Ok(Tick::Events(vec![TailEvent::Reset {
@@ -284,8 +249,11 @@ impl EventTail {
                 }
                 return Ok(Tick::Events(Vec::new()));
             }
+            Err(e) => return Err(e),
         };
-        if identity(&metadata) != self.identity || metadata.len() < self.offset {
+        let identity = file_identity(&file)?;
+        drop(file);
+        if identity != self.identity || metadata.len() < self.offset {
             let tail = read_aligned_tail(path, EVENTS_INITIAL_BYTES)?;
             if !verify() {
                 return Ok(Tick::Close);
@@ -325,5 +293,62 @@ impl EventTail {
             });
         }
         Ok(Tick::Events(events))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn replacement_resets_equal_and_larger_logs_and_discards_pending_bytes() {
+        for (replacement, text, pending) in [
+            ("new\ntwo", "new\n", "two\n"),
+            ("replacement\ncomplete\n", "replacement\ncomplete\n", "\n"),
+        ] {
+            let dir = std::env::temp_dir().join(format!("ruddr-web-rotation-{}", ruddr_core::fsutil::random_hex(6)));
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join("events.jsonl");
+            std::fs::write(&path, "old\npar").unwrap();
+            let initial = read_aligned_tail(&path, 100).unwrap();
+            let mut tail = EventTail::default();
+            assert_eq!(
+                tail.tick(&path, &|| true),
+                Tick::Events(vec![TailEvent::Reset {
+                    text: "old\n".into(),
+                    truncated: false,
+                }])
+            );
+            assert_eq!(tail.tick(&path, &|| true), Tick::Events(vec![]));
+            // All read handles have closed before rotation. Retain the old ID.
+            std::fs::rename(&path, dir.join("old.jsonl")).unwrap();
+            std::fs::write(&path, replacement).unwrap();
+            assert_eq!(
+                read_range(&path, initial.offset, initial.offset + 4, &initial.identity).unwrap(),
+                None
+            );
+            assert_eq!(
+                tail.tick(&path, &|| true),
+                Tick::Events(vec![TailEvent::Reset {
+                    text: text.into(),
+                    truncated: false,
+                }])
+            );
+            OpenOptions::new().append(true).open(&path).unwrap().write_all(b"\n").unwrap();
+            assert_eq!(
+                tail.tick(&path, &|| true),
+                Tick::Events(vec![TailEvent::Append { text: pending.into() }])
+            );
+            std::fs::write(&path, "x\n").unwrap();
+            assert_eq!(
+                tail.tick(&path, &|| true),
+                Tick::Events(vec![TailEvent::Reset {
+                    text: "x\n".into(),
+                    truncated: false,
+                }])
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

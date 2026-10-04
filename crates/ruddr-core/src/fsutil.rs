@@ -6,6 +6,62 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+/// Identifies the file behind an open handle. Appends leave this unchanged.
+/// Windows creation times are not identities: NTFS can preserve them across
+/// replacement through file tunneling. Query the volume and file index instead.
+pub fn file_identity(file: &File) -> io::Result<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok(format!("{}:{}", metadata.ino(), metadata.dev()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: file owns a live handle and info is writable for the call.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        Ok(format!("{index}:{}", info.dwVolumeSerialNumber))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "file identity is unavailable"))
+    }
+}
+
+/// Identifies a directory through an open handle, refusing a final symlink.
+pub fn directory_identity(path: &Path) -> io::Result<String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
+        // Directory handles need BACKUP_SEMANTICS. Inspect the link itself.
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::other("refusing to follow a symbolic link"));
+    }
+    if !metadata.is_dir() {
+        return Err(io::Error::other("not a directory"));
+    }
+    file_identity(&file)
+}
+
 /// Creates `dir` (and parents) and forces the leaf to 0700.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
@@ -123,6 +179,68 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ruddr-core-{name}-{}", random_hex(4)));
         create_private_dir(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn identity_survives_appends_but_changes_on_replacement() {
+        let dir = temp_dir("identity");
+        let path = dir.join("events.jsonl");
+        fs::write(&path, b"old\n").unwrap();
+        let identity = file_identity(&File::open(&path).unwrap()).unwrap();
+        OpenOptions::new().append(true).open(&path).unwrap().write_all(b"more\n").unwrap();
+        assert_eq!(file_identity(&File::open(&path).unwrap()).unwrap(), identity);
+        // Keep the old file allocated so its index cannot be reused.
+        fs::rename(&path, dir.join("old.jsonl")).unwrap();
+        fs::write(&path, b"new\nmore\n").unwrap();
+        assert_ne!(file_identity(&File::open(&path).unwrap()).unwrap(), identity);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_identity_distinguishes_equal_creation_and_write_times() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+        let dir = temp_dir("equal-times");
+        let path = dir.join("events.jsonl");
+        let time = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 30_000_000,
+        };
+        let write = |bytes: &[u8]| {
+            fs::write(&path, bytes).unwrap();
+            let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            // SAFETY: file owns a live handle; both timestamp pointers are valid.
+            assert_ne!(unsafe { SetFileTime(file.as_raw_handle(), &time, std::ptr::null(), &time) }, 0);
+        };
+        write(b"old\n");
+        let old = file_identity(&File::open(&path).unwrap()).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        fs::rename(&path, dir.join("old.jsonl")).unwrap();
+        write(b"new\n");
+        let replacement = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.created().unwrap(), replacement.created().unwrap());
+        assert_eq!(metadata.modified().unwrap(), replacement.modified().unwrap());
+        assert_eq!(metadata.len(), replacement.len());
+        assert_ne!(file_identity(&File::open(&path).unwrap()).unwrap(), old);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn directory_identity_changes_on_replacement() {
+        let dir = temp_dir("directory-identity");
+        let path = dir.join("run");
+        fs::create_dir(&path).unwrap();
+        let identity = directory_identity(&path).unwrap();
+        fs::write(path.join("events.jsonl"), b"new\n").unwrap();
+        assert_eq!(directory_identity(&path).unwrap(), identity);
+        fs::rename(&path, dir.join("old")).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_ne!(directory_identity(&path).unwrap(), identity);
+        assert!(directory_identity(&dir.join("old/events.jsonl")).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

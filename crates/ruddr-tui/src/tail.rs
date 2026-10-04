@@ -4,6 +4,7 @@
 //! channel. A partial last line waits until its newline arrives. The first
 //! read starts at most [`HISTORY_BYTES`] from the end, on a line boundary.
 
+use ruddr_core::fsutil::file_identity;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -45,26 +46,9 @@ pub struct FileTail {
     offset: u64,
     partial: Vec<u8>,
     started: bool,
-    identity: Option<FileIdentity>,
+    identity: Option<String>,
     /// The history window began mid-record: drop bytes up to the next newline.
     skipping: bool,
-}
-
-#[cfg(unix)]
-type FileIdentity = (u64, u64);
-#[cfg(not(unix))]
-type FileIdentity = Option<std::time::SystemTime>;
-
-fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (metadata.dev(), metadata.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        metadata.created().ok()
-    }
 }
 
 impl FileTail {
@@ -90,7 +74,7 @@ impl FileTail {
         };
         let metadata = file.metadata()?;
         let size = metadata.len();
-        let identity = file_identity(&metadata);
+        let identity = file_identity(&file)?;
         let mut reset = false;
         if size < self.offset || self.identity.as_ref().is_some_and(|previous| *previous != identity) {
             // Truncated or replaced: start over.
@@ -237,7 +221,7 @@ mod tests {
         assert_eq!(tail.poll().unwrap(), (false, vec!["one".to_string()], true));
         assert_eq!(tail.poll().unwrap().1, Vec::<String>::new());
         append(&path, "o\r\nthree\n");
-        assert_eq!(tail.poll().unwrap().1, vec!["two".to_string(), "three".to_string()]);
+        assert_eq!(tail.poll().unwrap(), (false, vec!["two".to_string(), "three".to_string()], true));
         std::fs::write(&path, "new\n").unwrap();
         assert_eq!(tail.poll().unwrap(), (true, vec!["new".to_string()], true), "truncation resets");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
