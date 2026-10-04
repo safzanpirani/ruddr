@@ -10,6 +10,7 @@ use super::skill;
 use ruddr_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -388,8 +389,8 @@ pub fn update(out: &mut dyn Write, context: &Context, check_only: bool) -> Resul
     writeln!(out, "updating ruddr {current} -> {latest} via {}", channel.kind())?;
     out.flush()?;
     match channel {
-        Channel::Npm(_) => package_manager_update(out, "npm", &["install", "-g", &format!("ruddr@{latest}")])?,
-        Channel::Bun(_) => package_manager_update(out, "bun", &["add", "-g", &format!("ruddr@{latest}")])?,
+        Channel::Npm(root) => package_manager_update(out, "npm", &npm_update_args(&root, &latest))?,
+        Channel::Bun(_) => package_manager_update(out, "bun", &["add".into(), "-g".into(), format!("ruddr@{latest}").into()])?,
         Channel::Source => {
             refresh_skill(out, context, false);
             return Err(Error::failed(
@@ -434,11 +435,42 @@ fn refresh_skill(out: &mut dyn Write, context: &Context, with_new_binary: bool) 
     }
 }
 
-fn package_manager_update(out: &mut dyn Write, tool: &str, arguments: &[&str]) -> Result<()> {
-    let joined = arguments.join(" ");
+fn npm_update_args(package_root: &Path, latest: &str) -> Vec<OsString> {
+    let mut arguments = vec!["install".into(), "-g".into()];
+    if let Some(prefix) = npm_prefix(package_root) {
+        arguments.extend(["--prefix".into(), prefix.as_os_str().to_owned()]);
+    }
+    arguments.push(format!("ruddr@{latest}").into());
+    arguments
+}
+
+/// Global npm packages live in <prefix>/lib/node_modules on Unix and
+/// <prefix>/node_modules on Windows. Preserve the existing invocation when
+/// the detected package root does not follow the native global layout.
+fn npm_prefix(package_root: &Path) -> Option<&Path> {
+    if !package_root.is_absolute() {
+        return None;
+    }
+    let modules = package_root.parent()?;
+    if modules.file_name()? != "node_modules" {
+        return None;
+    }
+    let prefix = modules.parent()?;
+    #[cfg(not(windows))]
+    let prefix = {
+        if prefix.file_name()? != "lib" {
+            return None;
+        }
+        prefix.parent()?
+    };
+    Some(prefix)
+}
+
+fn package_manager_update(out: &mut dyn Write, tool: &str, arguments: &[OsString]) -> Result<()> {
+    let joined = arguments.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>().join(" ");
     let status = std::process::Command::new(tool).args(arguments).status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            Error::failed(format!("{tool} is not on PATH; install the update with `{tool} {joined}`"))
+            Error::failed(format!("{tool} is not on PATH; add it to PATH and rerun `ruddr update`"))
         } else {
             Error::failed(format!("{tool} {joined}: {e}"))
         }
@@ -585,6 +617,48 @@ mod tests {
         write(&other.join("scripts").join("npm-binary.cjs"), "");
         assert_eq!(detect_channel(&other.join("ruddr")), Channel::Binary);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn npm_update_preserves_the_installed_prefix() {
+        let base = std::env::temp_dir();
+        for prefix in [base.join("custom prefix"), base.join("system"), base.join("lib")] {
+            let modules = if cfg!(windows) { prefix.clone() } else { prefix.join("lib") };
+            let root = modules.join("node_modules").join("ruddr");
+            let arguments = npm_update_args(&root, "99.0.0");
+            let mut command = std::process::Command::new("npm");
+            command.args(&arguments);
+            let expected: Vec<OsString> = vec![
+                "install".into(),
+                "-g".into(),
+                "--prefix".into(),
+                prefix.into_os_string(),
+                "ruddr@99.0.0".into(),
+            ];
+            assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn npm_update_keeps_the_fallback_for_unrecognized_layouts() {
+        let base = std::env::temp_dir();
+        for root in [PathBuf::new(), PathBuf::from("lib/node_modules/ruddr"), base.join("ruddr")] {
+            assert_eq!(
+                npm_update_args(&root, "99.0.0"),
+                vec![OsString::from("install"), "-g".into(), "ruddr@99.0.0".into()],
+            );
+        }
+        #[cfg(not(windows))]
+        assert!(npm_prefix(&base.join("project/node_modules/ruddr")).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_update_preserves_non_unicode_prefixes() {
+        use std::os::unix::ffi::OsStringExt;
+        let prefix = std::env::temp_dir().join(OsString::from_vec(b"prefix-\xff".to_vec()));
+        let root = prefix.join("lib/node_modules/ruddr");
+        assert_eq!(npm_update_args(&root, "99.0.0")[3], prefix.as_os_str());
     }
 
     fn check(age_ms: i64, latest: &str) -> UpdateCheck {
