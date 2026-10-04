@@ -197,6 +197,14 @@ ruddr tui                                                 # every session, live
 ruddr web                                                 # browser dashboard
 ```
 
+In `ruddr tui`, `H` browses every agent's local sessions. With `deja` on PATH,
+`f` searches sessions as you type and Enter opens a result read-only. `Ctrl+R`
+opens its continuation prompt. `L` opens the last eligible session in the TUI
+launch repo/cwd. `M` searches Claude project memories across projects and
+previews a selected file. `Q` asks about the selected session; Enter reviews
+its question and `y` confirms the paid model call. `n`/Esc cancels before the
+call. Closing the answer view does not cancel an already confirmed query.
+
 `ruddr web` prints a link that exchanges the private token in
 `~/.config/ruddr/web-token` for an HttpOnly cookie. Bind it to loopback or a
 private address with `--host`. The browser can steer active

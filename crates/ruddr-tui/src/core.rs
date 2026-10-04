@@ -563,37 +563,59 @@ pub struct DejaHit {
     pub project: String,
     pub date: String,
     pub opening_prompt: String,
+    pub locator: String,
+    pub excerpt: String,
 }
 
-/// `deja find --json` hits carry a resume command; its id is the thread id.
-pub fn parse_deja_hits(json: &str) -> Vec<DejaHit> {
-    let Ok(parsed) = serde_json::from_str::<Value>(json) else {
-        return vec![];
-    };
-    let Some(hits) = parsed.get("hits").and_then(Value::as_array) else {
-        return vec![];
-    };
-    hits.iter()
-        .filter_map(|hit| {
-            let resume = hit.get("resume")?.as_str()?;
-            let (provider, id) = if let Some(id) = resume.strip_prefix("claude --resume ") {
-                ("claude", id)
-            } else {
-                ("codex", resume.strip_prefix("codex resume ")?)
-            };
-            if id.is_empty() || id.contains(char::is_whitespace) {
-                return None;
-            }
-            let text = |key: &str| hit.get(key).and_then(Value::as_str).unwrap_or("").to_string();
-            Some(DejaHit {
-                provider: provider.into(),
-                session_id: id.into(),
-                project: text("project"),
-                date: text("date"),
-                opening_prompt: text("openingPrompt"),
-            })
+/// Read structured metadata first. Resume commands are never executed as shell text.
+pub fn parse_deja_hit(hit: &Value) -> Option<DejaHit> {
+    let text = |key: &str| hit.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let resume = text("resume");
+    let prefixes = [
+        ("claude --resume ", "claude"),
+        ("codex resume ", "codex"),
+        ("droid --resume ", "droid"),
+        ("pi --session ", "pi"),
+        ("opencode2 -s ", "opencode"),
+    ];
+    let parsed = prefixes
+        .iter()
+        .find_map(|(prefix, provider)| resume.strip_prefix(prefix).map(|id| (*provider, id)));
+    let source = text("source");
+    let provider = if source.is_empty() { parsed?.0.to_string() } else { source };
+    if !ruddr_history::Provider::ALL.iter().any(|p| p.name() == provider) {
+        return None;
+    }
+    let session_id = parsed
+        .filter(|(p, id)| *p == provider && !id.is_empty() && (*p == "pi" || !id.contains(char::is_whitespace)))
+        .map(|(_, id)| id.to_string())
+        .unwrap_or_default();
+    let locator = text("path");
+    if session_id.is_empty() && locator.is_empty() {
+        return None;
+    }
+    let excerpt = hit
+        .get("matches")
+        .and_then(Value::as_array)
+        .map(|matches| {
+            matches
+                .iter()
+                .filter_map(|m| m.get("text").and_then(Value::as_str))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("\n")
         })
-        .collect()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| text("openingPrompt"));
+    Some(DejaHit {
+        provider,
+        session_id,
+        locator,
+        excerpt,
+        project: text("project"),
+        date: text("date"),
+        opening_prompt: text("openingPrompt"),
+    })
 }
 
 // --- deletion -------------------------------------------------------------
@@ -1189,7 +1211,8 @@ mod tests {
 
     #[test]
     fn deja_hits_need_resume() {
-        let hits = parse_deja_hits(r#"{"hits":[{"resume":"claude --resume abc","project":"p"},{"resume":"rm -rf /"}]}"#);
+        let values: Value = serde_json::from_str(r#"[{"resume":"claude --resume abc","project":"p"},{"resume":"rm -rf /"}]"#).unwrap();
+        let hits: Vec<_> = values.as_array().unwrap().iter().filter_map(parse_deja_hit).collect();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].provider, "claude");
         assert_eq!(hits[0].session_id, "abc");

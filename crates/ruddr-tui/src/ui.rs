@@ -215,6 +215,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.help {
         draw_help(frame, app, area);
     }
+    if app.deja.visible {
+        let p = *app.palette();
+        crate::deja::draw(frame, &mut app.deja, area, &p);
+    }
 }
 
 fn dim_region(frame: &mut Frame, area: Rect, p: &Palette, amount: f32) {
@@ -1072,7 +1076,6 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         let (label, hint) = match target {
             SearchTarget::Sessions => ("filter", "Enter keep · Esc clear"),
             SearchTarget::Artifact => ("search", "Enter jump · n/N matches · Esc clear"),
-            SearchTarget::Deja => ("deja find", "Enter search · Esc cancel"),
         };
         let started = app.started;
         let caret = if blink(app, started) { "▏" } else { " " };
@@ -1502,12 +1505,11 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
     if picker.opened.elapsed() < Duration::from_millis(250) {
         wants_transition = true;
     }
-    let two_line = matches!(picker.kind, PickerKind::Deja);
-    let per: u16 = if two_line { 2 } else { 1 };
+    let per: u16 = 1;
     let longest = picker
         .items
         .iter()
-        .map(|i| i.label.width() + i.key.width() + if two_line { 0 } else { i.hint.width().min(40) } + 10)
+        .map(|i| i.label.width() + i.key.width() + i.hint.width().min(40) + 10)
         .max()
         .unwrap_or(30) as u16;
     let width = match picker.kind {
@@ -1533,7 +1535,6 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
         .title(Span::styled(format!(" {} ", picker.title), Style::new().fg(edge.c()).bold()));
     let footer = match picker.kind {
         PickerKind::Model => Some(" ←/→ effort · enter pick · esc "),
-        PickerKind::Deja => Some(" enter open · ^r resume · esc "),
         _ => None,
     };
     let block = match footer {
@@ -1615,7 +1616,7 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
             if selected {
                 right = reason.clone();
             }
-        } else if !two_line && !item.hint.is_empty() && picker.kind != PickerKind::Palette {
+        } else if !item.hint.is_empty() && picker.kind != PickerKind::Palette {
             right = item.hint.clone();
         }
         let key = if item.key.is_empty() {
@@ -1636,11 +1637,7 @@ fn draw_picker(frame: &mut Frame, app: &mut App, screen: Rect) {
         if !key.is_empty() {
             spans.push(Span::styled(key, Style::new().fg(p.dim.c()).bg(p.background.c())));
         }
-        let mut lines = vec![Line::from(spans)];
-        if two_line {
-            let hint: String = item.hint.chars().take((list_area.width as usize).saturating_sub(6)).collect();
-            lines.push(Line::from(Span::styled(format!("    {hint}"), Style::new().fg(p.dim.c()))));
-        }
+        let lines = vec![Line::from(spans)];
         frame.render_widget(Paragraph::new(lines), rect);
     }
     for offset_row in 0..per as i32 {
@@ -1704,7 +1701,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
                 ("^v  drop", "in a prompt: attach an image"),
                 ("R", "continue thread in a new run"),
                 ("m", "choose model + effort"),
-                ("f", "find a past session (deja)"),
+                ("f", "live session search (deja)"),
+                ("L", "open last session in launch repo/cwd"),
+                ("M", "search Claude project memories"),
+                ("Q", "query selected session (paid; confirm)"),
                 ("H", "browse every agent's sessions + diffs"),
                 ("e", "history: only sessions that edited files"),
                 ("x x", "interrupt turn / end idle session"),

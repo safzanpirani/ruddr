@@ -747,9 +747,30 @@ this needs `wl-paste` or `xclip`. Attached images show above the draft, and
 Backspace at the start of the draft removes the last one. `m` opens the same picker to
 override the model for continuations, and `←`/`→` change the effort. When the
 `deja` CLI from [dejavu](#companion-dejavu) is installed, `f` searches past
-agent transcripts. Enter on a hit opens that session read-only in the history
-list below, even when it is older than the 400 sessions the list loads, so its
-chat and diff can be read. `Ctrl+R` on a hit resumes it under Ruddr instead.
+agent transcripts as you type. Input settles for 250 ms before a search starts.
+The panel keeps dejavu's ranking and highlights matching terms in excerpts.
+One request runs at a time; newer input replaces the queued search and stale
+results are discarded. `↑`/`↓` selects a hit. Enter opens that session read-only
+in the history list, including sessions older than its 400-session limit.
+`Ctrl+R` opens a continuation prompt for the hit. Esc closes the panel.
+Results and footer buttons also accept mouse clicks and taps.
+
+`L` ("Continue where I left off" in the palette) runs `deja last --json` in
+the TUI's launch directory and opens the newest eligible session in that repo
+or cwd. Dejavu excludes the active session. The action opens history without
+starting a provider run. `/cd DIR` also changes the directory used by `L`.
+
+`M` searches Claude project memories across projects through `deja memory
+search --json`. Type a literal phrase, select a file, and press Enter to preview
+its text. `Q` asks a question about the selected session through `deja query`.
+Enter reviews the question and the fixed session target. Press `y` to authorize
+the paid model call, or `n`/Esc to cancel. The confirmation shows no price
+estimate because dejavu does not provide one. A confirmed query runs in the
+background and displays its answer. Esc closes the view but does not cancel
+a paid call or refund its cost. No query retries run automatically. Free calls
+have a 30-second deadline; queries have a three-minute deadline.
+Use `↑`/`↓` or PgUp/PgDn to scroll a memory preview or answer. All four actions
+also appear in the command palette. They require `deja` on `PATH`.
 
 `H` (or "Browse every agent's sessions" in the palette) switches the sessions
 list to every agent's local history, whether or not Ruddr started the session:
@@ -1244,7 +1265,10 @@ verify the work yourself, and merge the worktrees one at a time.
 Watching everything at once. `ruddr tui` shows a dashboard of live and
 recent sessions with a prompt box: type to steer an active turn, prompt an
 idle one, or continue a finished thread; `n` starts a new session, `m` picks
-the model, `x x` stops. `ruddr tui --beta` switches to a chat-first layout.
+the model, `x x` stops. With deja installed, `f` searches past sessions live,
+`L` opens the last session in the launch repo/cwd, `M` searches project
+memories, and `Q` queries the selected session after paid-model confirmation.
+`ruddr tui --beta` switches to a chat-first layout.
 
 Ground rules:
 - Report token usage/cost from `ruddr status --json` when the human asks

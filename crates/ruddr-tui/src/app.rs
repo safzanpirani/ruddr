@@ -5,6 +5,7 @@ use crate::actions;
 use crate::activity::{self, Activities, Activity};
 use crate::cache::RenderCache;
 use crate::core::*;
+use crate::deja::{self, Browser, Effect, Page, Target};
 use crate::tail::{Batch, Source, Tailer};
 use crate::theme::{self, Palette, themes};
 use crate::transcript::{DRAIN_TICK, ToolDetail, Transcript};
@@ -94,6 +95,9 @@ pub enum Cmd {
     Continue,
     Model,
     Find,
+    Last,
+    Memories,
+    Query,
     Stop,
     StopNow,
     Tab(Tab),
@@ -124,7 +128,6 @@ pub enum Action {
     Cmd(Cmd),
     Model(usize),
     Theme(usize),
-    Deja(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -132,7 +135,6 @@ pub enum PickerKind {
     Palette,
     Model,
     Theme,
-    Deja,
     Menu,
     Confirm,
 }
@@ -268,7 +270,6 @@ pub struct Prompt {
 pub enum SearchTarget {
     Sessions,
     Artifact,
-    Deja,
 }
 
 pub struct Search {
@@ -292,7 +293,7 @@ pub enum Msg {
     /// A clipboard image saved for the open prompt, or why none was.
     Attached(Result<PathBuf, String>),
     Models(Vec<ModelInfo>),
-    Deja(Result<Vec<DejaHit>, String>),
+    Deja(deja::Response),
     Updated(Result<String, String>),
     Branch(String, String),
     Diff {
@@ -527,7 +528,7 @@ pub struct App {
     pub models: Vec<ModelInfo>,
     pub pending_model: Option<(ModelInfo, Option<String>)>,
     pub deja_available: bool,
-    pub deja_hits: Vec<DejaHit>,
+    pub deja: Browser,
     pub history: Option<HistoryMode>,
     pub update: Option<String>,
     pub updating: bool,
@@ -656,7 +657,7 @@ impl App {
             models: fallback_models(),
             pending_model: None,
             deja_available: actions::on_path("deja"),
-            deja_hits: vec![],
+            deja: Browser::default(),
             history: None,
             updating: false,
             picker: None,
@@ -983,7 +984,17 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let found = ruddr_history::find_session(&ruddr_history::Stores::discover(), provider, &hit.session_id)
-                .ok_or_else(|| format!("No {} transcript found for {}", hit.provider, hit.session_id));
+                .or_else(|| {
+                    (!hit.locator.is_empty()).then(|| ruddr_history::SessionInfo {
+                        provider,
+                        locator: hit.locator,
+                        id: hit.session_id,
+                        cwd: hit.project,
+                        title: hit.opening_prompt,
+                        updated_ms: parse_time(&format!("{}T00:00:00Z", hit.date)).unwrap_or(0),
+                    })
+                })
+                .ok_or_else(|| format!("No {} transcript found", hit.provider));
             let _ = tx.send(Msg::Found(found));
         });
     }
@@ -1556,6 +1567,10 @@ impl App {
             self.help = false;
             return;
         }
+        if self.deja.visible {
+            let effect = self.deja.key(key, Instant::now());
+            return self.deja_effect(effect);
+        }
         if self.picker.is_some() {
             return self.on_picker_key(key);
         }
@@ -1597,6 +1612,9 @@ impl App {
             KeyCode::Char('t') => self.run(Cmd::Theme),
             KeyCode::Char('m') => self.run(Cmd::Model),
             KeyCode::Char('f') => self.run(Cmd::Find),
+            KeyCode::Char('L') => self.run(Cmd::Last),
+            KeyCode::Char('M') => self.run(Cmd::Memories),
+            KeyCode::Char('Q') => self.run(Cmd::Query),
             KeyCode::Char('r') => self.run(Cmd::Refresh),
             KeyCode::Char('R') => self.run(Cmd::Continue),
             KeyCode::Char('o') => self.run(Cmd::Tab(self.tab.next())),
@@ -1681,17 +1699,14 @@ impl App {
                     SearchTarget::Artifact => {
                         self.artifact_query.remove(&self.tab);
                     }
-                    SearchTarget::Deja => {}
                 }
                 self.search = None;
                 self.refresh();
                 return;
             }
             KeyCode::Enter => {
-                let text = search.text.clone();
                 self.search = None;
                 match target {
-                    SearchTarget::Deja => self.run_deja(text),
                     SearchTarget::Artifact => {
                         self.cursor = None;
                         self.jump_match(true)
@@ -1717,7 +1732,6 @@ impl App {
             SearchTarget::Artifact => {
                 self.artifact_query.insert(self.tab, text);
             }
-            SearchTarget::Deja => {}
         }
     }
 
@@ -1763,14 +1777,6 @@ impl App {
             }
             KeyCode::Char('n') if picker.kind == PickerKind::Confirm => {
                 self.picker = None;
-                return;
-            }
-            KeyCode::Char('r') if picker.kind == PickerKind::Deja && key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(Action::Deja(hit)) = picker.selected().map(|i| picker.items[i].action.clone()) {
-                    self.picker = None;
-                    let hit = self.deja_hits[hit].clone();
-                    self.open_new_prompt(Some(hit));
-                }
                 return;
             }
             KeyCode::Backspace if picker.filterable => {
@@ -1827,10 +1833,6 @@ impl App {
                 }
                 self.toast(format!("Model: {label}"), Kind::Info);
             }
-            Action::Deja(hit) => {
-                let hit = self.deja_hits[hit].clone();
-                self.show_deja_hit(hit);
-            }
         }
     }
 
@@ -1883,6 +1885,10 @@ impl App {
     }
 
     fn on_paste(&mut self, text: String) {
+        if self.deja.visible {
+            self.deja.paste(&text, Instant::now());
+            return;
+        }
         let clean = text.replace("\r\n", "\n").replace('\r', "\n");
         if self.prompt.is_some() {
             // A terminal pastes nothing for a copied image, and pastes the
@@ -1928,6 +1934,11 @@ impl App {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.deja.visible {
+            let effect = self.deja.mouse(mouse, Instant::now());
+            self.deja_effect(effect);
+            return;
+        }
         let hit = self.hit_at(mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
@@ -2090,15 +2101,31 @@ impl App {
                 }
             }
             Cmd::Model => self.open_model_picker(),
-            Cmd::Find => {
+            Cmd::Find | Cmd::Last | Cmd::Memories | Cmd::Query => {
                 if !self.deja_available {
-                    self.toast("deja is not on PATH; install it to search past sessions", Kind::Warning);
-                } else {
-                    self.search = Some(Search {
-                        target: SearchTarget::Deja,
-                        text: String::new(),
-                    });
+                    self.toast("deja is not on PATH; install it to browse past sessions", Kind::Warning);
+                    return;
                 }
+                let page = match cmd {
+                    Cmd::Find => Page::Sessions,
+                    Cmd::Last => Page::Last,
+                    Cmd::Memories => Page::Memories,
+                    Cmd::Query => {
+                        let Some(session) = self.current() else {
+                            return self.toast("Select a session first", Kind::Warning);
+                        };
+                        let Some(id) = session.thread_id.clone() else {
+                            return self.toast("Selected session has no thread ID", Kind::Warning);
+                        };
+                        Page::Question(Target {
+                            provider: provider(session).to_string(),
+                            id,
+                            locator: session.state_dir.strip_prefix(crate::history::PREFIX).map(str::to_string),
+                        })
+                    }
+                    _ => unreachable!(),
+                };
+                self.deja.open(page, Instant::now());
             }
             Cmd::Stop => self.request_stop(false),
             Cmd::StopNow => self.request_stop(true),
@@ -2255,8 +2282,20 @@ impl App {
                 .disabled_if(route != Some(PromptRoute::Continue), "select a finished session with a thread"),
             cmd("Choose model", "m", Cmd::Model),
             cmd("Find a past session", "f", Cmd::Find)
-                .hint("deja search")
+                .hint("live dejavu search with matching excerpts")
                 .disabled_if(!self.deja_available, "deja is not on PATH"),
+            cmd("Continue where I left off", "L", Cmd::Last)
+                .hint("open the last session in the TUI launch repo/cwd; no provider run")
+                .disabled_if(!self.deja_available, "deja is not on PATH"),
+            cmd("Search project memories", "M", Cmd::Memories)
+                .hint("search Claude memories across projects")
+                .disabled_if(!self.deja_available, "deja is not on PATH"),
+            cmd("Query selected session", "Q", Cmd::Query)
+                .hint("ask dejavu about one session; requires paid-model confirmation")
+                .disabled_if(
+                    !self.deja_available || self.current().and_then(|s| s.thread_id.as_ref()).is_none(),
+                    "select a session and install deja",
+                ),
             cmd(
                 if self.history.is_some() {
                     "Back to Ruddr sessions"
@@ -2791,26 +2830,24 @@ impl App {
         });
     }
 
-    fn run_deja(&mut self, terms: String) {
-        if terms.trim().is_empty() {
-            return;
+    fn deja_effect(&mut self, effect: Option<Effect>) {
+        match effect {
+            Some(Effect::Open(hit)) => self.show_deja_hit(hit),
+            Some(Effect::Resume(hit)) => self.open_new_prompt(Some(hit)),
+            None => {}
         }
-        self.toast(format!("Searching past sessions for “{}”…", terms.trim()), Kind::Info);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let mut command = std::process::Command::new("deja");
-            command.arg("find").args(terms.split_whitespace()).args(["--json", "--quiet"]);
-            let result = match actions::run_bounded(command, Duration::from_secs(30), 8 * 1024 * 1024) {
-                Ok((out, _, true, _)) => Ok(parse_deja_hits(&out)),
-                Ok((_, err, false, _)) => Err(if err.trim().is_empty() {
-                    "deja find failed".to_string()
-                } else {
-                    err.trim().to_string()
-                }),
-                Err(e) => Err(format!("deja find {e}")),
-            };
-            let _ = tx.send(Msg::Deja(result));
-        });
+    }
+
+    pub fn poll_deja(&mut self, now: Instant) {
+        if let Some((generation, request)) = self.deja.take_request(now) {
+            let tx = self.tx.clone();
+            let cwd = self.launch_cwd.clone();
+            self.dirty = true;
+            std::thread::spawn(move || {
+                let result = deja::execute(request, cwd);
+                let _ = tx.send(Msg::Deja(deja::Response { generation, result }));
+            });
+        }
     }
 
     fn run_update(&mut self) {
@@ -2888,25 +2925,9 @@ impl App {
                 touched,
                 recorded,
             } => self.on_diff(state_dir, result, touched, recorded),
-            Msg::Deja(Err(e)) => self.toast(e, Kind::Error),
-            Msg::Deja(Ok(hits)) if hits.is_empty() => self.toast("No past sessions matched", Kind::Warning),
-            Msg::Deja(Ok(hits)) => {
-                let items = hits
-                    .iter()
-                    .enumerate()
-                    .map(|(i, h)| {
-                        let prompt: String = h.opening_prompt.chars().take(110).collect();
-                        PickItem::new(
-                            format!("{}  {}", h.project.rsplit('/').next().unwrap_or(&h.project), h.date),
-                            Action::Deja(i),
-                        )
-                        .hint(if prompt.is_empty() { h.session_id.clone() } else { prompt })
-                        .key(h.provider.clone())
-                    })
-                    .collect();
-                self.toast(format!("{} past sessions found", hits.len()), Kind::Success);
-                self.deja_hits = hits;
-                self.picker = Some(Picker::new(PickerKind::Deja, "find a past session", items, true));
+            Msg::Deja(response) => {
+                let effect = self.deja.receive(response);
+                self.deja_effect(effect);
             }
             Msg::Updated(result) => {
                 self.updating = false;

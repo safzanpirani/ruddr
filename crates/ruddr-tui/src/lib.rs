@@ -12,6 +12,7 @@ mod activity;
 mod app;
 mod cache;
 mod core;
+mod deja;
 mod history;
 mod tail;
 mod text;
@@ -55,6 +56,9 @@ in tui.json changes the width.
 Press H to browse every agent's local sessions (Codex, Claude, Pi, OpenCode,
 Droid) read-only, with each session's chat and file diff. In that list, e shows
 only the sessions that edited files.
+With deja on PATH: f searches sessions as you type, L opens the last session in
+the launch repo/cwd, M searches Claude project memories, and Q asks about the
+selected session. Q requires y confirmation before calling a paid model.
 ";
 
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
@@ -162,7 +166,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
         } else if app.dirty {
             wake = wake.min(last_draw + FRAME);
         }
-        for deadline in [app.next_frame, app.drain_deadline(), app.diff_deadline()].into_iter().flatten() {
+        for deadline in [app.next_frame, app.drain_deadline(), app.diff_deadline(), app.deja.deadline()]
+            .into_iter()
+            .flatten()
+        {
             wake = wake.min(deadline);
         }
         match app.rx.recv_timeout(wake.saturating_duration_since(now)) {
@@ -182,6 +189,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
         let now = Instant::now();
         app.drain_stream(now);
         app.poll_diff(now);
+        app.poll_deja(now);
         if now.duration_since(app.last_refresh) >= app.args.interval {
             app.refresh();
         }
