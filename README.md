@@ -751,8 +751,16 @@ run. The TUI sends steers, prompts, interrupts, and stops to the controller
 directly. The prompt accepts multiple lines: Enter sends, and Shift+Enter,
 Alt+Enter, or `Ctrl+J` insert a newline. It supports the usual line-editing
 keys, such as `Ctrl+A`, `Ctrl+E`, `Ctrl+W`, and `Ctrl+U`, and bracketed
-paste. A failed steer or idle prompt brings the draft back for editing; a
-failed launch shows the error as a status message.
+paste. A failed steer or idle prompt brings the draft back for editing.
+A failed new-session or continuation launch restores the draft
+text, images, model, effort, and destination. If you opened a newer draft, the TUI
+keeps it and reports the private `draft.json` recovery path for the failed
+launch. The recovery file contains the prompt text and launch settings.
+The TUI never retries a failed launch automatically.
+
+Idle sessions show `idle · failed` or `idle · interrupted` after an unsuccessful
+turn. The list glyph and details use the outcome's error or warning color in
+both desktop and mobile layouts. These sessions still accept idle prompts.
 
 The context meter in the header uses the latest context usage reported by the
 provider. It takes the theme's accent color, then turns to the warning color
@@ -1317,7 +1325,10 @@ idle one, or continue a finished thread; `n` starts a new session, `m` picks
 the model, `x x` stops. With deja installed, `f` searches past sessions live,
 `L` opens the last session in the launch repo/cwd, `M` searches project
 memories, and `Q` queries the selected session after paid-model confirmation.
-`ruddr tui --beta` switches to a chat-first layout.
+`ruddr tui --beta` switches to a chat-first layout. Idle rows expose failed
+or interrupted last turns. Failed launches restore the draft or report its
+private recovery path when a newer draft exists. The TUI never retries them
+automatically.
 
 Ground rules:
 - Report token usage/cost from `ruddr status --json` when the human asks

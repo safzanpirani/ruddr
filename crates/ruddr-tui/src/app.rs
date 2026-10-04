@@ -76,6 +76,7 @@ pub struct Toast {
     pub text: String,
     pub kind: Kind,
     pub born: Instant,
+    pub wrap: bool,
 }
 
 impl Toast {
@@ -251,6 +252,7 @@ pub enum PromptKind {
     New,
 }
 
+#[derive(Clone)]
 pub struct Prompt {
     pub kind: PromptKind,
     pub text: Vec<char>,
@@ -264,6 +266,49 @@ pub struct Prompt {
     pub images: Vec<PathBuf>,
     pub opened: Instant,
     pub typed: Instant,
+}
+
+/// Retains the exact editor and its destination until the launcher accepts it.
+pub struct LaunchDraft {
+    prompt: Prompt,
+    cwd: PathBuf,
+    generation: u64,
+}
+
+impl LaunchDraft {
+    fn restore(self, editor: &mut Option<Prompt>, cwd: &mut PathBuf, generation: u64) -> Result<(), Box<Self>> {
+        if editor.is_some() || generation != self.generation {
+            return Err(Box::new(self));
+        }
+        *cwd = self.cwd;
+        *editor = Some(self.prompt);
+        Ok(())
+    }
+
+    fn save(&self) -> Result<PathBuf, String> {
+        use std::io::Write;
+        // Recovery must also work when the requested launch directory is unwritable.
+        let dir = std::env::temp_dir().join(format!("ruddr-failed-draft-{}", ruddr_core::fsutil::random_hex(12)));
+        ruddr_core::fsutil::create_private_dir_new(&dir).map_err(|e| e.to_string())?;
+        let prompt = &self.prompt;
+        let text: String = prompt.text.iter().collect();
+        let path = dir.join("draft.json");
+        let draft = serde_json::json!({
+            "text": text, "images": prompt.images, "cwd": self.cwd,
+            "provider": prompt.provider, "model": prompt.model.as_ref().and_then(|m| m.id.as_ref()),
+            "effort": prompt.effort, "target": prompt.target,
+            "resumeThread": prompt.resume.as_ref().map(|r| &r.session_id),
+            "route": match prompt.kind {
+                PromptKind::New => "new",
+                PromptKind::Route(PromptRoute::Continue) => "continue",
+                PromptKind::Route(PromptRoute::Prompt) => "prompt",
+                PromptKind::Route(PromptRoute::Steer) => "steer",
+            },
+        });
+        let mut file = ruddr_core::fsutil::create_private_file_new(&path).map_err(|e| e.to_string())?;
+        file.write_all(draft.to_string().as_bytes()).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -283,6 +328,10 @@ pub enum Msg {
     Toast(String, Kind),
     /// A launch spawned its controller: list and select the new run.
     Spawned(String),
+    LaunchFailed {
+        draft: Box<LaunchDraft>,
+        error: String,
+    },
     /// A prompt was not sent; the draft comes back.
     Bounced {
         state_dir: String,
@@ -535,6 +584,8 @@ pub struct App {
 
     pub picker: Option<Picker>,
     pub prompt: Option<Prompt>,
+    prompt_generation: u64,
+    unsaved_drafts: Vec<LaunchDraft>,
     pub search: Option<Search>,
     pub help: bool,
     pub drawer: bool,
@@ -662,6 +713,8 @@ impl App {
             updating: false,
             picker: None,
             prompt: None,
+            prompt_generation: 0,
+            unsaved_drafts: vec![],
             search: None,
             help: false,
             drawer: false,
@@ -779,6 +832,7 @@ impl App {
             text,
             kind,
             born: Instant::now(),
+            wrap: false,
         });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
@@ -2597,6 +2651,7 @@ impl App {
             (Some((m, e)), PromptRoute::Continue) if m.provider == crate::core::provider(&session) => (Some(m.clone()), e.clone()),
             _ => (None, None),
         };
+        self.prompt_generation += 1;
         self.prompt = Some(Prompt {
             kind: PromptKind::Route(route),
             text: vec![],
@@ -2623,6 +2678,7 @@ impl App {
             .or_else(|| model.as_ref().map(|m| m.provider.clone()))
             .or_else(|| self.current().map(|s| crate::core::provider(s).to_string()))
             .unwrap_or_else(|| "codex".into());
+        self.prompt_generation += 1;
         self.prompt = Some(Prompt {
             kind: PromptKind::New,
             text: vec![],
@@ -2715,6 +2771,11 @@ impl App {
             effort: prompt.effort.clone(),
             images: images.clone(),
         };
+        let launch_draft = LaunchDraft {
+            prompt: prompt.clone(),
+            cwd: self.launch_cwd.clone(),
+            generation: self.prompt_generation,
+        };
         if prompt.kind == PromptKind::New {
             let cwd = self.launch_cwd.clone();
             let provider = prompt.provider.clone();
@@ -2739,7 +2800,13 @@ impl App {
                         let _ = spawned.send(Msg::Spawned(dir.to_string_lossy().into_owned()));
                     },
                 );
-                send_result(&tx, result.map(|d| format!("Started {provider} session in {}", short_path(&d))));
+                let _ = tx.send(match result {
+                    Ok(dir) => Msg::Toast(format!("Started {provider} session in {}", short_path(&dir)), Kind::Success),
+                    Err(error) => Msg::LaunchFailed {
+                        draft: Box::new(launch_draft),
+                        error,
+                    },
+                });
             });
             self.pending_model = None;
             return;
@@ -2797,7 +2864,10 @@ impl App {
                     images: draft_images,
                     error,
                 },
-                Err(error) => Msg::Toast(error, Kind::Error),
+                Err(error) => Msg::LaunchFailed {
+                    draft: Box::new(launch_draft),
+                    error,
+                },
             });
         });
         self.pending_model = None;
@@ -2886,6 +2956,22 @@ impl App {
                 self.selected = Some(dir);
                 self.reset_artifact();
                 self.refresh();
+            }
+            Msg::LaunchFailed { draft, error } => {
+                let recovery = match draft.restore(&mut self.prompt, &mut self.launch_cwd, self.prompt_generation) {
+                    Ok(()) => "the draft is back in the editor".to_string(),
+                    Err(draft) => match draft.save() {
+                        Ok(path) => format!("newer draft kept; failed draft saved to {}", path.display()),
+                        Err(save_error) => {
+                            self.unsaved_drafts.push(*draft);
+                            format!("newer draft kept; failed draft retained in memory; could not save: {save_error}")
+                        }
+                    },
+                };
+                self.toast(format!("{recovery}\n{error}"), Kind::Error);
+                if let Some(toast) = self.toasts.last_mut() {
+                    toast.wrap = true;
+                }
             }
             Msg::Bounced {
                 state_dir,
@@ -3032,6 +3118,98 @@ fn copy_osc52(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn launch_draft(kind: PromptKind) -> LaunchDraft {
+        let mut target = crate::core::tests_support::session(Status::Completed);
+        target.cwd = "/original-project".into();
+        target.thread_id = Some("original-thread".into());
+        LaunchDraft {
+            prompt: Prompt {
+                kind,
+                text: "  original\nlong draft  ".chars().collect(),
+                cursor: 5,
+                target: (kind != PromptKind::New).then_some(target),
+                provider: "codex".into(),
+                model: Some(fallback_models().remove(0)),
+                effort: Some("high".into()),
+                resume: Some(DejaHit {
+                    provider: "codex".into(),
+                    session_id: "resume-thread".into(),
+                    project: String::new(),
+                    date: String::new(),
+                    opening_prompt: String::new(),
+                    locator: String::new(),
+                    excerpt: String::new(),
+                }),
+                images: vec![PathBuf::from("/original-image.png")],
+                opened: Instant::now(),
+                typed: Instant::now(),
+            },
+            cwd: PathBuf::from("/original-project"),
+            generation: 7,
+        }
+    }
+
+    #[test]
+    fn failed_launch_restores_the_complete_new_or_continuation_editor() {
+        for kind in [PromptKind::New, PromptKind::Route(PromptRoute::Continue)] {
+            let draft = launch_draft(kind);
+            let expected = draft.prompt.clone();
+            let mut editor = None;
+            let mut cwd = PathBuf::from("/different-project");
+            assert!(draft.restore(&mut editor, &mut cwd, 7).is_ok());
+            let restored = editor.unwrap();
+            assert!(restored.kind == expected.kind);
+            assert_eq!(restored.text, expected.text);
+            assert_eq!(restored.cursor, expected.cursor);
+            assert_eq!(restored.images, expected.images);
+            assert_eq!(restored.model, expected.model);
+            assert_eq!(restored.effort, expected.effort);
+            assert_eq!(restored.provider, expected.provider);
+            assert_eq!(restored.target, expected.target);
+            assert_eq!(restored.resume, expected.resume);
+            assert_eq!(cwd, PathBuf::from("/original-project"));
+        }
+    }
+
+    #[test]
+    fn failed_launch_preserves_newer_open_submitted_or_closed_drafts() {
+        for open in [true, false] {
+            let draft = launch_draft(PromptKind::New);
+            let mut newer = launch_draft(PromptKind::New).prompt;
+            newer.text = "newer draft".chars().collect();
+            let mut editor = open.then_some(newer);
+            let mut cwd = PathBuf::from("/newer-project");
+            let old = match draft.restore(&mut editor, &mut cwd, 8) {
+                Err(draft) => draft,
+                Ok(()) => panic!("must not resurrect the older draft"),
+            };
+            assert_eq!(cwd, PathBuf::from("/newer-project"));
+            if open {
+                assert_eq!(editor.unwrap().text.iter().collect::<String>(), "newer draft");
+            } else {
+                assert!(editor.is_none());
+            }
+            let path = old.save().unwrap();
+            let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["text"], "  original\nlong draft  ");
+            assert_eq!(saved["images"][0], "/original-image.png");
+            assert_eq!(saved["effort"], "high");
+            assert_eq!(saved["cwd"], "/original-project");
+            assert_eq!(saved["model"].as_str(), old.prompt.model.as_ref().unwrap().id.as_deref());
+            assert_eq!(saved["resumeThread"], "resume-thread");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+                assert_eq!(
+                    std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
 
     #[test]
     fn session_list_width_keeps_room_for_the_main_pane() {

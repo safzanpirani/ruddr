@@ -46,6 +46,9 @@ The refresh interval accepts milliseconds or seconds and must be at least 100ms.
 Press n for a new session. It starts in the current directory; send /cd DIR as
 the prompt to start it and later new sessions in DIR instead. In any prompt,
 Ctrl+V attaches the clipboard image, and dropped image files attach as images.
+Idle sessions show failed or interrupted last turns and still accept prompts.
+Failed launches restore the full draft. A newer draft stays in the editor;
+the status message gives the failed draft's private recovery path. No auto-retry.
 Press t inside the TUI to preview and save a theme. --theme overrides the saved
 theme for one launch; RUDDR_TUI_THEME provides the same environment override.
 --beta enables the chat-first layout; RUDDR_TUI_BETA=1 provides the same

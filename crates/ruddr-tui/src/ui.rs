@@ -513,7 +513,7 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
             height: per as u16,
         };
         app.hits.push((rect, Hit::Session(slot)));
-        let colour = status_color(&p, session.status);
+        let colour = status_color(&p, session_status(session));
         let mut bg = p.background;
         if let Some((_, changed)) = app.seen.get(&session.state_dir) {
             let flash = 1.0 - progress(*changed, 1600);
@@ -522,7 +522,7 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
                 app.animate(Duration::from_millis(33));
             }
         }
-        let glyph = match session.status {
+        let glyph = match session_status(session) {
             Status::Active | Status::Starting => spinner(app).to_string(),
             status => status_glyph(status).to_string(),
         };
@@ -567,7 +567,14 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
         if stat.is_some() && meta.width() > room {
             meta = meta.chars().take(room.saturating_sub(1)).collect::<String>() + "…";
         }
-        let mut line2 = vec![Span::styled(meta.clone(), Style::new().fg(p.dim.c()))];
+        let mut line2 = if session_status(session) != session.status {
+            vec![
+                Span::styled(format!("    {}", session_status_label(session)), Style::new().fg(colour.c())),
+                Span::styled(format!(" · {}", provider(session)), Style::new().fg(p.dim.c())),
+            ]
+        } else {
+            vec![Span::styled(meta.clone(), Style::new().fg(p.dim.c()))]
+        };
         if let Some((added, removed)) = stat {
             let gap = (inner.width as usize).saturating_sub(meta.width() + stat_width);
             line2.push(Span::raw(" ".repeat(gap)));
@@ -645,10 +652,10 @@ fn draw_main(frame: &mut Frame, app: &mut App, area: Rect) {
 fn compact_line<'a>(p: &Palette, s: &Session) -> Line<'a> {
     let mut spans = vec![
         Span::styled(
-            format!(" {} ", status_glyph(s.status)),
-            Style::new().fg(status_color(p, s.status).c()),
+            format!(" {} ", status_glyph(session_status(s))),
+            Style::new().fg(status_color(p, session_status(s)).c()),
         ),
-        Span::styled(s.status.to_string(), Style::new().fg(status_color(p, s.status).c())),
+        Span::styled(session_status_label(s), Style::new().fg(status_color(p, session_status(s)).c())),
         Span::styled(
             format!(" · {}", format_elapsed(&s.started_at, s.completed_at.as_deref(), now_ms())),
             Style::new().fg(p.dim.c()),
@@ -670,7 +677,7 @@ fn detail_lines<'a>(p: &Palette, s: &Session, compact: bool) -> Vec<Line<'a>> {
         .map(|(k, v)| {
             let colour = match k.as_str() {
                 "error" => p.danger,
-                "status" => status_color(p, s.status),
+                "status" => status_color(p, session_status(s)),
                 _ => p.text,
             };
             Line::from(vec![
@@ -1167,6 +1174,24 @@ fn draw_action_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn toast_lines(text: &str, width: usize, wrap: bool, style: Style) -> Vec<Line<'static>> {
+    if wrap {
+        let rows: Vec<_> = text
+            .lines()
+            .map(|line| crate::text::Row::new(Line::styled(line.to_string(), style)))
+            .collect();
+        crate::text::wrap_rows(&rows, width, "", Style::default())
+    } else {
+        let first = text.lines().next().unwrap_or("");
+        let text = if first.width() > width {
+            first.chars().take(width.saturating_sub(1)).collect::<String>() + "…"
+        } else {
+            first.to_string()
+        };
+        vec![Line::styled(text, style)]
+    }
+}
+
 fn draw_toasts(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = *app.palette();
     let mut y = area.bottom();
@@ -1191,14 +1216,19 @@ fn draw_toasts(frame: &mut Frame, app: &mut App, area: Rect) {
             Kind::Info => ("›", p.accent),
         };
         let max_width = (area.width as usize).saturating_sub(4).min(72);
-        let text: String = if toast.text.width() > max_width.saturating_sub(5) {
-            toast.text.chars().take(max_width.saturating_sub(6)).collect::<String>() + "…"
-        } else {
-            toast.text.clone()
-        };
-        let first_line = text.lines().next().unwrap_or("").to_string();
-        let width = (first_line.width() as u16 + 5).min(area.width);
-        let height = 3;
+        let bg = p.panel;
+        let fg = bg.mix(p.text, exit);
+        let edge = bg.mix(colour, exit);
+        let mut lines = toast_lines(&toast.text, max_width.saturating_sub(5), toast.wrap, Style::new().fg(fg.c()));
+        // Put recovery information first so it survives even a very short terminal.
+        lines.truncate(area.height.saturating_sub(2) as usize);
+        if let Some(first) = lines.first_mut() {
+            first
+                .spans
+                .insert(0, Span::styled(format!("{glyph} "), Style::new().fg(edge.c()).bold()));
+        }
+        let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 3).min(area.width);
+        let height = lines.len() as u16 + 2;
         if y < area.y + height {
             break;
         }
@@ -1216,30 +1246,20 @@ fn draw_toasts(frame: &mut Frame, app: &mut App, area: Rect) {
             width: visible_width,
             height,
         };
-        let bg = p.panel;
-        let fg = bg.mix(p.text, exit);
-        let edge = bg.mix(colour, exit);
         frame.render_widget(Clear, rect);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(edge.c()))
             .style(Style::new().bg(bg.c()));
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("{glyph} "), Style::new().fg(edge.c()).bold()),
-                Span::styled(first_line, Style::new().fg(fg.c())),
-            ]))
-            .block(block),
-            rect,
-        );
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
         // Lifetime bar along the bottom border.
         let remaining = 1.0 - age.as_secs_f32() / life.as_secs_f32();
         let bar = ((visible_width.saturating_sub(2)) as f32 * remaining).round() as u16;
         let buf = frame.buffer_mut();
         for i in 0..bar {
             if x + 1 + i < area.right() {
-                buf[(x + 1 + i, y + 2)].set_symbol("─").set_fg(edge.mix(bg, 0.3).c());
+                buf[(x + 1 + i, y + height - 1)].set_symbol("─").set_fg(edge.mix(bg, 0.3).c());
             }
         }
     }
@@ -1761,4 +1781,20 @@ fn draw_help(frame: &mut Frame, app: &mut App, screen: Rect) {
     .style(Style::new().bg(p.panel.c()));
     frame.render_widget(Paragraph::new(lines).block(block), area);
     app.hits.push((area, Hit::Overlay));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_toasts_keep_the_full_path_at_phone_and_desktop_widths() {
+        let path = "/private/tmp/ruddr-failed-draft-123456789012345678901234/draft.json";
+        for width in [37, 67] {
+            let lines = toast_lines(path, width, true, Style::default());
+            assert!(lines.iter().all(|line| line.width() <= width));
+            let text: String = lines.iter().map(crate::text::line_text).collect();
+            assert_eq!(text, path);
+        }
+    }
 }

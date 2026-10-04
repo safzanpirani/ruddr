@@ -215,6 +215,11 @@ previews a selected file. `Q` asks about the selected session; Enter reviews
 its question and `y` confirms the paid model call. `n`/Esc cancels before the
 call. Closing the answer view does not cancel an already confirmed query.
 
+The TUI labels unsuccessful idle turns as `idle · failed` or
+`idle · interrupted`; these sessions still accept `prompt`. A failed TUI
+launch restores its full draft. If a newer draft exists, the TUI keeps it and
+reports a private recovery file for the failed draft. It never retries automatically.
+
 `ruddr web` prints a link that exchanges the private token in
 `~/.config/ruddr/web-token` for an HttpOnly cookie. Bind it to loopback or a
 private address with `--host`. The browser can steer active

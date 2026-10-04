@@ -136,7 +136,6 @@ pub fn launch(
         .stderr(stderr)
         .spawn()
         .map_err(|e| format!("start {}: {e}", exe.display()))?;
-    on_spawn(&dir);
     // `run --detach` exits once the controller runs on its own or failed to start.
     let status = child.wait().map_err(|e| e.to_string())?;
     if !status.success() {
@@ -148,6 +147,7 @@ pub fn launch(
             log.to_string()
         });
     }
+    on_spawn(&dir);
     Ok(dir)
 }
 
@@ -506,9 +506,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let cwd = temp("launch-fail");
         let fake = cwd.join("fake-ruddr");
-        std::fs::write(&fake, "#!/bin/sh\necho 'ruddr: unknown provider' >&2\nexit 2\n").unwrap();
+        std::fs::write(&fake, "#!/bin/sh\necho 'ruddr: unknown provider' >&2\nexit 1\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = launch(&fake, &cwd, "x", |_, _| vec!["run".into()], |_| {}).unwrap_err();
+        let accepted = std::cell::Cell::new(false);
+        let error = launch(&fake, &cwd, "x", |_, _| vec!["run".into()], |_| accepted.set(true)).unwrap_err();
+        assert!(!accepted.get(), "a failed launcher must not select a new session");
+        let run = std::fs::read_dir(cwd.join(".scratch/ruddr-tui"))
+            .unwrap()
+            .flatten()
+            .find(|e| e.path().is_dir())
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read_to_string(run.join("prompt.md")).unwrap(), "x\n");
         assert_eq!(error, "ruddr: unknown provider");
         std::fs::remove_dir_all(cwd).unwrap();
     }

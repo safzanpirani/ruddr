@@ -119,6 +119,23 @@ pub fn status_glyph(status: Status) -> &'static str {
     }
 }
 
+/// Presentation only: an idle controller still accepts prompts after a bad turn.
+pub fn session_status(session: &Session) -> Status {
+    match (session.status, session.last_turn) {
+        (Status::Idle, Some(outcome @ (Status::Failed | Status::Interrupted))) => outcome,
+        _ => session.status,
+    }
+}
+
+pub fn session_status_label(session: &Session) -> String {
+    let display = session_status(session);
+    if display != session.status {
+        format!("{} · {display}", session.status)
+    } else {
+        session.status.to_string()
+    }
+}
+
 pub fn project_name(session: &Session) -> String {
     let path = if session.cwd.is_empty() {
         Path::new(&session.state_dir).parent().map(Path::to_path_buf).unwrap_or_default()
@@ -196,8 +213,8 @@ pub fn session_details(session: &Session, now: i64) -> Vec<(String, String)> {
             "status".into(),
             format!(
                 "{} {}    {}",
-                status_glyph(session.status),
-                session.status,
+                status_glyph(session_status(session)),
+                session_status_label(session),
                 format_elapsed(&session.started_at, session.completed_at.as_deref(), now)
             ),
         ),
@@ -899,6 +916,38 @@ pub mod tests_support {
 mod tests {
     use super::tests_support::session;
     use super::*;
+
+    #[test]
+    fn idle_turn_outcomes_are_visible_without_changing_prompt_routing() {
+        let mut s = session(Status::Idle);
+        for (last, label, glyph, display) in [
+            (None, "idle", "◌", Status::Idle),
+            (Some(Status::Completed), "idle", "◌", Status::Idle),
+            (Some(Status::Failed), "idle · failed", "×", Status::Failed),
+            (Some(Status::Interrupted), "idle · interrupted", "■", Status::Interrupted),
+        ] {
+            s.last_turn = last;
+            assert_eq!(session_status(&s), display);
+            assert_eq!(session_status_label(&s), label);
+            assert_eq!(status_glyph(session_status(&s)), glyph);
+            assert!(session_details(&s, 0)[0].1.starts_with(&format!("{glyph} {label}    ")));
+            assert_eq!(prompt_route(&s), Some(PromptRoute::Prompt));
+        }
+        for status in [
+            Status::Active,
+            Status::Starting,
+            Status::Stopping,
+            Status::Completed,
+            Status::Failed,
+            Status::Interrupted,
+            Status::Stale,
+        ] {
+            s.status = status;
+            s.last_turn = Some(Status::Failed);
+            assert_eq!(session_status(&s), status);
+            assert_eq!(session_status_label(&s), status.to_string());
+        }
+    }
 
     #[test]
     fn dropped_image_files_paste_as_attachments() {
