@@ -340,13 +340,13 @@ impl Controller {
     /// Starts the app-server child with piped stdio and its stderr in
     /// provider.stderr.log, then starts the reader and waiter threads.
     pub fn start_child(self: &Arc<Self>) -> ruddr_core::Result<()> {
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
         let program = &self.cfg.child_command[0];
         let stderr = match self.stderr.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             Some(file) => Stdio::from(file.try_clone()?),
             None => Stdio::null(),
         };
-        let mut command = Command::new(program);
+        let mut command = ruddr_core::provider::command(program);
         command
             .args(&self.cfg.child_command[1..])
             .current_dir(&self.cfg.cwd)

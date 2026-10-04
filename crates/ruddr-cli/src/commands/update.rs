@@ -396,7 +396,7 @@ pub fn update(out: &mut dyn Write, context: &Context, check_only: bool) -> Resul
         Channel::Npm(root) => package_manager_update(out, &mut npm_update_command(&root, &latest, cfg!(windows))?)?,
         Channel::Bun(_) => package_manager_update(
             out,
-            std::process::Command::new("bun").args(["add", "-g", &format!("ruddr@{latest}")]),
+            ruddr_core::provider::command("bun").args(["add", "-g", &format!("ruddr@{latest}")]),
         )?,
         Channel::Source => {
             refresh_skill(out, context, false);
@@ -457,7 +457,7 @@ fn npm_update_command(root: &Path, latest: &str, windows: bool) -> Result<std::p
             }
         })
         .ok_or_else(|| Error::failed(format!("cannot determine the npm install prefix from {}", root.display())))?;
-    let mut command = std::process::Command::new("npm");
+    let mut command = ruddr_core::provider::command("npm");
     command
         .args(["install", "-g", "--prefix"])
         .arg(prefix)
@@ -640,7 +640,7 @@ mod tests {
                 prefix.clone().into_os_string(),
                 "ruddr@99.0.0".into(),
             ];
-            assert_eq!(command.get_program(), "npm");
+            assert_eq!(command.get_program(), ruddr_core::provider::command("npm").get_program());
             assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
             #[cfg(unix)]
             {

@@ -177,6 +177,8 @@ npm install -g --prefix "$HOME/.local" ruddr
 The npm launcher needs Node 18 or newer. The binary itself needs nothing else
 at runtime: no Bun, Go, or Node. Each provider needs its own CLI on `PATH`
 (see [Build](#build) for the versions Ruddr is verified against).
+On Windows, provider launches resolve `.cmd` shims through `PATHEXT`.
+Arguments remain separate values when Ruddr starts the resolved executable.
 
 ### Updating
 
@@ -202,6 +204,8 @@ writes the release-check cache. It does not install a binary or write skills.
   version through that tool. npm keeps the detected install prefix with
   `npm install -g --prefix PREFIX ruddr@X.Y.Z`; the user-prefix install above
   stays under `$HOME/.local`. Bun uses `bun add -g ruddr@X.Y.Z`.
+  On Windows, Ruddr resolves npm and bun through `PATH` and `PATHEXT`,
+  including `.cmd` shims.
 - A standalone binary is replaced in place after the download is verified
   against the release's `checksums.txt`. A binary that
   `scripts/install-local.sh` copied into `~/.local/bin` is a standalone

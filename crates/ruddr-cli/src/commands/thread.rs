@@ -8,7 +8,7 @@ use super::args;
 use ruddr_core::{Error, Result};
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -231,7 +231,7 @@ struct Session {
 
 impl Session {
     fn start(cwd: &std::path::Path, command: &[String]) -> Result<Session> {
-        let mut process = Command::new(&command[0]);
+        let mut process = ruddr_core::provider::command(&command[0]);
         process
             .args(&command[1..])
             .current_dir(cwd)

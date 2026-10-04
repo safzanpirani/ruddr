@@ -141,55 +141,119 @@ pub fn resolve_executable(provider: Provider, flag: &str) -> Result<Option<Strin
 /// Finds an executable on `PATH`, like Go's `exec.LookPath`. A name that
 /// contains a path separator is checked as given.
 pub fn look_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH");
+    let extensions = cfg!(windows).then(|| std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()));
+    look_path_in(name, path.as_deref(), extensions.as_deref())
+}
+
+// Explicit inputs keep Windows lookup testable without mutating the process environment.
+fn look_path_in(name: &str, path: Option<&std::ffi::OsStr>, extensions: Option<&str>) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
     }
-    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
-        let path = PathBuf::from(name);
-        return executable_candidate(&path);
+    if name.contains('/') || (extensions.is_some() && name.contains('\\')) {
+        return executable_candidate(Path::new(name), extensions);
     }
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        // An empty PATH entry means the current directory, which Go stopped
-        // searching for safety; skip it too.
-        if dir.as_os_str().is_empty() {
-            continue;
-        }
-        if let Some(found) = executable_candidate(&dir.join(name)) {
+    for dir in std::env::split_paths(path?) {
+        // An empty PATH entry means the current directory; do not search it.
+        if !dir.as_os_str().is_empty()
+            && let Some(found) = executable_candidate(&dir.join(name), extensions)
+        {
             return Some(found);
         }
     }
     None
 }
 
-#[cfg(unix)]
-fn executable_candidate(path: &Path) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let metadata = std::fs::metadata(path).ok()?;
-    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then(|| path.to_path_buf())
-}
-
-#[cfg(not(unix))]
-fn executable_candidate(path: &Path) -> Option<PathBuf> {
-    let is_file = |p: &Path| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false);
-    if path.extension().is_some() && is_file(path) {
-        return Some(path.to_path_buf());
+fn executable_candidate(path: &Path, extensions: Option<&str>) -> Option<PathBuf> {
+    if let Some(extensions) = extensions {
+        if path.extension().is_some() && path.is_file() {
+            return Some(path.to_path_buf());
+        }
+        for extension in extensions.split(';').filter(|e| !e.is_empty()) {
+            let mut candidate = path.as_os_str().to_owned();
+            candidate.push(extension);
+            let candidate = PathBuf::from(candidate);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        return None;
     }
-    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-    for extension in extensions.split(';').filter(|e| !e.is_empty()) {
-        let mut candidate = path.as_os_str().to_owned();
-        candidate.push(extension);
-        let candidate = PathBuf::from(candidate);
-        if is_file(&candidate) {
-            return Some(candidate);
+    let metadata = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return None;
         }
     }
-    None
+    metadata.is_file().then(|| path.to_path_buf())
+}
+
+/// Builds a command with PATHEXT lookup on Windows. Unix retains native
+/// Command lookup, including paths relative to the child's working directory.
+/// Pass arguments with `arg`/`args`: Rust escapes resolved .cmd/.bat programs
+/// using its batch-file rules and rejects arguments it cannot safely encode.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let program = program.as_ref();
+    #[cfg(windows)]
+    if let Some(resolved) = program.to_str().and_then(look_path) {
+        return std::process::Command::new(resolved);
+    }
+    std::process::Command::new(program)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_lookup_respects_path_pathext_and_explicit_paths() {
+        let root = std::env::temp_dir().join(format!("ruddr-lookup-{}", crate::fsutil::random_hex(8)));
+        let first = root.join("first space & dir");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let path = std::env::join_paths([Path::new(""), &first, &second]).unwrap();
+        for name in ["npm", "bun", "codex", "claude", "opencode2", "opencode-next", "pi", "droid"] {
+            std::fs::write(first.join(format!("{name}.CMD")), "shim").unwrap();
+            std::fs::write(second.join(format!("{name}.EXE")), "exe").unwrap();
+            assert_eq!(
+                look_path_in(name, Some(&path), Some(".EXE;;.CMD")),
+                Some(first.join(format!("{name}.CMD")))
+            );
+        }
+        std::fs::write(first.join("bun.EXE"), "exe").unwrap();
+        assert_eq!(look_path_in("bun", Some(&path), Some(".EXE;.CMD")), Some(first.join("bun.EXE")));
+        assert_eq!(look_path_in("bun", Some(&path), Some(".CMD;.EXE")), Some(first.join("bun.CMD")));
+        assert_eq!(look_path_in("npm.CMD", Some(&path), Some(".EXE;.CMD")), Some(first.join("npm.CMD")));
+        assert_eq!(
+            look_path_in(first.join("npm").to_str().unwrap(), None, Some(".CMD")),
+            Some(first.join("npm.CMD"))
+        );
+        std::fs::create_dir(first.join("directory.CMD")).unwrap();
+        assert!(look_path_in("directory", Some(&path), Some(".CMD")).is_none());
+        assert!(look_path_in("npm", Some(&path), Some(".BAT")).is_none());
+        assert!(look_path_in("", Some(&path), Some(".CMD")).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_batch_command_preserves_argument_boundaries() {
+        let root = std::env::temp_dir().join(format!("ruddr batch {}", crate::fsutil::random_hex(8)));
+        std::fs::create_dir(&root).unwrap();
+        let shim = root.join("tool.cmd");
+        std::fs::write(&shim, "@echo off\r\necho \"%~1\"\r\necho \"%~2\"\r\n").unwrap();
+        let output = command(root.join("tool")).args(["space & value", "tail"]).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().replace("\r\n", "\n"),
+            "\"space & value\"\n\"tail\"\n"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_and_names_providers() {

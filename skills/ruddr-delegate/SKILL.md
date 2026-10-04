@@ -21,7 +21,8 @@ and unknown subcommands also exit 2. `ruddr COMMAND --help`
 lists a command's flags.
 
 `ruddr update` refreshes the binary and delegate skill. npm updates retain
-the current install prefix. `ruddr update --check` reports the latest release
+the current install prefix. Windows updates and provider launches resolve `.cmd`
+shims through `PATH` and `PATHEXT`. `ruddr update --check` reports the latest release
 and writes only the release-check cache; it leaves installed skills untouched.
 
 ## Pick a provider and model

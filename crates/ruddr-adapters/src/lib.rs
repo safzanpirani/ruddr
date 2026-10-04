@@ -69,10 +69,15 @@ pub fn new_adapter(provider: &str, executable: Option<String>, emit: Emit) -> ru
 /// found, the first name is kept so the spawn error names it.
 fn resolve_executable(explicit: Option<String>, provider: &str, names: &[&str]) -> String {
     let variables = [format!("RUDDR_{provider}_PATH"), format!("RUDDER_{provider}_PATH")];
-    explicit
+    let executable = explicit
         .or_else(|| ruddr_core::paths::env_any(&[variables[0].as_str(), variables[1].as_str()]))
         .or_else(|| child::find_on_path(names).map(|path| path.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| names[0].to_string())
+        .unwrap_or_else(|| names[0].to_string());
+    #[cfg(windows)]
+    if let Some(path) = ruddr_core::provider::look_path(&executable) {
+        return path.to_string_lossy().into_owned();
+    }
+    executable
 }
 
 fn parse_args(args: &[String]) -> ruddr_core::Result<(String, Option<String>)> {
@@ -115,6 +120,22 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_extensionless_provider_path_resolves_batch_shim() {
+        let root = std::env::temp_dir().join(format!("ruddr-adapter-{}", ruddr_core::fsutil::random_hex(8)));
+        std::fs::create_dir(&root).unwrap();
+        let shim = root.join("provider.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        for provider in ["CLAUDE", "OPENCODE", "PI", "DROID"] {
+            assert_eq!(
+                resolve_executable(Some(root.join("provider").to_string_lossy().into_owned()), provider, &["unused"]),
+                shim.to_string_lossy()
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
