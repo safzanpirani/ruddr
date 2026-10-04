@@ -267,11 +267,13 @@ fn fake_opencode(dir: &Path, out: &Mutex<File>) -> i32 {
     let dir = dir.to_path_buf();
     std::thread::spawn(move || {
         let prompts = Arc::new(Mutex::new(0));
+        let model = Arc::new(Mutex::new(json!({ "providerID": "stored", "id": "original", "variant": "low" })));
         for stream in listener.incoming().map_while(Result::ok) {
             let dir = dir.clone();
             let password = password.clone();
             let prompts = prompts.clone();
-            std::thread::spawn(move || serve_opencode(stream, &dir, &password, &prompts));
+            let model = model.clone();
+            std::thread::spawn(move || serve_opencode(stream, &dir, &password, &prompts, &model));
         }
     });
     let mut sink = Vec::new();
@@ -279,7 +281,7 @@ fn fake_opencode(dir: &Path, out: &Mutex<File>) -> i32 {
     0
 }
 
-fn serve_opencode(stream: TcpStream, dir: &Path, password: &str, prompts: &Mutex<u32>) {
+fn serve_opencode(stream: TcpStream, dir: &Path, password: &str, prompts: &Mutex<u32>, model: &Mutex<Value>) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut request_line = String::new();
     reader.read_line(&mut request_line).unwrap();
@@ -311,7 +313,22 @@ fn serve_opencode(stream: TcpStream, dir: &Path, password: &str, prompts: &Mutex
         &json!({ "method": method, "path": path, "auth": authorization == expected, "body": body }).to_string(),
     );
     let (status, response) = match (method.as_str(), path.as_str()) {
-        ("POST", "/api/session") => (200, json!({ "data": { "id": "ses_fake" } })),
+        ("POST", "/api/session") => {
+            if let Some(selected) = body.get("model") {
+                *model.lock().unwrap() = selected.clone();
+            }
+            (200, json!({ "data": { "id": "ses_fake", "model": *model.lock().unwrap() } }))
+        }
+        ("GET", "/api/session/ses_fake") => (200, json!({ "data": { "id": "ses_fake", "model": *model.lock().unwrap() } })),
+        ("POST", "/api/session/ses_fake/agent") => (204, Value::Null),
+        ("POST", "/api/session/ses_fake/model") => {
+            if dir.join("reject_model").exists() {
+                (400, json!({ "error": "model switch rejected" }))
+            } else {
+                *model.lock().unwrap() = body["model"].clone();
+                (204, Value::Null)
+            }
+        }
         ("POST", "/api/session/ses_fake/prompt") => {
             let mut count = prompts.lock().unwrap();
             *count += 1;

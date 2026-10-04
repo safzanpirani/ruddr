@@ -37,7 +37,14 @@ and writes only the release-check cache; it leaves installed skills untouched.
 - `--provider opencode` runs OpenCode 2 and `--provider pi` runs Pi, both on
   the models their own config exposes (the default is
   `openrouter/deepseek/deepseek-v4-flash-vision-exp`). Use them when the user
-  names that tool, or for cheap parallel attempts. Only Pi accepts `--effort`.
+  names that tool, or for cheap parallel attempts. OpenCode maps `--effort` to
+  its model variant; the built-in DeepSeek choices are `none`, `low`, `high`,
+  and `max`.
+  Variant names depend on the model. Pi also accepts `--effort`.
+  OpenCode resumes preserve the stored model and variant when no override is
+  supplied. `--model` switches the resumed model; `--effort` sets its variant.
+  An explicit effort overrides a `#VARIANT` suffix in an OpenCode model ID.
+  A model override without an effort selects the new model's default variant.
   Neither adapter enforces Ruddr's filesystem containment for
   `workspace-write`; they rely on the provider's own permission system, so
   prefer codex or claude for anything touching files outside the workspace.
@@ -52,7 +59,8 @@ and writes only the release-check cache; it leaves installed skills untouched.
 
 `ruddr models --json` lists every model and effort per provider, including
 any the user added with `ruddr models add`; `ruddr run` without `--model`
-uses the listed default. This skill selects `gpt-6.1-sol` at `high` effort
+uses the listed default. OpenCode resumes keep their stored model. This skill
+selects `gpt-6.1-sol` at `high` effort
 for Codex runs. The built-in catalog also includes `gpt-6-sol` and
 `gpt-6-luna`; use `ruddr models --json` for their supported efforts. Honor
 an explicit user choice. Pass `--model` explicitly so the run is reproducible

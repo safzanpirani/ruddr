@@ -165,7 +165,8 @@ pub fn configure_provider_defaults(cfg: &mut RunConfig, child_args: &[String]) -
     if provider != Provider::Codex && !cfg.codex_config.is_empty() {
         return Err(Error::usage("--config applies only to --provider codex"));
     }
-    if cfg.model.is_empty() {
+    // OpenCode resume keeps the persisted model unless the caller selects one.
+    if cfg.model.is_empty() && !(provider == Provider::OpenCode && !cfg.resume_thread_id.is_empty()) {
         cfg.model = ruddr_core::models::default_model(provider)?.unwrap_or_default();
     }
     if provider == Provider::Codex {
@@ -474,6 +475,23 @@ mod tests {
                 ruddr_core::Exit::Usage
             );
         });
+    }
+
+    #[test]
+    fn opencode_resume_preserves_the_model_unless_explicitly_overridden() {
+        for model in ["", "new/model"] {
+            let mut cfg = RunConfig {
+                provider: "opencode".into(),
+                opencode_path: "/opt/opencode2".into(),
+                resume_thread_id: "ses_existing".into(),
+                model: model.into(),
+                effort: "high".into(),
+                ..RunConfig::default()
+            };
+            configure_provider_defaults(&mut cfg, &[]).unwrap();
+            assert_eq!(cfg.model, model);
+            assert_eq!(cfg.effort, "high");
+        }
     }
 
     #[test]

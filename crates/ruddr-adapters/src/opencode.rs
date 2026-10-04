@@ -33,6 +33,7 @@ pub struct OpenCodeThread {
     pub id: String,
     pub cwd: String,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub executable: String,
     pub ephemeral: bool,
     pub sandbox: Option<String>,
@@ -50,8 +51,8 @@ pub struct Snapshot {
 /// The OpenCode session API the adapter needs. Every method may run while
 /// another one is blocked on a different thread.
 pub trait Backend: Send + Sync {
-    fn open(&self, thread: &OpenCodeThread, resumed: bool) -> AResult<String>;
-    fn prompt(&self, session: &str, text: &str, steer: bool) -> AResult<String>;
+    fn open(&self, thread: &mut OpenCodeThread, resumed: bool) -> AResult<String>;
+    fn prompt(&self, session: &str, text: &str, steer: bool, effort: Option<&str>) -> AResult<String>;
     fn wait(&self, session: &str) -> AResult<Snapshot>;
     fn interrupt(&self, session: &str) -> AResult<()>;
     fn close(&self, session: Option<&str>, remove_session: bool);
@@ -172,9 +173,12 @@ impl Inner {
             ephemeral: input.get("ephemeral") == Some(&Value::Bool(true)),
             sandbox: optional_string(input.get("sandbox")),
             model: optional_string(input.get("model")),
+            effort: None,
         };
-        thread.id = self.backend.open(&thread, resumed)?;
+        thread.id = self.backend.open(&mut thread, resumed)?;
         let id = thread.id.clone();
+        let model = thread.model.clone().unwrap_or_default();
+        let effort = thread.effort.clone();
         lock(&self.state).thread = Some(thread);
         if resumed {
             let snapshot = self.backend.wait(&id)?;
@@ -185,7 +189,7 @@ impl Inner {
                 }
             }
         }
-        Ok(json!({ "thread": { "id": id } }))
+        Ok(json!({ "thread": { "id": id }, "model": model, "reasoningEffort": effort }))
     }
 
     fn start_turn(self: &Arc<Self>, params: &Value) -> AResult<Value> {
@@ -201,7 +205,10 @@ impl Inner {
         };
         let input = record(params, "turn parameters")?;
         require_thread(&thread_id, input)?;
-        let id = self.backend.prompt(&thread_id, &read_text_input(input.get("input"))?, false)?;
+        let effort = optional_string(input.get("effort"));
+        let id = self
+            .backend
+            .prompt(&thread_id, &read_text_input(input.get("input"))?, false, effort.as_deref())?;
         let mut state = lock(&self.state);
         state.turn_serial += 1;
         let serial = state.turn_serial;
@@ -236,7 +243,7 @@ impl Inner {
             (thread_id, turn.id.clone(), turn.serial)
         };
         let text = read_text_input(input.get("input"));
-        let sent = text.clone().and_then(|text| self.backend.prompt(&thread_id, &text, true));
+        let sent = text.clone().and_then(|text| self.backend.prompt(&thread_id, &text, true, None));
         {
             let mut state = lock(&self.state);
             if let Some(turn) = state.turn.as_mut().filter(|turn| turn.serial == serial) {
@@ -629,6 +636,16 @@ impl HttpBackend {
         serde_json::from_slice(&body).map_err(|error| HttpError::other(format!("OpenCode API returned invalid JSON: {error}")))
     }
 
+    fn switch_model(&self, session: &str, model: &Value) -> AResult<()> {
+        self.request(
+            "POST",
+            &format!("/api/session/{}/model", encode_uri_component(session)),
+            Some(&json!({ "model": model })),
+            Some(self.timeout),
+        )?;
+        Ok(())
+    }
+
     fn abort_pending(&self) {
         for (_, pending) in lock(&self.pending).drain() {
             pending.aborted.store(true, Ordering::SeqCst);
@@ -638,32 +655,65 @@ impl HttpBackend {
 }
 
 impl Backend for HttpBackend {
-    fn open(&self, thread: &OpenCodeThread, resumed: bool) -> AResult<String> {
+    fn open(&self, thread: &mut OpenCodeThread, resumed: bool) -> AResult<String> {
         let agent = ruddr_agent(thread.sandbox.as_deref());
         self.start_server(&thread.executable, &thread.cwd, thread.sandbox.as_deref())?;
         let session = encode_uri_component(&thread.id);
-        if resumed {
-            // TODO(review): Decide whether resumed OpenCode sessions should override their persisted model.
-            self.request("GET", &format!("/api/session/{session}"), None, Some(self.timeout))?;
+        let result = if resumed {
+            let result = self.request("GET", &format!("/api/session/{session}"), None, Some(self.timeout))?;
             self.request(
                 "POST",
                 &format!("/api/session/{session}/agent"),
                 Some(&json!({ "agent": agent })),
                 Some(self.timeout),
             )?;
-            return Ok(thread.id.clone());
-        }
-        let mut body = json!({ "location": { "directory": thread.cwd }, "agent": agent });
-        if let Some(model) = &thread.model {
-            body["model"] = parse_model(model)?;
-        }
-        let result = self.request("POST", "/api/session", Some(&body), Some(self.timeout))?;
-        let result = record(&result, "session response")?;
+            result
+        } else {
+            let mut body = json!({ "location": { "directory": thread.cwd }, "agent": agent });
+            if let Some(model) = &thread.model {
+                body["model"] = parse_model(model)?;
+            }
+            self.request("POST", "/api/session", Some(&body), Some(self.timeout))?
+        };
         let data = record(result.get("data").unwrap_or(&Value::Null), "session data")?;
-        required_string(data.get("id"), "session id")
+        let id = required_string(data.get("id"), "session id")?;
+        let model = if resumed && let Some(model) = &thread.model {
+            let model = parse_model(model)?;
+            self.switch_model(&id, &model)?;
+            model
+        } else {
+            data.get("model").cloned().unwrap_or(Value::Null)
+        };
+        thread.model = if model.is_null() {
+            None
+        } else {
+            Some(format!(
+                "{}/{}",
+                required_string(model.get("providerID"), "model providerID")?,
+                required_string(model.get("id"), "model id")?
+            ))
+        };
+        thread.effort = optional_string(model.get("variant"));
+        Ok(id)
     }
 
-    fn prompt(&self, session: &str, text: &str, steer: bool) -> AResult<String> {
+    fn prompt(&self, session: &str, text: &str, steer: bool, effort: Option<&str>) -> AResult<String> {
+        if let Some(effort) = effort {
+            let result = self.request(
+                "GET",
+                &format!("/api/session/{}", encode_uri_component(session)),
+                None,
+                Some(self.timeout),
+            )?;
+            let mut model = result["data"]["model"].clone();
+            if !model.is_object() {
+                return Err(AdapterError::invalid(
+                    "OpenCode effort requires a session model; pass --model provider/model",
+                ));
+            }
+            model["variant"] = json!(effort);
+            self.switch_model(session, &model)?;
+        }
         let mut body = json!({ "text": text });
         if steer {
             body["delivery"] = json!("steer");
@@ -1020,8 +1070,20 @@ pub fn ruddr_config_content(sandbox: Option<&str>, existing: Option<&str>) -> AR
 }
 
 fn parse_model(model: &str) -> AResult<Value> {
+    let (model, variant) = model
+        .split_once('#')
+        .map_or((model, None), |(model, variant)| (model, Some(variant)));
     match model.find('/') {
-        Some(slash) if slash > 0 && slash < model.len() - 1 => Ok(json!({ "providerID": &model[..slash], "id": &model[slash + 1..] })),
+        Some(slash) if slash > 0 && slash < model.len() - 1 => {
+            let mut result = json!({ "providerID": &model[..slash], "id": &model[slash + 1..] });
+            if let Some(variant) = variant {
+                if variant.is_empty() {
+                    return Err(AdapterError::invalid("OpenCode model variant must not be empty"));
+                }
+                result["variant"] = json!(variant);
+            }
+            Ok(result)
+        }
         _ => Err(AdapterError::invalid("OpenCode models must use provider/model syntax")),
     }
 }

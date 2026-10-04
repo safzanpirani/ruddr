@@ -57,13 +57,13 @@ const SPECS: &[Spec] = &[
         name: "model",
         kind: Kind::Text,
         value: "ID",
-        help: "provider model (default the provider's catalog default)",
+        help: "provider model (catalog default; OpenCode resume keeps its stored model)",
     },
     Spec {
         name: "effort",
         kind: Kind::Text,
         value: "LEVEL",
-        help: "reasoning effort override",
+        help: "reasoning effort override (OpenCode: model variant, e.g. high)",
     },
     Spec {
         name: "sandbox",

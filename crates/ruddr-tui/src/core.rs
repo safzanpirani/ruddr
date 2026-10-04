@@ -1279,6 +1279,8 @@ mod tests {
             .find(|m| m.id.as_deref() == Some("gpt-6-sol"))
             .unwrap();
         assert_eq!(sol.efforts.last().map(String::as_str), Some("ultra"));
+        let opencode = fallback_models().into_iter().find(|m| m.provider == "opencode").unwrap();
+        assert_eq!(opencode.efforts, ["none", "low", "high", "max"]);
     }
 
     #[test]

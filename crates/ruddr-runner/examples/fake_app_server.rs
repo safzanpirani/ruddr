@@ -48,6 +48,8 @@ impl Options {
 
 const VALUE_FLAGS: &[&str] = &[
     "request-log",
+    "resume-model",
+    "resume-effort",
     "grandchild-pid-file",
     "expect-fork-before",
     "expect-fork-through",
@@ -143,7 +145,14 @@ fn main() {
                     out.error(&id, -32602, "wrong source thread");
                     continue;
                 }
-                out.result(&id, json!({"thread": {"id": "thread-resumed"}}));
+                out.result(
+                    &id,
+                    json!({
+                        "thread": {"id": "thread-resumed"},
+                        "model": options.value("resume-model"),
+                        "reasoningEffort": options.value("resume-effort"),
+                    }),
+                );
             }
             "thread/fork" => {
                 if param("threadId") != "source-thread" {

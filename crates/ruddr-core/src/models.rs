@@ -85,6 +85,8 @@ fn null_default<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(deseri
 const CODEX_EFFORTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 const SOL_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 const LUNA_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+// OpenCode 2.0.22 model.list variants for the built-in OpenRouter DeepSeek model.
+const OPENCODE_EFFORTS: &[&str] = &["none", "low", "high", "max"];
 const PI_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const DROID_EFFORTS: &[&str] = &["low", "high", "max"];
 
@@ -118,7 +120,7 @@ pub fn builtin_catalog() -> Vec<ProviderModel> {
         model(Claude, "claude-opus-5", "Claude Opus 5", &[], false),
         model(Claude, "claude-sonnet-5", "Claude Sonnet 5", &[], false),
         model(Claude, "claude-haiku-4-5-20251001", "Claude Haiku 4.5", &[], false),
-        model(OpenCode, deepseek, "DeepSeek V4 Flash Vision Exp", &[], true),
+        model(OpenCode, deepseek, "DeepSeek V4 Flash Vision Exp", OPENCODE_EFFORTS, true),
         model(Pi, deepseek, "DeepSeek V4 Flash Vision Exp", PI_EFFORTS, true),
         model(Droid, "glm-5.3-flash", "GLM-5.3-Flash", DROID_EFFORTS, true),
     ]
@@ -516,6 +518,8 @@ pub(crate) mod tests {
             assert_eq!(defaults, 1, "{provider} needs exactly one default");
         }
         assert!(catalog.iter().all(|m| !m.available || !m.id.is_empty()));
+        let opencode = catalog.iter().find(|m| m.provider == "opencode").unwrap();
+        assert_eq!(opencode.efforts, ["none", "low", "high", "max"]);
         let pi = catalog.iter().find(|m| m.provider == "pi").unwrap();
         assert_eq!(pi.efforts[..2], ["off".to_string(), "minimal".to_string()]);
         assert!(

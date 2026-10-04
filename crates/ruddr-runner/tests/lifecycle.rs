@@ -1202,3 +1202,34 @@ fn a_detached_startup_crash_reports_its_stderr() {
     let error = ruddr_runner::detach::start_detached_run(&fx.state_dir, &command, Duration::from_secs(10)).unwrap_err();
     assert!(error.message.contains("provider binary not found"), "{error}");
 }
+
+#[test]
+fn opencode_resume_persists_the_effective_model_and_effort() {
+    for (model, effort) in [("", ""), ("new/model", "high")] {
+        let fx = Fixture::new("continue the task");
+        let effective_model = if model.is_empty() { "stored/model" } else { model };
+        let cfg = RunConfig {
+            provider: "opencode".into(),
+            model: model.into(),
+            effort: effort.into(),
+            resume_thread_id: "source-thread".into(),
+            ..fx.config(&["--complete-on-start", "--resume-model", effective_model, "--resume-effort", "low"])
+        };
+        start(cfg).finish().unwrap();
+        let state = fx.state();
+        assert_eq!(state.status, Status::Completed);
+        assert_eq!(state.model, effective_model);
+        assert_eq!(state.effort.as_deref(), Some(if effort.is_empty() { "low" } else { effort }));
+        let request = fx.request("thread/resume");
+        assert_eq!(
+            request["params"].get("model").and_then(Value::as_str),
+            (!model.is_empty()).then_some(model)
+        );
+        assert_eq!(
+            fx.request("turn/start")["params"].get("effort").and_then(Value::as_str),
+            (!effort.is_empty()).then_some(effort)
+        );
+        assert!(!alive(state.child_pid));
+        socket_gone(&state);
+    }
+}

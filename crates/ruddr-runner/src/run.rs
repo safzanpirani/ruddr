@@ -180,6 +180,19 @@ fn acquire_thread(controller: &Controller) -> std::result::Result<(String, &'sta
     if method == "thread/fork" && thread_id == controller.cfg.fork_thread_id {
         return Err("thread/fork returned the source thread id".into());
     }
+    if controller.cfg.provider == "opencode" {
+        let model = result.get("model").and_then(Value::as_str).unwrap_or_default();
+        let effort = result.get("reasoningEffort").and_then(Value::as_str);
+        controller
+            .store
+            .update(|state| {
+                state.model = model.to_string();
+                if controller.cfg.effort.is_empty() {
+                    state.effort = effort.map(str::to_string);
+                }
+            })
+            .map_err(|e| format!("persist OpenCode model: {e}"))?;
+    }
     Ok((thread_id.to_string(), mode))
 }
 

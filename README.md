@@ -272,7 +272,9 @@ authentication. The Claude adapter speaks the stream-json protocol that Claude
 Agent SDK 0.3.245 used; its verification against a current `claude` CLI
 release is pending. OpenCode runs require
 the `opencode2` or `opencode-next` executable and are verified against
-OpenCode 2.0.15. The adapter uses the `/api/experimental/session` wait and
+OpenCode 2.0.15. The model-switch and variant request schemas were checked
+against a local OpenCode 2.0.22 server without sending a prompt. The adapter
+uses the `/api/experimental/session` wait and
 export routes that 2.0.15 introduced, and falls back to the older
 `/api/session` routes on a 404.
 
@@ -393,6 +395,20 @@ Ruddr-scoped agents with explicit permission rules for each sandbox value. Pi
 disables extensions and enables only its read, grep, find, and list tools for
 `read-only`. Both adapters use their provider's native permission system. They
 do not provide Ruddr-enforced filesystem containment for `workspace-write`.
+
+OpenCode maps `--effort` to the session model's `variant` field before each
+prompt. The built-in DeepSeek model offers `none`, `low`, `high`, and
+`max`. OpenCode 2.0.22 reports these variants through its model API. Other models have their own variant names; configure
+their picker choices with `ruddr models add opencode PROVIDER/MODEL --efforts
+low,high`. OpenCode also accepts `--model PROVIDER/MODEL#VARIANT`; an explicit
+`--effort` takes precedence over that suffix.
+
+An OpenCode `--resume-thread ID` keeps the session's model and variant when
+both overrides are omitted. `--model` switches the resumed session's model;
+`--effort` sets its variant. A model override without an effort uses the new
+model's default variant. Ruddr records the effective model and variant in
+`state.json`. A rejected model or variant update stops the run before the prompt.
+
 Run these adapters only in trusted workspaces. OpenCode 2 loads project
 configuration and plugins, and Pi loads project-local resources after approval.
 Those resources can execute code outside the adapters' tool permission rules.
@@ -552,7 +568,7 @@ Rules:
 
 `ruddr models [--json]` prints the model catalog: each provider's models and
 its default. The TUI's picker uses it, and `ruddr run` without `--model` uses
-the default.
+the default. OpenCode resumes keep their stored model.
 
 The Codex catalog includes `gpt-6.1-sol`, `gpt-6-sol`, and `gpt-6-luna`.
 All three support `low`, `medium`, `high`, `xhigh`, and `max` reasoning;
@@ -1242,7 +1258,8 @@ be fresh per run. Prompts always come from --prompt-file, never argv.
 
 Starting runs. Useful `ruddr run` flags:
    --provider codex|claude|opencode|pi|droid   default codex
-   --model / --effort           `ruddr models --json` lists valid combos
+   --model / --effort           `ruddr models --json` lists configured choices
+                               OpenCode maps effort to its model variant
    --sandbox                    read-only | workspace-write (default) |
                                 danger-full-access
    --cwd DIR                    the workspace the provider edits

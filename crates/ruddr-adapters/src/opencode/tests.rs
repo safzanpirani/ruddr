@@ -27,10 +27,10 @@ impl FakeBackend {
 }
 
 impl Backend for Arc<FakeBackend> {
-    fn open(&self, thread: &OpenCodeThread, resumed: bool) -> AResult<String> {
+    fn open(&self, thread: &mut OpenCodeThread, resumed: bool) -> AResult<String> {
         Ok(if resumed { thread.id.clone() } else { "ses_test".into() })
     }
-    fn prompt(&self, _session: &str, text: &str, steer: bool) -> AResult<String> {
+    fn prompt(&self, _session: &str, text: &str, steer: bool, _effort: Option<&str>) -> AResult<String> {
         let count = {
             let mut prompts = lock(&self.prompts);
             prompts.push((text.to_string(), steer));
@@ -310,7 +310,7 @@ fn http_requests_time_out_and_server_announcements_stay_on_loopback() {
     let (base, _) = fake_http(Arc::new(|_, _, _| thread::sleep(Duration::from_secs(5))));
     let backend = HttpBackend::new(Duration::from_millis(10));
     backend.attach(&base, "private");
-    let error = backend.prompt("ses_test", "hello", false).unwrap_err();
+    let error = backend.prompt("ses_test", "hello", false, None).unwrap_err();
     assert!(error.message.contains("timed out after 10ms"), "{error}");
 
     assert_eq!(validated_loopback_url("http://localhost:4096/").unwrap(), "http://localhost:4096");
@@ -420,7 +420,7 @@ fn keeps_response_bodies_bounded_by_timeout_and_shutdown() {
         backend.attach(&base, "test");
         let pending = {
             let backend = backend.clone();
-            thread::spawn(move || backend.prompt("ses_test", "hello", false))
+            thread::spawn(move || backend.prompt("ses_test", "hello", false, None))
         };
         assert!(started.wait(Duration::from_secs(5)));
         if close_early {
@@ -462,7 +462,7 @@ fn rejects_oversized_or_invalid_http_headers_lengths_and_chunks() {
         }));
         let backend = HttpBackend::new(Duration::from_secs(1));
         backend.attach(&base, "test");
-        let error = backend.prompt("ses_test", "hello", false).unwrap_err();
+        let error = backend.prompt("ses_test", "hello", false, None).unwrap_err();
         assert!(error.message.contains(expected), "{error}");
         backend.close(None, false);
     }
@@ -482,7 +482,7 @@ fn a_continuous_partial_http_header_does_not_extend_the_deadline() {
     let backend = HttpBackend::new(Duration::from_millis(50));
     backend.attach(&base, "test");
     let started = Instant::now();
-    let error = backend.prompt("ses_test", "hello", false).unwrap_err();
+    let error = backend.prompt("ses_test", "hello", false, None).unwrap_err();
     assert!(error.message.contains("timed out"), "{error}");
     assert!(started.elapsed() < Duration::from_millis(500));
     backend.close(None, false);
@@ -566,4 +566,129 @@ fn runs_a_turn_against_a_fake_opencode_server() {
     assert_eq!(requests[1]["body"], json!({ "text": "hello" }));
     // An ephemeral session is deleted when the adapter closes.
     assert_eq!(requests.last().unwrap()["method"], "DELETE");
+}
+
+#[cfg(unix)]
+#[test]
+fn resume_model_and_effort_reach_the_session_api_before_the_prompt() {
+    for (model, effort) in [
+        (None, None),
+        (None, Some("high")),
+        (Some("new/model"), None),
+        (Some("new/model#low"), None),
+        (Some("new/model#low"), Some("high")),
+    ] {
+        let fake = crate::testing::FakeDir::new();
+        let emitted = Collector::new();
+        let adapter = OpenCodeAdapter::new(emitted.clone(), fake.script("opencode"));
+        adapter.dispatch("initialize", &json!({})).unwrap();
+        let response = adapter
+            .dispatch(
+                "thread/resume",
+                &json!({
+                    "threadId": "ses_fake", "cwd": fake.dir, "sandbox": "read-only", "model": model,
+                }),
+            )
+            .unwrap();
+        assert_eq!(response["model"], if model.is_some() { "new/model" } else { "stored/original" });
+        assert_eq!(
+            response["reasoningEffort"],
+            if model == Some("new/model") { Value::Null } else { json!("low") }
+        );
+        adapter
+            .dispatch(
+                "turn/start",
+                &json!({
+                    "threadId": "ses_fake", "effort": effort, "input": [{ "type": "text", "text": "hello" }],
+                }),
+            )
+            .unwrap();
+        emitted.wait_for_method("turn/completed");
+        adapter.close();
+        let requests = fake.records("requests.jsonl");
+        let prompt_index = requests.iter().position(|r| r["path"] == "/api/session/ses_fake/prompt").unwrap();
+        let switches: Vec<_> = requests
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r["path"] == "/api/session/ses_fake/model")
+            .collect();
+        assert_eq!(switches.len(), usize::from(model.is_some()) + usize::from(effort.is_some()));
+        for (index, _) in &switches {
+            assert!(*index < prompt_index);
+        }
+        if let Some((_, switch)) = switches.last() {
+            let mut expected = if model.is_some() {
+                json!({ "providerID": "new", "id": "model" })
+            } else {
+                json!({ "providerID": "stored", "id": "original" })
+            };
+            if let Some(variant) = effort.or_else(|| model.and_then(|m| m.split_once('#').map(|(_, v)| v))) {
+                expected["variant"] = json!(variant);
+            }
+            assert_eq!(switch["body"], json!({ "model": expected }));
+        }
+        assert_eq!(requests[prompt_index]["body"], json!({ "text": "hello" }));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_effort_is_applied_and_a_rejected_variant_never_sends_a_prompt() {
+    for reject in [false, true] {
+        let fake = crate::testing::FakeDir::new();
+        let emitted = Collector::new();
+        let adapter = OpenCodeAdapter::new(emitted.clone(), fake.script("opencode"));
+        adapter.dispatch("initialize", &json!({})).unwrap();
+        adapter
+            .dispatch("thread/start", &json!({ "cwd": fake.dir, "model": "new/model" }))
+            .unwrap();
+        if reject {
+            fake.write("reject_model", "yes");
+        }
+        let result = adapter.dispatch(
+            "turn/start",
+            &json!({
+                "threadId": "ses_fake", "effort": "high", "input": [{ "type": "text", "text": "hello" }],
+            }),
+        );
+        if reject {
+            assert!(result.unwrap_err().message.contains("model switch rejected"));
+        } else {
+            result.unwrap();
+            emitted.wait_for_method("turn/completed");
+        }
+        adapter.close();
+        let requests = fake.records("requests.jsonl");
+        let switch = requests.iter().find(|r| r["path"] == "/api/session/ses_fake/model").unwrap();
+        assert_eq!(
+            switch["body"],
+            json!({ "model": { "providerID": "new", "id": "model", "variant": "high" } })
+        );
+        assert_eq!(requests.iter().any(|r| r["path"] == "/api/session/ses_fake/prompt"), !reject);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rejected_resume_model_does_not_return_a_configured_thread() {
+    let fake = crate::testing::FakeDir::new();
+    fake.write("reject_model", "yes");
+    let emitted = Collector::new();
+    let adapter = OpenCodeAdapter::new(emitted, fake.script("opencode"));
+    adapter.dispatch("initialize", &json!({})).unwrap();
+    let error = adapter
+        .dispatch(
+            "thread/resume",
+            &json!({ "threadId": "ses_fake", "cwd": fake.dir, "model": "new/model" }),
+        )
+        .unwrap_err();
+    assert!(error.message.contains("model switch rejected"));
+    assert!(lock(&adapter.inner.state).thread.is_none());
+    adapter.close();
+    assert!(
+        !fake
+            .records("requests.jsonl")
+            .iter()
+            .any(|r| r["path"] == "/api/session/ses_fake/prompt")
+    );
 }
