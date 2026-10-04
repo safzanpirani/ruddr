@@ -25,12 +25,14 @@ comment that says what it owns.
   error type (`error.rs`), redacted `state.json` and stale-state rendering
   (`state.rs`), the client side of the control channel (`control.rs`; a Unix
   socket on Unix, a named pipe on Windows), line-delimited JSON-RPC
-  (`jsonrpc.rs`), the global run registry (`registry.rs`), session discovery
+  (`jsonrpc.rs`), the global run registry and `prune` (`registry.rs`, which
+  serializes registration and pruning with a lock file), session discovery
   for multi-run commands and the dashboards (`session.rs`), well-known paths
-  and environment overrides (`paths.rs`), owner-only file helpers
-  (`fsutil.rs`), image attachments and the `localImage` input items
-  (`images.rs`), Go-syntax durations (`duration.rs`), provider selection and
-  executable lookup (`provider.rs`), the model catalog (`models.rs`), and the
+  and environment overrides (`paths.rs`), owner-only file helpers and
+  file identity for detecting replaced logs (`fsutil.rs`), image attachments and the `localImage` input items
+  (`images.rs`), Go-syntax durations capped at Go's range (`duration.rs`),
+  provider selection, executable lookup, and `provider::command`, which
+  resolves `.cmd` shims through PATHEXT on Windows (`provider.rs`), the model catalog (`models.rs`), and the
   theme list shared by the TUI and the web dashboard (`themes.json`).
 - `crates/ruddr-runner` — `ruddr run`: flag parsing and usage text
   (`args.rs`), run configuration and validation (`config.rs`,
@@ -55,10 +57,12 @@ comment that says what it owns.
   argument to the crate that owns the command. `src/commands/` holds every
   other command: the top-level usage text (`mod.rs`), the shared GNU-style
   flag parser (`args.rs`), `status`, `peek`, and `wait` for one run or a group
-  (`runs.rs`), `steer`, `prompt`, `stop`, and `interrupt` (`steering.rs`),
+  (`runs.rs`), `wait --progress` reporting (`progress.rs`), `prune`
+  (`prune.rs`), `steer`, `prompt`, `stop`, and `interrupt` (`steering.rs`),
   `result` (`result.rs`), `thread` (`thread.rs`), `models` (`models.rs`),
   `skill` (`skill.rs`, which embeds `skills/ruddr-delegate/SKILL.md`),
-  `update` and the daily release check (`update.rs`), and the `--remote`
+  `update` and the daily release check (`update.rs`, which installs through
+  npm with the existing package's `--prefix`), and the `--remote`
   `ssh` passthrough (`remote.rs`). `tests/cli.rs` runs the built binary
   end to end, including `--remote` through a fake `ssh`.
 - `crates/ruddr-tui` — `ruddr tui`, a ratatui front end. `lib.rs` holds the
@@ -204,6 +208,14 @@ bun scripts/build-web.ts --check  # exit 1 when the committed bundle is stale
 
 Commit the rebuilt `crates/ruddr-web/assets` with the client change. The Rust
 test `bundle_matches_sources` fails when the bundle is stale.
+
+CI runs the Rust job on Ubuntu, macOS, and Windows with `cargo test
+--no-fail-fast`, so one run lists every failing test. Code behind
+`cfg(windows)` never compiles on macOS or Linux: check it against the
+`windows-sys` source in the Cargo registry and read the Windows CI job before
+calling it done. Spawn npm-installed tools (`npm`, `bun`, `codex`, `claude`,
+`opencode`, `pi`, `droid`) through `ruddr_core::provider::command`, because
+`std::process::Command` does not find `.cmd` shims on Windows.
 
 For documentation-only changes, at minimum run `git diff --check` and verify
 every command against `target/debug/ruddr --help`, `target/debug/ruddr
