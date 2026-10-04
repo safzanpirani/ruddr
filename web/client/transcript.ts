@@ -8,7 +8,7 @@ export type EntryStatus = "running" | "completed" | "failed" | "stopped";
 
 export interface FileEdit {
   path: string;
-  /** add, update, delete, or move, as the provider reported it. */
+  /** add, update, delete, move, or write, as the provider reported it. */
   kind: string;
   movePath?: string;
   /** Codex: unified hunks for an update, full content for an add or delete. */
@@ -523,14 +523,16 @@ export function fileEditsFromItem(item: RawItem): FileEdit[] {
       if (!change.path) return [];
       const kind = typeof change.kind === "string" ? change.kind : change.kind?.type ?? "update";
       const movePath = typeof change.kind === "object" ? change.kind?.move_path ?? undefined : undefined;
-      return [{ path: change.path, kind, movePath: movePath || undefined, diff: change.diff }];
+      return [{ path: change.path, kind, movePath: movePath || undefined, diff: change.diff,
+        ...(change.diff && hasUnnumberedHunks(change.diff) ? { fragment: true } : {}),
+      }];
     });
   }
   const input = item.input;
   if (!input) return [];
   const path = stringField(input, "file_path", "filePath", "path", "notebook_path", "target_file");
   const patch = stringField(input, "patch", "diff", "input");
-  if (patch && /^(\*\*\* Begin Patch|diff --git|--- |@@ )/m.test(patch)) return editsFromPatchText(patch, path);
+  if (patch && /^(\*\*\* Begin Patch|diff --git|--- |@@(?: |$))/m.test(patch)) return editsFromPatchText(patch, path);
   if (!path) return [];
   const edits = Array.isArray(input.edits) ? (input.edits as Array<Record<string, unknown>>) : undefined;
   if (edits?.length) {
@@ -547,8 +549,7 @@ export function fileEditsFromItem(item: RawItem): FileEdit[] {
   const newText = stringField(input, "new_string", "newString", "new_str", "newText");
   if (oldText !== undefined || newText !== undefined)
     return [{ path, kind: "update", fragment: true, oldText: oldText ?? "", newText: newText ?? "" }];
-  // TODO(review): Distinguish file creation from overwrite when a Write input omits the previous content.
-  if (content !== undefined) return [{ path, kind: "add", oldText: "", newText: content }];
+  if (content !== undefined) return [{ path, kind: item.toolName?.toLowerCase() === "create" ? "add" : "write", newText: content }];
   return [{ path, kind: "update" }];
 }
 
@@ -561,6 +562,7 @@ export function editsFromPatchText(patch: string, fallbackPath?: string): FileEd
     const flush = () => {
       if (current) {
         current.diff = current.kind === "update" ? lines.join("\n") : lines.map((line) => line.replace(/^[+-]/, "")).join("\n");
+        if (current.kind === "update" && hasUnnumberedHunks(current.diff)) current.fragment = true;
         edits.push(current);
       }
       lines = [];
@@ -578,8 +580,7 @@ export function editsFromPatchText(patch: string, fallbackPath?: string): FileEd
         continue;
       }
       if (line.startsWith("*** End Patch") || line.startsWith("*** Begin Patch") || line.startsWith("*** End of File")) continue;
-      // TODO(review): Render unnumbered apply_patch hunks as fragments without inventing source line numbers.
-      if (current) lines.push(line === "@@" ? "@@ -1 +1 @@" : line);
+      if (current) lines.push(line);
     }
     flush();
     return edits;
@@ -587,22 +588,48 @@ export function editsFromPatchText(patch: string, fallbackPath?: string): FileEd
   const files = patch.split(/^(?=diff --git )/m).filter((part) => part.trim());
   return files.map((part) => {
     const path = /^\+\+\+ (?:b\/)?(.+)$/m.exec(part)?.[1] ?? /^diff --git a\/\S+ b\/(.+)$/m.exec(part)?.[1] ?? fallbackPath ?? "patch";
-    return { path, kind: "update", diff: part };
+    return { path, kind: "update", diff: part, ...(hasUnnumberedHunks(part) ? { fragment: true } : {}) };
   });
+}
+
+/** Fragment offsets describe only the supplied snippets; the renderer hides them. */
+function hasUnnumberedHunks(diff: string): boolean {
+  return diff.split("\n").some((line) => /^@@(?:$| )/.test(line) && !/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(line));
+}
+
+function numberedFragment(diff: string): string {
+  const lines = diff.replace(/\n$/, "").split("\n");
+  let oldOffset = 1;
+  let newOffset = 1;
+  return lines.map((line, index) => {
+    if (!/^@@(?:$| )/.test(line)) return line;
+    let oldCount = 0;
+    let newCount = 0;
+    for (let i = index + 1; i < lines.length && !/^@@(?:$| )/.test(lines[i]); i++) {
+      if (lines[i].startsWith(" ") || lines[i].startsWith("-")) oldCount++;
+      if (lines[i].startsWith(" ") || lines[i].startsWith("+")) newCount++;
+    }
+    const header = `@@ -${oldCount ? oldOffset : oldOffset - 1},${oldCount} +${newCount ? newOffset : newOffset - 1},${newCount} @@`;
+    oldOffset += oldCount;
+    newOffset += newCount;
+    return header;
+  }).join("\n");
 }
 
 /** Makes a full unified patch for one Codex-style edit so a diff viewer can parse it. */
 export function unifiedPatchForEdit(edit: FileEdit): string | undefined {
   if (!edit.diff) return undefined;
-  if (/^diff --git |^--- /m.test(edit.diff)) return edit.diff.endsWith("\n") ? edit.diff : `${edit.diff}\n`;
+  const diff = edit.fragment ? numberedFragment(edit.diff) : edit.diff;
+  if (/^diff --git |^--- /m.test(diff)) return diff.endsWith("\n") ? diff : `${diff}\n`;
   if (edit.kind !== "update" && edit.kind !== "move") return undefined;
   const target = edit.movePath ?? edit.path;
-  const body = edit.diff.endsWith("\n") ? edit.diff : `${edit.diff}\n`;
+  const body = diff.endsWith("\n") ? diff : `${diff}\n`;
   return `--- a/${edit.path}\n+++ b/${target}\n${body}`;
 }
 
 /** Counts added and removed lines for the chat row summary. */
 export function editStats(edit: FileEdit): { additions: number; deletions: number } {
+  if (edit.kind === "write") return { additions: 0, deletions: 0 };
   if (edit.oldText !== undefined || edit.newText !== undefined) {
     const count = (text: string | undefined) => (text ? text.replace(/\n$/, "").split("\n").length : 0);
     return { additions: count(edit.newText), deletions: count(edit.oldText) };

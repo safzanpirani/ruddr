@@ -4,7 +4,7 @@ import { Suggestions, ThemedSelect } from "./select";
 import { ChatView, markdownHTML, wireCopyButtons } from "./chat";
 import { type DiffPreferences, type WorkspaceDiffData, WorkspaceDiffView } from "./diffs";
 import { append, clear, copyText, h, transition } from "./dom";
-import { draftTarget, type DraftTarget } from "./prompt";
+import { draftTarget, restoreDraft, type DraftTarget } from "./prompt";
 import {
   basename,
   formatAge,
@@ -273,6 +273,16 @@ const paneHost = h("div", { class: "panes" }, ...TABS.map((tab) => panes[tab]));
 
 const composerInput = h("textarea", { class: "composer-input", rows: 1, placeholder: "Select a session", spellcheck: "true" });
 const composerRoute = h("span", { class: "route" });
+const chooseDraftTarget = h("button", { class: "btn", type: "button", onclick: () => {
+  const target = draftTarget(selectedSession(), undefined, false);
+  if (!target) return;
+  draftTargets.set(target.stateDir, target);
+  saveDraft();
+  renderComposer();
+  composerInput.focus();
+} }, "Use current target");
+const draftNote = h("div", { class: "draft-note hidden", role: "status" },
+  h("span", null, "The original draft target is gone or unknown. Choose a destination before sending."), chooseDraftTarget);
 const composerModel = new ThemedSelect("composer-model hidden", "Model for the continuation run (m)");
 const sendButton = h("button", { class: "send", type: "submit", title: "Send (Enter)" }, "↑");
 const composer = h(
@@ -281,6 +291,7 @@ const composer = h(
     event.preventDefault();
     void submitPrompt();
   } },
+  draftNote,
   composerRoute,
   composerInput,
   composerModel.element,
@@ -1037,26 +1048,27 @@ async function refreshDiff(force: boolean): Promise<void> {
 // ---------------------------------------------------------------------------
 // Composer
 
-const drafts = storage.get<Record<string, string>>("drafts", {});
-// TODO(review): Persist draft routes and turn IDs with text; define how legacy drafts without intent must be restored before enabling submission.
-const draftTargets = new Map<string, DraftTarget>();
+const drafts = storage.get<Record<string, unknown>>("drafts", {});
+const draftTargets = new Map<string, DraftTarget | null>();
+let draftLoaded = false;
 
 function composerTarget(session = selectedSession()): DraftTarget | undefined {
   const target = draftTarget(session, session ? draftTargets.get(session.stateDir) : undefined, Boolean(composerInput.value));
-  if (target) draftTargets.set(target.stateDir, target);
-  else if (session) draftTargets.delete(session.stateDir);
+  if (session) draftTargets.set(session.stateDir, target ?? null);
   return target;
 }
 
-function loadDraft(): void {
-  composerInput.value = (state.selected && drafts[state.selected]) || "";
-  composerTarget();
+function loadDraft(value: unknown = state.selected ? drafts[state.selected] : undefined): void {
+  const restored = restoreDraft(value, selectedSession());
+  composerInput.value = restored.text;
+  if (state.selected) draftTargets.set(state.selected, restored.target);
+  draftLoaded = true;
   autosize();
 }
 
 function saveDraft(): void {
   if (!state.selected) return;
-  if (composerInput.value) drafts[state.selected] = composerInput.value;
+  if (composerInput.value) drafts[state.selected] = { text: composerInput.value, target: composerTarget() ?? null };
   else delete drafts[state.selected];
   storage.set("drafts", drafts);
 }
@@ -1073,7 +1085,13 @@ function renderComposer(): void {
   const target = composerTarget(session);
   const route = target?.route;
   composer.dataset.route = route ?? "none";
-  composerInput.disabled = !route;
+  const unarmed = Boolean(composerInput.value) && !target;
+  composerInput.disabled = !route && !unarmed;
+  draftNote.classList.toggle("hidden", !unarmed);
+  composer.classList.toggle("unarmed", unarmed);
+  const currentTarget = draftTarget(session, undefined, false);
+  chooseDraftTarget.disabled = !currentTarget;
+  chooseDraftTarget.textContent = currentTarget ? `Use ${currentTarget.route} for ${projectName(session!)}` : "Select an available session";
   sendButton.disabled = !route || state.busy;
   const labels = {
     steer: ["Steer", "Steer the running turn…"],
@@ -2150,12 +2168,20 @@ function applySessions(sessions: Session[]): void {
     return;
   }
   const previous = selectedSession();
+  const pendingDraft = state.selected
+    ? draftLoaded ? { text: composerInput.value, target: draftTargets.get(state.selected) ?? null } : drafts[state.selected]
+    : undefined;
   notifyFinishedTurns(state.sessions, sessions);
   state.sessions = sessions;
   if (!selectedSession()) {
     const fallback = sessions.find(isLive) ?? sessions[0];
-    selectSession(fallback?.stateDir);
+    selectSession(fallback?.stateDir ?? state.selected);
+    if (restoreDraft(pendingDraft, undefined).text) {
+      loadDraft(pendingDraft);
+      renderComposer();
+    }
   } else {
+    if (!draftLoaded) loadDraft();
     const current = selectedSession()!;
     // A finished turn changes the prompt route and the Stop button.
     if (previous?.status !== current.status && previous?.status === "active" && isTerminal(current.status))

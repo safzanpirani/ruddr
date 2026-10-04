@@ -175,6 +175,7 @@ kbd {
 /* Main */
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .main.no-session > :not(.empty-main) { display: none; }
+.main.no-session > .composer.unarmed { display: flex; }
 .main:not(.no-session) .empty-main { display: none; }
 .empty-main { margin: auto; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; animation: fadeUp 0.4s var(--ease-out); }
 .empty-main h2 { margin: 0; font-size: 18px; }
@@ -364,6 +365,7 @@ kbd {
 .edit-card { border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; background: var(--surface); }
 .edit-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--hairline); background: var(--soft); }
 .edit-kind { font-family: var(--mono); font-size: 11px; font-weight: 700; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; }
+.edit-kind.write { width: auto; flex: none; padding: 0 4px; white-space: nowrap; }
 .edit-kind.add { color: var(--success); background: color-mix(in oklab, var(--success) 15%, transparent); }
 .edit-kind.delete { color: var(--danger); background: color-mix(in oklab, var(--danger) 15%, transparent); }
 .edit-kind.update, .edit-kind.move { color: var(--warning); background: color-mix(in oklab, var(--warning) 15%, transparent); }
@@ -457,6 +459,8 @@ diffs-container, .edit-diff > *, .diff-file-body > * {
   padding: 6px 6px 6px 12px; border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface);
   transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), opacity 0.2s;
 }
+.composer.unarmed { flex-wrap: wrap; opacity: 1; }
+.draft-note { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--warning); font-size: 12px; }
 .composer:focus-within { border-color: color-mix(in oklab, var(--accent) 55%, transparent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer[data-route="none"] { opacity: 0.6; }
 .route { align-self: center; color: var(--dim); font-weight: 700; flex: none; text-transform: lowercase; }

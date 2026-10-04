@@ -218,7 +218,10 @@ call. Closing the answer view does not cancel an already confirmed query.
 `~/.config/ruddr/web-token` for an HttpOnly cookie. Bind it to loopback or a
 private address with `--host`. The browser can steer active
 turns, prompt idle sessions, and continue completed threads in detached runs.
-The server rejects stale prompt routes and changed steering turn IDs.
+The server rejects stale prompt routes and changed steering turn IDs. Browser
+drafts retain their target across reloads only while the session, route, and
+active steering turn still match. Otherwise the text restores unarmed and the
+user must choose a target. Legacy text-only drafts restore unarmed too.
 
 When the user adds context, corrects a premise, or changes priority while the
 turn is active, forward it immediately into the same turn:

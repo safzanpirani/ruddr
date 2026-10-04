@@ -932,8 +932,10 @@ The Chat tab renders available file edits as syntax-highlighted diffs from
 Codex patches and adapter edit-tool inputs. Providers can omit patches.
 Adapter replacement snippets omit file line numbers and EOF markers because
 the snippets do not identify their position in the file.
-Unnumbered apply_patch hunks can lack the location data that Pierre needs.
-Write inputs without previous content show the supplied content as additions.
+Unnumbered apply_patch hunks render as fragments with accurate line counts and
+no source line numbers. Writes without known prior content show the supplied
+content as "write/overwrite" without added or deleted line counts. Only confirmed
+file creation receives an added-file label.
 The Diff tab shows the working tree against `HEAD` with a file tree, split or
 unified layout, and a filter for files edited since the session started.
 Outside a Git repository it shows the edits the run recorded, labeled
@@ -946,9 +948,14 @@ screens get a single-column phone layout with a bottom tab bar. Press `?` for
 the shortcut list or `Cmd/Ctrl+K` for the command palette. The theme is shared
 with `ruddr tui`.
 
-A nonempty draft keeps its original prompt route and steering turn ID. When
-the session has moved on, the server rejects the stale route or turn ID with
-HTTP 409 and sends nothing. Clear the draft to choose the current route.
+A nonempty draft saves its text, session, prompt route, and steering turn ID
+across browser reloads. Restore arms the destination only when the original
+session and route still match. A steer also requires the same active turn.
+A changed or missing target leaves the text unarmed and displays a note. Legacy
+text-only drafts also restore unarmed. Choose the current target with the note’s
+button, or clear the draft to choose the current route. Restore never sends text.
+During live updates, the draft retains its original target. The server rejects
+a stale route or turn ID with HTTP 409 and sends nothing.
 
 The page can steer and start agents, so every API call needs the token stored
 in `~/.config/ruddr/web-token` (created `0600` on first use). Open the printed

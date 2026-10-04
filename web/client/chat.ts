@@ -350,7 +350,7 @@ export class ChatView {
               statusIcon(entry.status),
               h("span", { class: "tool-kind" }, verbFor(entry.edits)),
               h("span", { class: "row-title mono" }, title),
-              h("span", { class: "row-meta" }, h("span", { class: "add" }, `+${totals.additions}`), " ", h("span", { class: "del" }, `−${totals.deletions}`)),
+              entry.edits.every((edit) => edit.kind === "write") ? null : h("span", { class: "row-meta" }, h("span", { class: "add" }, `+${totals.additions}`), " ", h("span", { class: "del" }, `−${totals.deletions}`)),
             ],
             () => {
               const box = h("div", { class: "edits" });
@@ -463,9 +463,9 @@ export class ChatView {
       h(
         "div",
         { class: "edit-head" },
-        h("span", { class: `edit-kind ${edit.kind}` }, edit.kind === "add" ? "A" : edit.kind === "delete" ? "D" : edit.movePath ? "R" : "M"),
+        h("span", { class: `edit-kind ${edit.kind}` }, edit.kind === "write" ? "write/overwrite" : edit.kind === "add" ? "A" : edit.kind === "delete" ? "D" : edit.movePath ? "R" : "M"),
         path,
-        h("span", { class: "row-meta" }, h("span", { class: "add" }, `+${stats.additions}`), " ", h("span", { class: "del" }, `−${stats.deletions}`)),
+        edit.kind === "write" ? h("span", { class: "row-meta" }, "prior content unknown") : h("span", { class: "row-meta" }, h("span", { class: "add" }, `+${stats.additions}`), " ", h("span", { class: "del" }, `−${stats.deletions}`)),
       ),
       host,
     );
@@ -494,6 +494,7 @@ export class ChatView {
 }
 
 function verbFor(edits: FileEdit[]): string {
+  if (edits.length && edits.every((edit) => edit.kind === "write")) return "wrote";
   if (edits.length && edits.every((edit) => edit.kind === "add")) return "created";
   if (edits.length && edits.every((edit) => edit.kind === "delete")) return "deleted";
   return "edited";

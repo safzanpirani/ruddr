@@ -1,6 +1,6 @@
 // Pierre diff and tree wrappers. Chat rows render one edit each; the Diff tab
 // renders the whole working tree against HEAD with a file tree beside it.
-import { FileDiff, parseDiffFromFile, parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
+import { File, FileDiff, parseDiffFromFile, parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import { FileTree, type GitStatusEntry } from "@pierre/trees";
 import { append, clear, h } from "./dom";
 import { type FileEdit, unifiedPatchForEdit } from "./transcript";
@@ -29,6 +29,7 @@ function baseOptions(preferences: DiffPreferences, extra: Record<string, unknown
 }
 
 export function fileDiffForEdit(edit: FileEdit, key: string): FileDiffMetadata | undefined {
+  if (edit.kind === "write") return undefined;
   const name = edit.movePath ?? edit.path;
   key = `${key}:${++diffRevision}`;
   try {
@@ -50,7 +51,12 @@ export function fileDiffForEdit(edit: FileEdit, key: string): FileDiffMetadata |
       return parseDiffFromFile({ name: edit.path, contents: edit.diff, cacheKey: `${key}:old` }, { name, contents: "", cacheKey: `${key}:new` });
     const patch = unifiedPatchForEdit(edit);
     if (!patch) return undefined;
-    return parsePatchFiles(patch, key)[0]?.files[0];
+    const metadata = parsePatchFiles(patch, key)[0]?.files[0];
+    if (edit.fragment && metadata) for (const hunk of metadata.hunks) {
+      hunk.noEOFCRAdditions = false;
+      hunk.noEOFCRDeletions = false;
+    }
+    return metadata;
   } catch {
     return undefined;
   }
@@ -58,6 +64,11 @@ export function fileDiffForEdit(edit: FileEdit, key: string): FileDiffMetadata |
 
 /** Renders one edit into `host`. Returns a cleanup for when the row leaves. */
 export function renderEdit(host: HTMLElement, edit: FileEdit, key: string, preferences: DiffPreferences): () => void {
+  if (edit.kind === "write") {
+    const instance = new File(baseOptions(preferences, { disableFileHeader: true }));
+    instance.render({ file: { name: edit.path, contents: edit.newText ?? "", cacheKey: `${key}:${++diffRevision}:write` }, containerWrapper: host });
+    return () => instance.cleanUp();
+  }
   const metadata = fileDiffForEdit(edit, key);
   if (!metadata) {
     host.append(h("div", { class: "diff-empty" }, edit.diff ? "This change could not be parsed as a diff." : "The provider sent no patch for this edit."));

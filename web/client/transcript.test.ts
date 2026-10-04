@@ -105,7 +105,7 @@ describe("file edits", () => {
 
   test("reads Claude Edit, Write, and MultiEdit inputs", () => {
     expect(fileEditsFromItem({ input: { file_path: "x.ts", old_string: "a", new_string: "b\nc" } })).toEqual([{ path: "x.ts", kind: "update", fragment: true, oldText: "a", newText: "b\nc" }]);
-    expect(fileEditsFromItem({ input: { file_path: "y.ts", content: "new" } })).toEqual([{ path: "y.ts", kind: "add", oldText: "", newText: "new" }]);
+    expect(fileEditsFromItem({ input: { file_path: "y.ts", content: "new" } })).toEqual([{ path: "y.ts", kind: "write", newText: "new" }]);
     expect(fileEditsFromItem({ input: { file_path: "z.ts", edits: [{ old_string: "1", new_string: "2" }] } })).toHaveLength(1);
     expect(fileEditsFromItem({ input: { filePath: "o.ts", oldString: "p", newString: "q" } })).toEqual([{ path: "o.ts", kind: "update", fragment: true, oldText: "p", newText: "q" }]);
   });
@@ -114,7 +114,7 @@ describe("file edits", () => {
     const edits = editsFromPatchText("*** Begin Patch\n*** Add File: n.txt\n+hi\n*** Update File: u.txt\n@@\n-a\n+b\n*** End Patch");
     expect(edits).toEqual([
       { path: "n.txt", kind: "add", diff: "hi" },
-      { path: "u.txt", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b" },
+      { path: "u.txt", kind: "update", fragment: true, diff: "@@\n-a\n+b" },
     ]);
   });
 
@@ -170,4 +170,15 @@ describe("transcript regressions", () => {
       { kind: "tool", name: "read", output: "file contents" },
     ]);
   });
+});
+
+test("unknown writes do not invent added lines; explicit creation remains an addition", () => {
+  const write = fileEditsFromItem({ toolName: "Write", input: { file_path: "existing.ts", content: "replacement\n" } })[0];
+  expect(write.kind).toBe("write");
+  expect(write.oldText).toBeUndefined();
+  expect(editStats(write)).toEqual({ additions: 0, deletions: 0 });
+  const create = fileEditsFromItem({ toolName: "Create", input: { file_path: "new.ts", content: "new\n" } })[0];
+  expect(create.kind).toBe("add");
+  expect(editStats(create)).toEqual({ additions: 1, deletions: 0 });
+  expect(fileEditsFromItem({ changes: [{ path: "new.ts", kind: "add", diff: "new\n" }] })[0].kind).toBe("add");
 });
