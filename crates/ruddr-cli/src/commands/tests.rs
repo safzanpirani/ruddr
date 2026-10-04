@@ -169,7 +169,7 @@ fn group_wait_reports_every_run_and_fails_on_any_failure() {
     );
     let refs = discover_runs(root.path()).unwrap();
     let mut out = Vec::new();
-    let result = wait_for_runs(&mut out, &refs, None, WaitOptions::default(), &always, TICK);
+    let result = wait_for_runs(&mut out, &refs, None, WaitOptions::default(), &always, TICK, None);
     assert_eq!(message_of(&result), "1 of 2 runs did not complete");
     assert_eq!(exit_of(&result), Exit::Failed);
     let table = String::from_utf8(out).unwrap();
@@ -196,7 +196,7 @@ fn group_wait_waits_for_the_slowest_run() {
         }
         true
     };
-    wait_for_runs(&mut Vec::new(), &refs, None, WaitOptions::default(), &alive, TICK).unwrap();
+    wait_for_runs(&mut Vec::new(), &refs, None, WaitOptions::default(), &alive, TICK, None).unwrap();
     assert!(polls.get() >= 3, "returned after {} polls", polls.get());
 }
 
@@ -222,8 +222,24 @@ fn group_wait_any_waits_for_a_running_run() {
         true
     };
     let mut out = Vec::new();
-    wait_for_runs(&mut out, &refs, None, WaitOptions { any: true, turn: false }, &alive, TICK).expect("the earlier failure must not count");
+    let mut stderr = Vec::new();
+    let mut progress = super::progress::Progress::new(&mut stderr, Duration::from_secs(3600));
+    wait_for_runs(
+        &mut out,
+        &refs,
+        None,
+        WaitOptions { any: true, turn: false },
+        &alive,
+        TICK,
+        Some(&mut progress),
+    )
+    .expect("the earlier failure must not count");
     assert!(String::from_utf8(out).unwrap().contains("finished: busy\n"));
+    let progress = String::from_utf8(stderr).unwrap();
+    assert!(progress.contains("busy status=active"));
+    assert!(progress.contains("busy status=completed"));
+    assert!(progress.contains("slow status=active"));
+    assert!(!progress.contains("done status="));
 }
 
 #[test]
@@ -232,7 +248,15 @@ fn group_wait_any_returns_at_once_when_nothing_runs() {
     write_state(&root.path().join("a"), json!({"pid": 1, "status": "completed"}));
     write_state(&root.path().join("b"), json!({"pid": 2, "status": "failed"}));
     let refs = discover_runs(root.path()).unwrap();
-    let result = wait_for_runs(&mut Vec::new(), &refs, None, WaitOptions { any: true, turn: false }, &always, TICK);
+    let result = wait_for_runs(
+        &mut Vec::new(),
+        &refs,
+        None,
+        WaitOptions { any: true, turn: false },
+        &always,
+        TICK,
+        None,
+    );
     assert_eq!(message_of(&result), "1 of 2 runs did not complete");
 }
 
@@ -249,10 +273,10 @@ fn group_wait_turn_judges_idle_sessions_by_their_last_turn() {
     );
     let refs = discover_runs(root.path()).unwrap();
     let deadline = Some(Instant::now() + Duration::from_millis(20));
-    let result = wait_for_runs(&mut Vec::new(), &refs, deadline, WaitOptions::default(), &always, TICK);
+    let result = wait_for_runs(&mut Vec::new(), &refs, deadline, WaitOptions::default(), &always, TICK, None);
     assert!(message_of(&result).contains("timed out"), "a plain wait keeps waiting through idle");
     let mut out = Vec::new();
-    let result = wait_for_runs(&mut out, &refs, None, WaitOptions { any: false, turn: true }, &always, TICK);
+    let result = wait_for_runs(&mut out, &refs, None, WaitOptions { any: false, turn: true }, &always, TICK, None);
     assert_eq!(message_of(&result), "1 of 2 runs did not complete");
     assert!(String::from_utf8(out).unwrap().contains("last turn failed"));
 }
@@ -266,13 +290,13 @@ fn single_wait_turn_reports_the_last_turn() {
         json!({"pid": 1, "status": "idle", "idle": true, "lastTurnStatus": "completed"}),
     );
     let mut out = Vec::new();
-    wait_for_run_state(&mut out, dir, None, true, &always, TICK).unwrap();
+    wait_for_run_state(&mut out, dir, None, true, &always, TICK, None).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "idle (last turn completed)\n");
     write_state(
         dir,
         json!({"pid": 1, "status": "idle", "idle": true, "lastTurnStatus": "interrupted"}),
     );
-    let result = wait_for_run_state(&mut Vec::new(), dir, None, true, &always, TICK);
+    let result = wait_for_run_state(&mut Vec::new(), dir, None, true, &always, TICK, None);
     assert!(message_of(&result).contains("interrupted"));
 }
 
@@ -289,7 +313,7 @@ fn single_wait_rereads_state_when_the_controller_exits_after_completing() {
         false
     };
     let mut out = Vec::new();
-    wait_for_run_state(&mut out, dir, None, false, &alive, TICK).unwrap();
+    wait_for_run_state(&mut out, dir, None, false, &alive, TICK, None).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "completed\n");
 }
 
@@ -298,7 +322,7 @@ fn single_wait_reports_stale_and_failed_states() {
     let root = Temp::new("stale");
     let dir = root.path();
     write_state(dir, json!({"pid": 4242, "status": "active"}));
-    let result = wait_for_run_state(&mut Vec::new(), dir, None, false, &never, TICK);
+    let result = wait_for_run_state(&mut Vec::new(), dir, None, false, &never, TICK, None);
     assert_eq!(exit_of(&result), Exit::Stale);
     assert!(message_of(&result).contains("stale"));
 
@@ -307,7 +331,7 @@ fn single_wait_reports_stale_and_failed_states() {
         false
     };
     write_state(dir, json!({"pid": 4242, "status": "active"}));
-    let result = wait_for_run_state(&mut Vec::new(), dir, None, false, &alive, TICK);
+    let result = wait_for_run_state(&mut Vec::new(), dir, None, false, &alive, TICK, None);
     assert_eq!(exit_of(&result), Exit::Failed);
     assert!(message_of(&result).contains("turn failed"));
 }
@@ -319,28 +343,28 @@ fn wait_exit_codes_separate_timeout_stale_and_failure() {
     write_state(&dir, json!({"pid": 1, "status": "active"}));
     let soon = || Some(Instant::now() + Duration::from_millis(5));
     assert_eq!(
-        exit_of(&wait_for_run_state(&mut Vec::new(), &dir, soon(), false, &always, TICK)),
+        exit_of(&wait_for_run_state(&mut Vec::new(), &dir, soon(), false, &always, TICK, None)),
         Exit::Running
     );
     assert_eq!(
-        exit_of(&wait_for_run_state(&mut Vec::new(), &dir, None, false, &never, TICK)),
+        exit_of(&wait_for_run_state(&mut Vec::new(), &dir, None, false, &never, TICK, None)),
         Exit::Stale
     );
     write_state(&dir, json!({"pid": 1, "status": "failed", "error": "turn failed"}));
     assert_eq!(
-        exit_of(&wait_for_run_state(&mut Vec::new(), &dir, None, false, &always, TICK)),
+        exit_of(&wait_for_run_state(&mut Vec::new(), &dir, None, false, &always, TICK, None)),
         Exit::Failed
     );
 
     let group = root.path().join("group");
     write_state(&group.join("busy"), json!({"pid": 1, "status": "active"}));
     let refs = discover_runs(&group).unwrap();
-    let result = wait_for_runs(&mut Vec::new(), &refs, soon(), WaitOptions::default(), &always, TICK);
+    let result = wait_for_runs(&mut Vec::new(), &refs, soon(), WaitOptions::default(), &always, TICK, None);
     assert_eq!(exit_of(&result), Exit::Running);
     assert!(message_of(&result).contains("timed out: 1 of 1 runs still running"));
     write_state(&group.join("failed"), json!({"pid": 2, "status": "failed"}));
     let mut out = Vec::new();
-    let result = wait_for_runs(&mut out, &refs, None, WaitOptions::default(), &never, TICK);
+    let result = wait_for_runs(&mut out, &refs, None, WaitOptions::default(), &never, TICK, None);
     assert_eq!(exit_of(&result), Exit::Stale);
     assert!(String::from_utf8(out).unwrap().contains("stale"));
 }

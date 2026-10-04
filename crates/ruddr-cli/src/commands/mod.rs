@@ -4,6 +4,8 @@
 
 pub mod args;
 pub mod models;
+mod progress;
+pub mod prune;
 pub mod remote;
 pub mod result;
 pub mod runs;
@@ -22,6 +24,7 @@ pub fn dispatch(command: &str, args: Vec<String>) -> Result<()> {
     match command {
         "status" => runs::status(&mut stdout.lock(), args),
         "peek" => runs::peek(&mut stdout.lock(), args),
+        "prune" => prune::run(&mut stdout.lock(), args),
         "wait" => runs::wait(&mut stdout.lock(), args),
         "result" => result::run(&mut stdout.lock(), args, &runs::process_alive),
         "steer" => steering::steer(&mut stdout.lock(), args, &mut std::io::stdin()),
@@ -89,7 +92,8 @@ Usage:
   {name} status RUNS [--json]
   {name} peek RUNS [-n 25]
   {name} interrupt RUNS [--expected-turn-id ID]
-  {name} wait RUNS [--timeout 10m] [--any] [--turn]
+  {name} wait RUNS [--timeout 10m] [--progress 1m] [--any] [--turn]
+  {name} prune [--apply] [--json]                 (remove missing run references; dry run by default)
   {name} result RUNS [--json]                     (print each run's final answer)
   {name} update [--check]                        (install the latest release)
   {name} skill install [--dir DIR]               (install the ruddr-delegate agent skill)
@@ -112,6 +116,8 @@ active turns. wait --any returns when the next still-running run finishes, so
 repeated calls hand back runs one at a time. wait --turn also counts an idle
 session as done and judges it by its last turn. result prints the last agent
 message of each run's latest turn and fails for runs that did not complete.
+wait --progress DURATION reports activity to stderr at each interval and status
+change. It preserves stdout and exit codes. Durations need units, such as 1m.
 
 thread prints the app-server's raw result as JSON. It asks codex app-server by
 default; --provider names another provider's adapter, and a command after --

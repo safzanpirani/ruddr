@@ -597,7 +597,7 @@ silently run a different default model.
 ruddr status --state-dir .scratch/ruddr-demo/run
 ruddr status --state-dir .scratch/ruddr-demo/run --json
 ruddr peek --state-dir .scratch/ruddr-demo/run -n 40
-ruddr wait --state-dir .scratch/ruddr-demo/run --timeout 20m
+ruddr wait --state-dir .scratch/ruddr-demo/run --timeout 20m --progress 1m
 ruddr interrupt --state-dir .scratch/ruddr-demo/run
 ```
 
@@ -605,6 +605,34 @@ Use `interrupt --expected-turn-id TURN_ID` to stop only the turn you observed.
 If that turn has changed, Ruddr rejects the command. Without the flag, the CLI
 captures the current turn ID before sending the control request. Delayed
 interrupt failures also leave later turns running.
+
+`wait --progress DURATION` prints one progress line per waiting run to stderr
+at each interval. It also reports status changes on the next state poll. Each
+line includes the run name, status, turn count, elapsed time, time since observed
+log activity, and the last trace line (up to 120 characters). Activity comes
+from `trace.log` or `events.jsonl` modification times and size changes. Missing
+activity timestamps show as `unknown`; missing traces show as `unavailable`.
+Reads use a fixed 4 KiB tail. Progress reports never diagnose a hang or control
+the run. Stdout and exit codes keep their existing behavior.
+
+Use a positive Go duration such as `30s` or `1m`; bare integers are invalid.
+Use `--progress 1m` for background waits so the harness's job band shows liveness.
+
+### Prune missing run references
+
+```bash
+ruddr prune                 # list missing references without changing the registry
+ruddr prune --json          # structured dry-run report
+ruddr prune --apply         # remove the listed missing references
+```
+
+`prune` checks the current and legacy run registries. It removes an entry only
+when the state directory lookup returns `NotFound`. It keeps unreadable targets
+and malformed entries and reports them separately. It never deletes run
+directories or their contents. A shared registration lock protects each registry
+update. The JSON report contains `applied`, `entries`, `count`, `kept`, and
+`unreadable`. `RUDDR_REGISTRY_DIR` selects one registry for both discovery and
+pruning. Dry runs do not write files.
 
 ### Several runs at once
 
@@ -617,7 +645,7 @@ interrupt failures also leave later turns running.
 ruddr status --root .scratch/swarm            # one row per run
 ruddr status --root .scratch/swarm --json     # JSON array of state.json
 ruddr peek   --root .scratch/swarm            # last 5 trace lines of each run
-ruddr wait   --root .scratch/swarm --timeout 30m
+ruddr wait   --root .scratch/swarm --timeout 30m --progress 1m
 ruddr wait   --root .scratch/swarm --any      # return when the next run finishes
 ruddr result --root .scratch/swarm            # each run's final answer
 ruddr interrupt --root .scratch/swarm         # stop every active turn
@@ -1211,7 +1239,9 @@ out), 4 stale (controller died; `wait`, `steer`, `prompt`, `interrupt`, and
 Long runs: launch in the background (your harness's background mode, or
 `ruddr run --detach ...`, which returns once the run is live), then
 watch with `ruddr peek --state-dir DIR -n 25` and block bounded with
-`ruddr wait --state-dir DIR --timeout 30m`. Never poll in a foreground loop.
+`ruddr wait --state-dir DIR --timeout 30m --progress 1m`. Run long waits through
+the harness background facility. Progress goes to stderr and keeps the job band
+live. Stdout and exit codes stay unchanged. Never poll in a foreground loop.
 
 Steering. While a turn is active you can redirect it without restarting:
    ruddr steer --state-dir DIR "the correction, exact literals preserved"
@@ -1254,13 +1284,17 @@ Give every agent that edits files its own Git worktree as --cwd
 workspaces. Then address the group with --root:
    ruddr status    --root .scratch/SWARM [--json]   one row per run
    ruddr peek      --root .scratch/SWARM            last trace lines of each
-   ruddr wait      --root .scratch/SWARM --timeout 30m [--any] [--turn]
+   ruddr wait      --root .scratch/SWARM --timeout 30m --progress 1m [--any] [--turn]
    ruddr result    --root .scratch/SWARM [--json]   each run's final answer
    ruddr interrupt --root .scratch/SWARM            abort every active turn
 The group wait exits zero only when every run completed. `--any` returns
 when the next still-running run finishes, so loop it to handle runs as they
 land; `--turn` counts idle sessions as done. Read the answers with `result`,
 verify the work yourself, and merge the worktrees one at a time.
+
+Registry maintenance. `ruddr prune` lists references to missing run directories.
+Use `--apply` to remove those references or `--json` for a structured report.
+Unreadable paths stay registered. Run files stay untouched.
 
 Watching everything at once. `ruddr tui` shows a dashboard of live and
 recent sessions with a prompt box: type to steer an active turn, prompt an

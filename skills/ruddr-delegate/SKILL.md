@@ -237,10 +237,20 @@ with a brief that says what it already learned.
 ## Wait and verify
 
 ```bash
-ruddr wait --state-dir .scratch/<task-slug>/run --timeout 10m
+ruddr wait --state-dir .scratch/<task-slug>/run --timeout 10m --progress 1m
 ruddr status --state-dir .scratch/<task-slug>/run --json
 ruddr result --state-dir .scratch/<task-slug>/run   # the final answer
 ```
+
+Use `--progress 1m` for background waits so the harness's job band shows
+liveness. Each stderr line reports the run, status, turns, elapsed time,
+time since observed trace/events activity, and a short trace tail. Status
+changes print on the next poll. Progress keeps stdout and exit codes unchanged
+and takes no action on the run. Durations require units; `--progress 5` is invalid.
+
+`ruddr prune` previews registry references to missing state directories.
+`ruddr prune --apply` removes those references. It preserves run files and
+unreadable targets. Add `--json` for a structured report.
 
 Always bound the wait, and never let it outlive the harness's tool timeout: a
 foreground `wait --timeout 1h` is killed by a two-minute tool limit, which
@@ -296,7 +306,7 @@ group with `--root`:
 ```bash
 ruddr status --root .scratch/<swarm>              # one row per run
 ruddr peek   --root .scratch/<swarm>              # last trace lines of each
-ruddr wait   --root .scratch/<swarm> --timeout 10m
+ruddr wait   --root .scratch/<swarm> --timeout 10m --progress 1m
 ruddr wait   --root .scratch/<swarm> --any --timeout 10m   # next to finish
 ruddr result --root .scratch/<swarm>              # each run's final answer
 ruddr interrupt --root .scratch/<swarm>           # abort every active turn
