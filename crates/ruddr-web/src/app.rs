@@ -748,9 +748,20 @@ impl App {
         let Some(session) = session.filter(|s| matches!(s.state.status, Status::Active | Status::Idle)) else {
             return Ok(failure("Only an active or idle session can be stopped", StatusCode::CONFLICT));
         };
+        let observed = http::str_field(&input, "status").unwrap_or_default();
+        let turn = http::str_field(&input, "turnId").filter(|turn| !turn.is_empty());
+        if let Err(error) = validate_stop(&session.state, observed, turn) {
+            return Ok(failure(error, StatusCode::CONFLICT));
+        }
+        let observed = observed.to_string();
+        let turn = turn.map(str::to_string);
         let idle = session.state.status == Status::Idle;
         let state_dir = PathBuf::from(&session.state.state_dir);
         let status = blocking(move || {
+            let live = ruddr_core::state::read_state(&state_dir).map_err(|e| e.message)?.displayed();
+            if let Err(error) = validate_stop(&live, &observed, turn.as_deref()) {
+                return Ok(Err(error));
+            }
             if idle {
                 let request = control::Request {
                     command: Command::Stop,
@@ -759,14 +770,10 @@ impl App {
                     expected_turn_id: None,
                 };
                 control::call(&state_dir, &request, STOP_TIMEOUT).map_err(|e| e.message)?;
-                return Ok("shutdown requested".to_string());
+                return Ok(Ok("shutdown requested".to_string()));
             }
-            // Interrupt only the turn that is active now, as `ruddr interrupt` does.
-            let live = ruddr_core::state::read_state(&state_dir).map_err(|e| e.message)?.displayed();
-            if live.status != Status::Active {
-                return Err(format!("turn is not active: status={}", live.status));
-            }
-            let turn = live.turn_id.unwrap_or_default();
+            // Keep the turn the browser observed through the control request.
+            let turn = turn.unwrap_or_default();
             let request = control::Request {
                 command: Command::Interrupt,
                 images: vec![],
@@ -774,11 +781,14 @@ impl App {
                 expected_turn_id: Some(turn.clone()).filter(|t| !t.is_empty()),
             };
             control::call(&state_dir, &request, INTERRUPT_TIMEOUT).map_err(|e| e.message)?;
-            Ok(format!("interrupt requested for turn {turn}"))
+            Ok(Ok(format!("interrupt requested for turn {turn}")))
         })
         .await?;
         self.refresh_sessions().await;
-        Ok(status_response(status))
+        Ok(match status {
+            Ok(status) => status_response(status),
+            Err(error) => failure(error, StatusCode::CONFLICT),
+        })
     }
 
     async fn delete(self: &Arc<Self>, input: Value) -> RouteResult {
@@ -831,6 +841,16 @@ impl App {
 
 fn status_response(status: impl Into<String>) -> Response {
     json_response(&json!({ "status": status.into() }), StatusCode::OK)
+}
+
+fn validate_stop(state: &RunState, observed: &str, turn: Option<&str>) -> Result<(), String> {
+    if !matches!(state.status, Status::Active | Status::Idle) || state.status.to_string() != observed {
+        return Err(format!("Session is now {}; nothing was stopped", state.status));
+    }
+    if state.status == Status::Active && (turn.is_none() || state.turn_id.as_deref() != turn) {
+        return Err("The active turn changed; nothing was interrupted".into());
+    }
+    Ok(())
 }
 
 async fn read_body(body: Body) -> Value {

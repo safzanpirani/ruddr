@@ -1194,7 +1194,11 @@ async function requestStop(): Promise<void> {
   state.interruptArmedUntil = 0;
   renderHeader();
   try {
-    const result = await post<{ status: string }>("/api/stop", { stateDir: session.stateDir });
+    const result = await post<{ status: string }>("/api/stop", {
+      stateDir: session.stateDir,
+      status: session.status,
+      turnId: session.turnId,
+    });
     toast(result.status, "success");
   } catch (error) {
     toast(error instanceof Error ? error.message : String(error), "error");

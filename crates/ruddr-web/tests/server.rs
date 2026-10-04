@@ -471,9 +471,10 @@ async fn prompts_idle_sessions_over_the_control_socket() {
 #[tokio::test]
 async fn interrupts_active_turns_and_stops_idle_sessions() {
     let f = Fixture::new().await;
-    let body = json!({ "stateDir": f.state_dir });
+    let mut body = json!({ "stateDir": f.state_dir, "status": "active", "turnId": "turn-1" });
     assert_eq!(f.post("/api/stop", body.clone()).await.status(), StatusCode::OK);
     f.write_state("idle", json!({}));
+    body["status"] = json!("idle");
     let stopped = f.post("/api/stop", body.clone()).await;
     assert_eq!(stopped.status(), StatusCode::OK);
     assert_eq!(body_json(stopped).await, json!({ "status": "shutdown requested" }));
@@ -486,6 +487,30 @@ async fn interrupts_active_turns_and_stops_idle_sessions() {
             json!({ "command": "shutdown" })
         ]
     );
+}
+
+#[tokio::test]
+async fn stop_rejects_changed_or_missing_delivery_intent() {
+    let f = Fixture::new().await;
+    for body in [
+        json!({ "stateDir": f.state_dir }),
+        json!({ "stateDir": f.state_dir, "status": "active" }),
+        json!({ "stateDir": f.state_dir, "status": "active", "turnId": "previous-turn" }),
+        json!({ "stateDir": f.state_dir, "status": "idle" }),
+    ] {
+        assert_eq!(f.post("/api/stop", body).await.status(), StatusCode::CONFLICT);
+    }
+    f.write_state("idle", json!({}));
+    assert_eq!(
+        f.post(
+            "/api/stop",
+            json!({ "stateDir": f.state_dir, "status": "active", "turnId": "turn-1" })
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert!(f.requests().is_empty(), "a stale stop must never reach the controller");
 }
 
 #[tokio::test]
