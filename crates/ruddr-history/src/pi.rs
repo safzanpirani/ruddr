@@ -4,6 +4,7 @@
 
 use crate::{Event, Provider, SessionInfo, edit_from_tool, jsonl, str_field, text_of, title_from};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub fn info(path: &Path) -> Option<SessionInfo> {
@@ -36,6 +37,8 @@ pub fn info(path: &Path) -> Option<SessionInfo> {
 
 pub fn events(text: &str) -> Vec<Event> {
     let mut events = Vec::new();
+    let mut edits = HashMap::new();
+    let mut failed_edits = HashSet::new();
     for entry in jsonl::pi_branch(jsonl::parse(text)) {
         if str_field(&entry, "type") != Some("message") {
             continue;
@@ -43,11 +46,18 @@ pub fn events(text: &str) -> Vec<Event> {
         let Some(message) = entry.get("message") else { continue };
         let role = str_field(message, "role").unwrap_or("");
         if role == "toolResult" {
+            let call_id = str_field(message, "toolCallId");
+            let is_error = message.get("isError").and_then(Value::as_bool) == Some(true);
+            if let Some(index) = call_id.and_then(|id| edits.remove(id))
+                && is_error
+            {
+                failed_edits.insert(index);
+            }
             events.push(Event::ToolResult {
                 name: str_field(message, "toolName").map(str::to_string),
-                call_id: str_field(message, "toolCallId").map(str::to_string),
+                call_id: call_id.map(str::to_string),
                 output: text_of(message.get("content").unwrap_or(&Value::Null)),
-                is_error: message.get("isError").and_then(Value::as_bool) == Some(true),
+                is_error,
             });
             continue;
         }
@@ -80,7 +90,12 @@ pub fn events(text: &str) -> Vec<Event> {
                         input,
                         call_id: str_field(block, "id").map(str::to_string),
                     });
-                    events.extend(edit);
+                    if let Some(edit) = edit {
+                        if let Some(id) = str_field(block, "id") {
+                            edits.insert(id.to_string(), events.len());
+                        }
+                        events.push(edit);
+                    }
                 }
                 Some("image") => push_text(&mut events, role, "[image]"),
                 _ => {}
@@ -88,6 +103,10 @@ pub fn events(text: &str) -> Vec<Event> {
         }
     }
     events
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, event)| (!failed_edits.contains(&index)).then_some(event))
+        .collect()
 }
 
 fn push_text(events: &mut Vec<Event>, role: &str, text: &str) {
@@ -104,6 +123,34 @@ fn push_text(events: &mut Vec<Event>, role: &str, text: &str) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn failed_edit_results_remove_only_the_matching_change() {
+        let rows = [
+            json!({"type": "message", "id": "1", "parentId": null, "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "failed", "name": "edit", "arguments": {"path": "failed.rs", "oldText": "x", "newText": "y"}},
+                {"type": "toolCall", "id": "ok", "name": "edit", "arguments": {"path": "ok.rs", "oldText": "a", "newText": "b"}}
+            ]}}),
+            json!({"type": "message", "id": "2", "parentId": "1", "message": {"role": "toolResult", "toolCallId": "ok", "toolName": "edit", "isError": false, "content": "ok"}}),
+            json!({"type": "message", "id": "3", "parentId": "2", "message": {"role": "toolResult", "toolCallId": "failed", "toolName": "edit", "isError": true, "content": "text not found"}}),
+        ];
+        let text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        let events = events(&text);
+        let changed: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::FileChange { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed, ["ok.rs"]);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::ToolResult { call_id: Some(id), is_error: true, .. } if id == "failed"))
+        );
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::ToolCall { .. })).count(), 2);
+    }
 
     #[test]
     fn reads_the_active_branch_with_edits_and_results() {

@@ -45,8 +45,26 @@ pub struct FileTail {
     offset: u64,
     partial: Vec<u8>,
     started: bool,
+    identity: Option<FileIdentity>,
     /// The history window began mid-record: drop bytes up to the next newline.
     skipping: bool,
+}
+
+#[cfg(unix)]
+type FileIdentity = (u64, u64);
+#[cfg(not(unix))]
+type FileIdentity = Option<std::time::SystemTime>;
+
+fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.dev(), metadata.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.created().ok()
+    }
 }
 
 impl FileTail {
@@ -56,6 +74,7 @@ impl FileTail {
             offset: 0,
             partial: Vec::new(),
             started: false,
+            identity: None,
             skipping: false,
         }
     }
@@ -69,15 +88,18 @@ impl FileTail {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((false, Vec::new(), true)),
             Err(e) => return Err(e),
         };
-        let size = file.metadata()?.len();
+        let metadata = file.metadata()?;
+        let size = metadata.len();
+        let identity = file_identity(&metadata);
         let mut reset = false;
-        if size < self.offset {
+        if size < self.offset || self.identity.as_ref().is_some_and(|previous| *previous != identity) {
             // Truncated or replaced: start over.
             self.offset = 0;
             self.partial.clear();
             self.skipping = false;
             reset = true;
         }
+        self.identity = Some(identity);
         if !self.started {
             self.started = true;
             if size > HISTORY_BYTES {
@@ -244,6 +266,30 @@ mod tests {
         assert!(lines.iter().all(|l| l.len() == 1000), "no partial first record");
         assert_eq!(lines.last().unwrap()[..5], format!("{:05}", count - 1));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn replacement_resets_even_when_it_does_not_shrink() {
+        for (replacement, expected, pending) in [
+            ("new\ntwo", vec!["new"], "two"),
+            ("replacement\ncomplete\n", vec!["replacement", "complete"], ""),
+        ] {
+            let path = temp("replacement");
+            std::fs::write(&path, "old\npar").unwrap();
+            let mut tail = FileTail::new(path.clone());
+            assert_eq!(tail.poll().unwrap(), (false, vec!["old".into()], true));
+            // Keep the old inode alive so an immediate inode reuse cannot
+            // hide the replacement from the test.
+            std::fs::rename(&path, path.with_extension("old")).unwrap();
+            std::fs::write(&path, replacement).unwrap();
+            let (reset, lines, caught_up) = tail.poll().unwrap();
+            assert!(reset);
+            assert!(caught_up);
+            assert_eq!(lines, expected);
+            append(&path, "\n");
+            assert_eq!(tail.poll().unwrap().1, vec![pending]);
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
     }
 
     #[test]

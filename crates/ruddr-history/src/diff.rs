@@ -17,10 +17,10 @@ pub fn line_diff(old: &str, new: &str) -> String {
     // to a plain replacement so a huge Write cannot stall the UI.
     if a.len().saturating_mul(b.len()) > 4_000_000 {
         for line in &a {
-            body.push_str(&format!("-{line}\n"));
+            push_line(&mut body, '-', line);
         }
         for line in &b {
-            body.push_str(&format!("+{line}\n"));
+            push_line(&mut body, '+', line);
         }
     } else {
         let (n, m) = (a.len(), b.len());
@@ -37,15 +37,15 @@ pub fn line_diff(old: &str, new: &str) -> String {
         let (mut i, mut j) = (0, 0);
         while i < n || j < m {
             if i < n && j < m && a[i] == b[j] {
-                body.push_str(&format!(" {}\n", a[i]));
+                push_line(&mut body, ' ', a[i]);
                 i += 1;
                 j += 1;
             } else if i < n && (j == m || lcs[(i + 1) * (m + 1) + j] >= lcs[i * (m + 1) + j + 1]) {
                 // Deletions come before additions, as in git's output.
-                body.push_str(&format!("-{}\n", a[i]));
+                push_line(&mut body, '-', a[i]);
                 i += 1;
             } else {
-                body.push_str(&format!("+{}\n", b[j]));
+                push_line(&mut body, '+', b[j]);
                 j += 1;
             }
         }
@@ -56,10 +56,14 @@ pub fn line_diff(old: &str, new: &str) -> String {
 }
 
 fn split_lines(text: &str) -> Vec<&str> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        text.strip_suffix('\n').unwrap_or(text).split('\n').collect()
+    text.split_inclusive('\n').collect()
+}
+
+fn push_line(body: &mut String, prefix: char, line: &str) {
+    body.push(prefix);
+    body.push_str(line);
+    if !line.ends_with('\n') {
+        body.push_str("\n\\ No newline at end of file\n");
     }
 }
 
@@ -123,6 +127,20 @@ mod tests {
         assert_eq!(line_diff("a\nb\nc\n", "a\nx\nc\n"), "@@ -1,3 +1,3 @@\n a\n-b\n+x\n c\n");
         assert_eq!(line_diff("", "new\n"), "@@ -0,0 +1,1 @@\n+new\n");
         assert_eq!(line_diff("same", "same"), "");
+    }
+
+    #[test]
+    fn line_diff_preserves_final_newline_changes() {
+        assert_eq!(
+            line_diff("same", "same\n"),
+            "@@ -1,1 +1,1 @@\n-same\n\\ No newline at end of file\n+same\n"
+        );
+        assert_eq!(
+            line_diff("same\n", "same"),
+            "@@ -1,1 +1,1 @@\n-same\n+same\n\\ No newline at end of file\n"
+        );
+        assert_eq!(line_diff("", "new"), "@@ -0,0 +1,1 @@\n+new\n\\ No newline at end of file\n");
+        assert_eq!(line_diff("old", ""), "@@ -1,1 +0,0 @@\n-old\n\\ No newline at end of file\n");
     }
 
     #[test]
