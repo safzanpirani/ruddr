@@ -135,6 +135,7 @@ fn waiting_for_the_write_gate_counts_against_the_deadline() {
 #[test]
 fn calls_correlate_responses_and_surface_rpc_errors() {
     let (_dir, c) = controller(false);
+    c.open_logs().unwrap();
     let recorder = Recorder::default();
     c.attach_stdin(Box::new(recorder.clone()));
     let caller = c.clone();
@@ -170,6 +171,42 @@ fn duplicate_responses_never_block_the_reader() {
     assert_eq!(std::fs::read_to_string(&state.output_path).unwrap(), "AFTER DUPLICATES\n");
     let events = std::fs::read_to_string(&state.events_path).unwrap();
     assert_eq!(events.lines().count(), 5, "every provider line reaches events.jsonl");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_event_write_failure_fails_the_run_and_cleans_up_the_child_and_socket() {
+    let dir = TempDir::new("event-write");
+    let cfg = RunConfig {
+        state_dir: dir.join("run"),
+        cwd: dir.to_path_buf(),
+        child_command: vec!["sleep".into(), "30".into()],
+        ..Default::default()
+    };
+    let store = StateStore::create(&cfg).unwrap();
+    let c = Controller::new(cfg, store);
+    c.open_logs().unwrap();
+    c.start_child().unwrap();
+    crate::control_server::start(&c).unwrap();
+    let pid = c.child_pid();
+    let mailbox = c.register_pending("ruddr-test");
+    c.set_events_file(std::fs::File::open(&c.store.snapshot().events_path).unwrap());
+    c.deliver(r#"{"method":"turn/completed","params":{"turn":{"id":"turn-test","status":"completed"}}}"#);
+    assert!(c.private_result_error().contains("persist provider event"));
+    assert!(mailbox.recv_timeout(Duration::from_secs(1)).is_err());
+    assert!(c.stop_child.load(Ordering::SeqCst));
+    c.shutdown_child();
+    c.close_logs();
+    crate::control_server::close(&c);
+    let persisted = state::read_state(&c.cfg.state_dir).unwrap();
+    assert_eq!(persisted.status, Status::Failed);
+    assert!(persisted.completed_at.is_some());
+    assert_eq!(
+        persisted.error.as_deref(),
+        Some("turn failed; see trace.log and provider.stderr.log")
+    );
+    assert!(!ruddr_core::process::alive(pid as i64));
+    assert!(!std::path::Path::new(&persisted.socket_path).exists());
 }
 
 #[test]

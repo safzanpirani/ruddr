@@ -316,6 +316,30 @@ fn remote_runs_through_ssh_and_propagates_the_exit_status() {
         format!("run\n--detach\n--cwd\n{}/proj\n--prompt-file\n-\n", home.path().display())
     );
     assert_eq!(read("stdin"), "fix the bug\n");
+
+    // Scalar flags use the last value. Only that local payload travels over
+    // stdin, and a false detach flag cannot leave the remote run attached.
+    let mut command = ruddr(home.path());
+    remote(&mut command);
+    let output = run(command
+        .args([
+            "--remote",
+            "ampere",
+            "run",
+            "--cwd",
+            "/remote/project",
+            "--prompt-file",
+            "/missing/ignored.md",
+            "--detach=false",
+        ])
+        .arg(format!("--prompt-file={}", message.display()))
+        .args(["--", "provider", "--detach=false"]));
+    assert_eq!(output.status.code(), Some(3), "{}", text(&output.stderr));
+    assert_eq!(read("stdin"), "don't touch main.go");
+    assert_eq!(
+        read("args"),
+        "run\n--cwd\n/remote/project\n--prompt-file\n/missing/ignored.md\n--detach=false\n--prompt-file=-\n--detach\n--\nprovider\n--detach=false\n"
+    );
 }
 
 #[cfg(unix)]

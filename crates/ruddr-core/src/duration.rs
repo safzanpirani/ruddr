@@ -1,7 +1,7 @@
 //! Go duration syntax (`3600s`, `20m`, `1h30m`, `500ms`). Bare integers stay
 //! invalid so a typo never means nanoseconds.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn parse(text: &str) -> Result<Duration, String> {
     let original = text;
@@ -36,7 +36,12 @@ pub fn parse(text: &str) -> Result<Duration, String> {
         };
         total += value * seconds;
     }
-    Ok(Duration::from_secs_f64(total))
+    let out_of_range = || format!("duration {original:?} is out of range");
+    let duration = Duration::try_from_secs_f64(total).map_err(|_| out_of_range())?;
+    // CLI durations become deadlines throughout the controller and commands.
+    // Instant has a smaller platform-dependent range than Duration.
+    Instant::now().checked_add(duration).ok_or_else(out_of_range)?;
+    Ok(duration)
 }
 
 /// Formats like Go's `time.Duration.String` for whole seconds and up.
@@ -80,6 +85,17 @@ mod tests {
         assert!(parse("").is_err());
         assert!(parse("5x").is_err());
         assert!(parse("m").is_err());
+    }
+
+    #[test]
+    fn rejects_overflow_without_panicking() {
+        for text in [
+            "18446744073709551616s".to_string(),
+            "10000000000000000000s".to_string(),
+            format!("{}h", "9".repeat(400)),
+        ] {
+            assert!(parse(&text).unwrap_err().contains("out of range"));
+        }
     }
 
     #[test]

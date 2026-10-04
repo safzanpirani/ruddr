@@ -253,6 +253,11 @@ impl Controller {
     }
 
     #[cfg(test)]
+    pub fn set_events_file(&self, file: File) {
+        *self.events.lock().unwrap() = Some(file);
+    }
+
+    #[cfg(test)]
     pub fn pending_len(&self) -> usize {
         self.pending.lock().unwrap().len()
     }
@@ -608,7 +613,12 @@ impl Controller {
 
     fn handle_line(&self, mut line: Vec<u8>) {
         line.push(b'\n');
-        let _ = self.append_event(&line);
+        if let Err(e) = self.append_event(&line) {
+            self.stop_child.store(true, Ordering::SeqCst);
+            self.fail(&format!("persist provider event: {e}"));
+            self.terminate(false);
+            return;
+        }
         line.pop();
         let message = match serde_json::from_slice::<Value>(&line) {
             Ok(Value::Object(message)) => message,

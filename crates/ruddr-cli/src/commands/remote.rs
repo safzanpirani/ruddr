@@ -71,14 +71,14 @@ pub fn has_flag(args: &[String], name: &str) -> bool {
         .any(|a| split_flag(a).is_some_and(|(n, _)| n == name))
 }
 
-/// Replaces the value of the first `--name` before any `--` and returns the
-/// new arguments and the old value.
+/// Replaces the value of the last `--name` before any `--` and returns the
+/// new arguments and the old value. The command parsers use the last value.
 pub fn replace_flag_value(args: &[String], name: &str, replacement: &str) -> (Vec<String>, Option<String>) {
     let mut out = args.to_vec();
-    let Some(index) = out
+    let boundary = out.iter().position(|a| a == "--").unwrap_or(out.len());
+    let Some(index) = out[..boundary]
         .iter()
-        .take_while(|a| *a != "--")
-        .position(|a| split_flag(a).is_some_and(|(flag, _)| flag == name))
+        .rposition(|a| split_flag(a).is_some_and(|(flag, _)| flag == name))
     else {
         return (out, None);
     };
@@ -86,7 +86,7 @@ pub fn replace_flag_value(args: &[String], name: &str, replacement: &str) -> (Ve
         out[index] = format!("--{name}={replacement}");
         return (out, Some(value.to_string()));
     }
-    match out.get_mut(index + 1) {
+    match out[..boundary].get_mut(index + 1) {
         Some(next) => {
             let previous = std::mem::replace(next, replacement.to_string());
             (out, Some(previous))
@@ -128,6 +128,10 @@ pub fn plan(args: &[String], local_stdin: &mut dyn Read) -> Result<Plan> {
             plan.stdin = Some(read_local_payload(prompt_file.as_deref(), local_stdin)?);
             if !has_flag(&rewritten, "detach") {
                 rewritten.insert(0, "--detach".into());
+            } else {
+                // Override an explicit false value before the child command.
+                let boundary = rewritten.iter().position(|a| a == "--").unwrap_or(rewritten.len());
+                rewritten.insert(boundary, "--detach".into());
             }
             plan.args = std::iter::once("run".to_string()).chain(rewritten).collect();
         }
@@ -433,6 +437,52 @@ mod tests {
     }
 
     #[test]
+    fn repeated_payload_flags_forward_the_last_value() {
+        for (command, flag, required) in [
+            ("run", "--prompt-file", vec!["--cwd", "/w"]),
+            ("steer", "--message-file", vec!["--state-dir", "run"]),
+            ("prompt", "--message-file", vec!["--state-dir", "run"]),
+        ] {
+            for inline in [false, true] {
+                let mut args = strings(&[command]);
+                args.extend(strings(&required));
+                args.extend(strings(&[flag, "/missing/ignored.md"]));
+                if inline {
+                    args.push(format!("{flag}=-"));
+                } else {
+                    args.extend(strings(&[flag, "-"]));
+                }
+                let planned = plan(&args, &mut &b"last payload"[..]).unwrap();
+                assert_eq!(planned.stdin.as_deref(), Some(&b"last payload"[..]));
+                let (_, effective) = replace_flag_value(&planned.args, &flag[2..], "-");
+                assert_eq!(effective.as_deref(), Some("-"));
+            }
+        }
+    }
+
+    #[test]
+    fn remote_run_cannot_disable_detachment() {
+        let planned = plan(
+            &strings(&[
+                "run",
+                "--cwd",
+                "/w",
+                "--prompt-file",
+                "-",
+                "--detach=false",
+                "--",
+                "provider",
+                "--detach=false",
+            ]),
+            &mut &b"task"[..],
+        )
+        .unwrap();
+        let parsed = ruddr_runner::args::parse(&planned.args[1..]).unwrap();
+        assert!(parsed.detach);
+        assert_eq!(parsed.child_args, Some(strings(&["provider", "--detach=false"])));
+    }
+
+    #[test]
     fn forwards_message_files_and_local_stdin() {
         let plan_one = plan(
             &strings(&["steer", "--state-dir", "x", "--message-file", "-"]),
@@ -516,6 +566,10 @@ mod tests {
         assert_eq!(old, None);
         assert_eq!(args, strings(&["--", "--prompt-file", "x"]));
         assert!(!has_flag(&strings(&["-cwd", "x"]), "cwd"), "only GNU long flags count");
+        let input = strings(&["--prompt-file", "--", "provider"]);
+        let (args, old) = replace_flag_value(&input, "prompt-file", "-");
+        assert_eq!(old, None);
+        assert_eq!(args, input);
     }
 
     /// The probe runs once per target; later commands read the cached answer.
