@@ -103,8 +103,9 @@ Usage:
 Flags are GNU style: --flag value or --flag=value. Every command prints its
 flags with --help.
 
-run --detach starts the controller in the background and returns once it is
-running. --prompt-file - and --message-file - read the text from stdin.
+run --detach starts the controller in the background and observes startup for
+up to 15 seconds. Check the printed status; starting means startup is pending.
+--prompt-file - and --message-file - read the text from stdin.
 run, steer, and prompt take --image FILE (repeatable) to attach png, jpg, gif,
 or webp images.
 

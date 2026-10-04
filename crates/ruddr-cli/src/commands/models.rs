@@ -125,7 +125,7 @@ pub fn run(out: &mut dyn Write, catalog: &dyn Catalog, argv: Vec<String>) -> Res
     }
     let parsed = args::parse("models", &[args::flag("json", "print the catalog as JSON")], &argv)?;
     if let Some(extra) = parsed.positionals.first() {
-        return Err(Error::failed(format!(
+        return Err(Error::usage(format!(
             "unknown models subcommand {extra:?}; expected add, default, remove, or path"
         )));
     }
@@ -160,10 +160,10 @@ fn edit(out: &mut dyn Write, catalog: &dyn Catalog, action: &str, argv: &[String
     };
     let parsed = args::parse(&format!("models {action}"), &specs, argv)?;
     let [provider, id] = parsed.positionals.as_slice() else {
-        return Err(Error::failed(format!("usage: ruddr models {action} PROVIDER MODEL_ID")));
+        return Err(Error::usage(format!("usage: ruddr models {action} PROVIDER MODEL_ID")));
     };
     if !PROVIDERS.contains(&provider.as_str()) {
-        return Err(Error::failed(format!(
+        return Err(Error::usage(format!(
             "unsupported provider {provider:?}; expected codex, claude, opencode, pi, or droid"
         )));
     }

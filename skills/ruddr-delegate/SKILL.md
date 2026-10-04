@@ -16,8 +16,13 @@ mid-turn with `ruddr steer`.
 Requires the `ruddr` CLI, one native binary that needs no Bun or Go
 (`npm install -g ruddr`; see the repo's README "Agent setup guide" if it is
 not installed). Flags are GNU style: `--flag value` or `--flag=value`. The
-single-dash form `-flag` is bad usage and exits 2. `ruddr COMMAND --help`
+single-dash form `-flag` is bad usage and exits 2. Missing required arguments
+and unknown subcommands also exit 2. `ruddr COMMAND --help`
 lists a command's flags.
+
+`ruddr update` refreshes the binary and delegate skill. npm updates retain
+the current install prefix. `ruddr update --check` reports the latest release
+and writes only the release-check cache; it leaves installed skills untouched.
 
 ## Pick a provider and model
 
@@ -132,8 +137,10 @@ glm-5.3-flash` as chosen above.
 - Launch with the harness's background facility — a foreground tool call gets
   killed at the tool timeout, taking the controller with it. If the harness
   has no background mode, add `--detach`: `ruddr run --detach ...` starts the
-  controller in its own session and returns once the run is live, or exits
-  non-zero with the startup error.
+  controller in its own session and observes startup for up to 15 seconds.
+  It exits non-zero if startup fails during that window. Check the printed
+  status: a successful return can still report `starting`. Poll
+  `ruddr status --state-dir DIR --json` until startup finishes.
 - `--sandbox workspace-write` is the safe default. Escalate to
   `danger-full-access` only when the task genuinely needs network or
   out-of-workspace access and the user's policy allows it; use `read-only`
@@ -179,14 +186,16 @@ ruddr --remote ampere wait --state-dir '~/.scratch/ruddr/<task-slug>/run' --time
 - `--prompt-file` and `--message-file` are local files; Ruddr streams their
   contents to the remote. The brief must describe the remote checkout, not
   this one.
-- Remote `run` always detaches and returns once the run is live, so a normal
-  foreground tool call is fine. Keep `wait` bounded as below.
+- Remote `run` always detaches and observes startup for up to 15 seconds. A
+  normal foreground tool call is fine. Check the printed status and poll the
+  remote run if it still reports `starting`. Keep `wait` bounded as below.
 - The remote machine uses its own provider login and its own Ruddr, which
   must be the same release as the local one. If `run` fails with
   `flag provided but not defined: -detach`, the remote Ruddr is too old: tell
   the user and suggest `ruddr --remote HOST update`.
-- Verify the result on the remote host (`ruddr --remote HOST status --json`,
-  then read the diff over SSH); local files are not changed.
+- Check the remote status with
+  `ruddr --remote HOST status --state-dir '~/.scratch/ruddr/<task-slug>/run' --json`.
+  Read the diff over SSH to verify the result.
 
 ## Monitor and steer
 
@@ -295,9 +304,9 @@ ruddr run --detach --cwd ../<repo>-<agent> \
   --provider codex --model gpt-6.1-sol --effort high --sandbox workspace-write
 ```
 
-Each `run --detach` blocks until its run is live. With several agents, launch
-them in parallel with `&` and one shell `wait`, then check `status --root`
-for any that failed to start.
+Each `run --detach` observes startup for up to 15 seconds. With several
+agents, launch them in parallel with `&` and one shell `wait`, then check
+`status --root` for runs that failed or still report `starting`.
 
 Each brief must stand alone, name the files that agent owns, and say that
 other agents are editing other parts of the project. Then address the whole

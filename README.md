@@ -162,10 +162,10 @@ downloading one. `RUDDR_SKIP_DOWNLOAD=1` skips the download; without
 `RUDDR_BINARY` the launcher then fails with the same error.
 
 The install-time fetch only saves time on the first run. The launcher checks
-for the binary on every invocation and downloads it when it is missing. An npm
-policy that blocks install scripts therefore delays the first `ruddr` call and
-changes nothing else. That policy also skips the bundled delegate skill. Run
-`ruddr skill install` once after an install that reported blocked scripts.
+for the binary on every invocation and downloads it when it is missing. When
+npm blocks install scripts, the launcher provisions the binary on first use
+and installs the bundled delegate skill then. If that skill installation
+warns about a failure, run `ruddr skill install` to retry.
 
 `npm install -g` needs write access to the global prefix. Install into a user
 prefix when it does not have that access:
@@ -193,13 +193,15 @@ under `~/.local/state/ruddr/update-check.json`. When a newer release exists,
 palette.
 Set `RUDDR_NO_UPDATE_CHECK=1` to disable the check.
 Failed automatic checks also wait a day before retrying and retain the last
-known release. `ruddr update --check` always performs a fresh lookup.
+known release. `ruddr update --check` always performs a fresh lookup and
+writes the release-check cache. It does not install a binary or write skills.
 
 `ruddr update` picks the install channel from where the binary lives:
 
 - A binary inside a global npm or bun package is reinstalled at the new
-  version through that tool (`npm install -g ruddr@X.Y.Z` or
-  `bun add -g ruddr@X.Y.Z`).
+  version through that tool. npm keeps the detected install prefix with
+  `npm install -g --prefix PREFIX ruddr@X.Y.Z`; the user-prefix install above
+  stays under `$HOME/.local`. Bun uses `bun add -g ruddr@X.Y.Z`.
 - A standalone binary is replaced in place after the download is verified
   against the release's `checksums.txt`. A binary that
   `scripts/install-local.sh` copied into `~/.local/bin` is a standalone
@@ -207,8 +209,8 @@ known release. `ruddr update --check` always performs a fresh lookup.
 - A binary at the root of a source checkout is left alone. Ruddr tells you to
   run `git pull` there and rerun `scripts/install-local.sh`.
 
-Every `ruddr update` also reinstalls the `ruddr-delegate` skill into the default
-skill directories, including when Ruddr is already up to date. After an upgrade
+`ruddr update` without `--check` also reinstalls the `ruddr-delegate` skill
+into the default skill directories, including when Ruddr is already up to date. After an upgrade
 the new binary writes its own copy, so the skill always matches the installed
 release even when a package manager skipped its postinstall hook.
 
@@ -337,7 +339,7 @@ text:
 |---|---|
 | 0 | success |
 | 1 | a run failed or was interrupted, or any other error |
-| 2 | bad usage: an unknown command or flag, an invalid `run --provider`, or a missing required argument |
+| 2 | bad usage: an unknown command, subcommand, or flag; an invalid provider; missing required arguments; or conflicting flags |
 | 3 | still running: `wait` timed out, or `result` was asked of an unfinished run |
 | 4 | stale: a controller died without persisting a terminal state; `wait`, `steer`, `prompt`, `interrupt`, and single-run `stop` exit 4 for such a run |
 
@@ -1237,7 +1239,9 @@ Exit codes: 0 success, 1 run failed, 2 bad usage, 3 still running (wait timed
 out), 4 stale (controller died; `wait`, `steer`, `prompt`, `interrupt`, and
 `stop` all report it). Branch on them instead of parsing text.
 Long runs: launch in the background (your harness's background mode, or
-`ruddr run --detach ...`, which returns once the run is live), then
+`ruddr run --detach ...`, which observes startup for up to 15 seconds).
+Check the printed status: `starting` means startup is still pending. Poll
+`ruddr status --state-dir DIR --json` until startup finishes. Then
 watch with `ruddr peek --state-dir DIR -n 25` and block bounded with
 `ruddr wait --state-dir DIR --timeout 30m --progress 1m`. Run long waits through
 the harness background facility. Progress goes to stderr and keeps the job band

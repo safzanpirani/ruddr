@@ -170,7 +170,7 @@ pub fn interrupt(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
     let expected = parsed.string("expected-turn-id").filter(|id| !id.is_empty());
     let Some(single) = selection.single() else {
         if expected.is_some() {
-            return Err(Error::failed(
+            return Err(Error::usage(
                 "--expected-turn-id applies to one run; drop it or name a single --state-dir",
             ));
         }

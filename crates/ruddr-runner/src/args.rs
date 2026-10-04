@@ -153,7 +153,7 @@ const SPECS: &[Spec] = &[
         name: "detach",
         kind: Kind::Bool,
         value: "",
-        help: "start the controller in the background and return once it is running",
+        help: "start in the background; observe startup for up to 15s and check the printed status",
     },
     Spec {
         name: "config",
@@ -218,7 +218,7 @@ pub fn parse(args: &[String]) -> Result<Parsed> {
         Some(marker) => {
             let child = args[marker + 1..].to_vec();
             if child.is_empty() {
-                return Err(Error::failed("app-server command after -- is empty"));
+                return Err(Error::usage("app-server command after -- is empty"));
             }
             (&args[..marker], Some(child))
         }
@@ -246,7 +246,7 @@ pub fn parse(args: &[String]) -> Result<Parsed> {
                 )));
             }
             let rest = flag_args[index - 1..].join(" ");
-            return Err(Error::failed(format!(
+            return Err(Error::usage(format!(
                 "unexpected run arguments {rest:?}; put a custom Codex app-server command after --"
             )));
         };
@@ -478,9 +478,10 @@ mod tests {
             assert!(error.message.contains(wanted), "{args:?}: {error}");
         }
         let bare = parse(&strings(&["--prompt-file", "p.md", "codex", "app-server"])).unwrap_err();
-        assert!(bare.message.contains("after --") && bare.exit == ruddr_core::Exit::Failed, "{bare}");
+        assert!(bare.message.contains("after --") && bare.exit == ruddr_core::Exit::Usage, "{bare}");
         let empty = parse(&strings(&["--prompt-file", "p.md", "--"])).unwrap_err();
         assert!(empty.message.contains("after -- is empty"));
+        assert_eq!(empty.exit, ruddr_core::Exit::Usage);
         assert!(parse(&strings(&["--help"])).unwrap().help);
     }
 

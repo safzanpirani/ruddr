@@ -83,6 +83,70 @@ fn usage_and_exit_codes() {
 }
 
 #[test]
+fn malformed_invocations_exit_two_without_spawning_children() {
+    let home = Temp::new("malformed");
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let marker = home.path().join("spawned");
+    for name in ["ssh", "codex", "claude", "opencode2", "pi", "droid"] {
+        #[cfg(unix)]
+        write_executable(&bin.join(name), "#!/bin/sh\nprintf 'spawned' > \"$SPAWN_MARKER\"\nexit 97\n");
+        #[cfg(windows)]
+        std::fs::write(
+            bin.join(format!("{name}.cmd")),
+            "@echo off\r\necho spawned>\"%SPAWN_MARKER%\"\r\nexit /b 97\r\n",
+        )
+        .unwrap();
+    }
+    let cases: &[&[&str]] = &[
+        &["thread"],
+        &["thread", "wat"],
+        &["thread", "read"],
+        &["thread", "read", "one", "two"],
+        &["thread", "read", ""],
+        &["thread", "turns"],
+        &["thread", "fork"],
+        &["thread", "archive"],
+        &["thread", "unarchive"],
+        &["thread", "search"],
+        &["thread", "name", "id"],
+        &["thread", "fork", "id", "--before-turn", "a", "--through-turn", "b"],
+        &["thread", "list", "--provider", "wat"],
+        &["thread", "list", "--provider", "claude", "--", "codex"],
+        &["thread", "list", "--"],
+        &["skill", "wat"],
+        &["skill", "install", "extra"],
+        &["models", "wat"],
+        &["models", "add"],
+        &["models", "default", "codex"],
+        &["models", "remove", "codex"],
+        &["models", "add", "wat", "model"],
+        &["update", "extra"],
+        &["--remote"],
+        &["--remote", ""],
+        &["--remote", "-bad", "status"],
+        &["--remote", "host"],
+        &["--remote", "host", "run", "--prompt-file", "-"],
+        &["--remote", "host", "run", "--cwd", "repo"],
+        &["--remote", "host", "run", "--cwd", "repo", "--prompt-file"],
+        &["--remote", "host", "run", "--cwd", "repo", "--prompt-file="],
+        &["interrupt", "--root", "unused", "--expected-turn-id", "id"],
+        &["run", "extra"],
+        &["run", "--"],
+    ];
+    for args in cases {
+        let result = run(ruddr(home.path())
+            .args(*args)
+            .env("PATH", &bin)
+            .env("SPAWN_MARKER", &marker)
+            .env("RUDDR_MODELS_FILE", home.path().join("models.json"))
+            .env("RUDDR_SSH", bin.join(if cfg!(windows) { "ssh.cmd" } else { "ssh" })));
+        assert!(!marker.exists(), "{args:?} spawned a provider or SSH");
+        assert_eq!(result.status.code(), Some(2), "{args:?}: {}", text(&result.stderr));
+    }
+}
+
+#[test]
 fn version_prints_the_cached_update_notice() {
     let home = Temp::new("version");
     let plain = run(ruddr(home.path()).arg("version"));
@@ -246,9 +310,9 @@ done
         run(ruddr(home.path()).args(["thread", "fork", "T", "--before-turn", "a", "--through-turn", "b"]))
             .status
             .code(),
-        Some(1)
+        Some(2)
     );
-    assert_eq!(run(ruddr(home.path()).args(["thread", "read", "T", "--"])).status.code(), Some(1));
+    assert_eq!(run(ruddr(home.path()).args(["thread", "read", "T", "--"])).status.code(), Some(2));
 }
 
 /// The fake ssh runs the rendered command through sh, so this covers quoting,
@@ -367,7 +431,7 @@ fn remote_args_after_tilde_expand_on_the_remote_side() {
 fn remote_rejects_bad_targets_and_missing_flags() {
     let home = Temp::new("badremote");
     let missing = run(ruddr(home.path()).arg("--remote"));
-    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(missing.status.code(), Some(2));
     assert!(text(&missing.stderr).contains("requires an SSH target"));
     let evil = run(ruddr(home.path()).args(["--remote", "-oProxyCommand=evil", "status"]));
     assert!(text(&evil.stderr).contains("invalid --remote SSH target"));

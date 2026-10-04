@@ -27,7 +27,7 @@ pub fn skill_command(argv: Vec<String>) -> Result<()> {
         }
         other => {
             print_skill_usage();
-            Err(Error::failed(format!("unknown skill subcommand {other:?}")))
+            Err(Error::usage(format!("unknown skill subcommand {other:?}")))
         }
     }
 }
@@ -40,7 +40,7 @@ fn install_command(argv: &[String]) -> Result<()> {
     )];
     let parsed = args::parse("skill install", &specs, argv)?;
     if !parsed.positionals.is_empty() {
-        return Err(Error::failed(format!(
+        return Err(Error::usage(format!(
             "unexpected skill install arguments {:?}",
             parsed.positionals.join(" ")
         )));
