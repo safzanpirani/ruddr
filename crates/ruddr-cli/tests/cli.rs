@@ -83,6 +83,70 @@ fn usage_and_exit_codes() {
 }
 
 #[test]
+fn malformed_invocations_exit_two_without_spawning_children() {
+    let home = Temp::new("malformed");
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let marker = home.path().join("spawned");
+    for name in ["ssh", "codex", "claude", "opencode2", "pi", "droid"] {
+        #[cfg(unix)]
+        write_executable(&bin.join(name), "#!/bin/sh\nprintf 'spawned' > \"$SPAWN_MARKER\"\nexit 97\n");
+        #[cfg(windows)]
+        std::fs::write(
+            bin.join(format!("{name}.cmd")),
+            "@echo off\r\necho spawned>\"%SPAWN_MARKER%\"\r\nexit /b 97\r\n",
+        )
+        .unwrap();
+    }
+    let cases: &[&[&str]] = &[
+        &["thread"],
+        &["thread", "wat"],
+        &["thread", "read"],
+        &["thread", "read", "one", "two"],
+        &["thread", "read", ""],
+        &["thread", "turns"],
+        &["thread", "fork"],
+        &["thread", "archive"],
+        &["thread", "unarchive"],
+        &["thread", "search"],
+        &["thread", "name", "id"],
+        &["thread", "fork", "id", "--before-turn", "a", "--through-turn", "b"],
+        &["thread", "list", "--provider", "wat"],
+        &["thread", "list", "--provider", "claude", "--", "codex"],
+        &["thread", "list", "--"],
+        &["skill", "wat"],
+        &["skill", "install", "extra"],
+        &["models", "wat"],
+        &["models", "add"],
+        &["models", "default", "codex"],
+        &["models", "remove", "codex"],
+        &["models", "add", "wat", "model"],
+        &["update", "extra"],
+        &["--remote"],
+        &["--remote", ""],
+        &["--remote", "-bad", "status"],
+        &["--remote", "host"],
+        &["--remote", "host", "run", "--prompt-file", "-"],
+        &["--remote", "host", "run", "--cwd", "repo"],
+        &["--remote", "host", "run", "--cwd", "repo", "--prompt-file"],
+        &["--remote", "host", "run", "--cwd", "repo", "--prompt-file="],
+        &["interrupt", "--root", "unused", "--expected-turn-id", "id"],
+        &["run", "extra"],
+        &["run", "--"],
+    ];
+    for args in cases {
+        let result = run(ruddr(home.path())
+            .args(*args)
+            .env("PATH", &bin)
+            .env("SPAWN_MARKER", &marker)
+            .env("RUDDR_MODELS_FILE", home.path().join("models.json"))
+            .env("RUDDR_SSH", bin.join(if cfg!(windows) { "ssh.cmd" } else { "ssh" })));
+        assert!(!marker.exists(), "{args:?} spawned a provider or SSH");
+        assert_eq!(result.status.code(), Some(2), "{args:?}: {}", text(&result.stderr));
+    }
+}
+
+#[test]
 fn version_prints_the_cached_update_notice() {
     let home = Temp::new("version");
     let plain = run(ruddr(home.path()).arg("version"));
@@ -246,9 +310,9 @@ done
         run(ruddr(home.path()).args(["thread", "fork", "T", "--before-turn", "a", "--through-turn", "b"]))
             .status
             .code(),
-        Some(1)
+        Some(2)
     );
-    assert_eq!(run(ruddr(home.path()).args(["thread", "read", "T", "--"])).status.code(), Some(1));
+    assert_eq!(run(ruddr(home.path()).args(["thread", "read", "T", "--"])).status.code(), Some(2));
 }
 
 /// The fake ssh runs the rendered command through sh, so this covers quoting,
@@ -367,7 +431,7 @@ fn remote_args_after_tilde_expand_on_the_remote_side() {
 fn remote_rejects_bad_targets_and_missing_flags() {
     let home = Temp::new("badremote");
     let missing = run(ruddr(home.path()).arg("--remote"));
-    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(missing.status.code(), Some(2));
     assert!(text(&missing.stderr).contains("requires an SSH target"));
     let evil = run(ruddr(home.path()).args(["--remote", "-oProxyCommand=evil", "status"]));
     assert!(text(&evil.stderr).contains("invalid --remote SSH target"));
@@ -381,4 +445,140 @@ fn remote_rejects_bad_targets_and_missing_flags() {
         .env("RUDDR_REMOTE_SHELL", "fish")
         .args(["--remote", "h", "status"]));
     assert!(text(&bad_shell.stderr).contains("must be posix or powershell"));
+}
+
+fn wait_state(dir: &Path, status: &str, pid: u32) {
+    std::fs::create_dir_all(dir).unwrap();
+    let state = serde_json::json!({
+        "version": 2, "pid": pid, "status": status, "stateDir": dir,
+        // Missing start time keeps table bytes stable across sequential waits.
+        "startedAt": "", "updatedAt": "2026-10-02T09:01:00Z",
+        "completedAt": "2026-10-02T09:01:00Z", "turns": 2,
+    });
+    ruddr_core::fsutil::write_private_atomic(&dir.join("state.json"), state.to_string().as_bytes()).unwrap();
+}
+
+#[test]
+fn wait_progress_preserves_stdout_and_exit_codes() {
+    let home = Temp::new("wait-progress");
+    let dir = home.path().join("run");
+    for group in [false, true] {
+        for (status, pid, expected) in [
+            ("active", std::process::id(), 3),
+            ("completed", 999_999_999, 0),
+            ("failed", 999_999_999, 1),
+            ("active", 999_999_999, 4),
+        ] {
+            wait_state(&dir, status, pid);
+            std::fs::write(dir.join("trace.log"), "first\nlatest observation\n").unwrap();
+            let selection = if group { "--root" } else { "--state-dir" };
+            let plain = run(ruddr(home.path()).args(["wait", selection]).arg(&dir).args(["--timeout", "60ms"]));
+            let progress = run(ruddr(home.path())
+                .args(["wait", selection])
+                .arg(&dir)
+                .args(["--timeout", "60ms", "--progress=20ms"]));
+            assert_eq!(plain.status.code(), Some(expected));
+            assert_eq!(progress.status.code(), plain.status.code());
+            assert_eq!(progress.stdout, plain.stdout);
+            if expected == 3 {
+                let stderr = text(&progress.stderr);
+                assert!(stderr.lines().filter(|line| line.starts_with("progress:")).count() >= 2, "{stderr}");
+                assert!(stderr.contains("status=active turns=2 elapsed="), "{stderr}");
+                assert!(stderr.contains(" activity="), "{stderr}");
+                assert!(stderr.contains("trace=latest observation"), "{stderr}");
+            }
+            let errors: String = text(&progress.stderr)
+                .lines()
+                .filter(|line| !line.starts_with("progress:"))
+                .map(|line| format!("{line}\n"))
+                .collect();
+            assert_eq!(errors, text(&plain.stderr));
+        }
+    }
+    for value in ["5", "0s", "-1m", "bad"] {
+        let output = run(ruddr(home.path())
+            .args(["wait", "--state-dir"])
+            .arg(&dir)
+            .args(["--progress", value]));
+        assert_eq!(output.status.code(), Some(2), "{value}: {}", text(&output.stderr));
+    }
+    let help = run(ruddr(home.path()).args(["wait", "--help"]));
+    assert!(text(&help.stderr).contains("--progress DURATION"));
+}
+
+#[test]
+fn wait_progress_reports_status_changes_before_the_interval() {
+    use std::io::{BufRead, BufReader};
+    for group in [false, true] {
+        let home = Temp::new("wait-changes");
+        let dir = home.path().join("run");
+        wait_state(&dir, "starting", std::process::id());
+        // An events-only run still reports activity; a trace need not exist.
+        std::fs::write(dir.join("events.jsonl"), "{}\n").unwrap();
+        let mut child = ruddr(home.path())
+            .args(["wait", if group { "--root" } else { "--state-dir" }])
+            .arg(&dir)
+            .args(["--progress", "1h", "--timeout", "5s", "--turn"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = BufReader::new(child.stderr.take().unwrap());
+        for status in ["starting", "active", "idle"] {
+            let mut line = String::new();
+            stderr.read_line(&mut line).unwrap();
+            assert!(line.contains(&format!("status={status}")), "{line}");
+            assert!(!line.contains("activity=unknown"), "{line}");
+            assert!(line.contains("trace=unavailable"), "{line}");
+            if status == "starting" {
+                wait_state(&dir, "active", std::process::id());
+            }
+            if status == "active" {
+                wait_state(&dir, "idle", std::process::id());
+            }
+        }
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        let plain = run(ruddr(home.path())
+            .args(["wait", if group { "--root" } else { "--state-dir" }])
+            .arg(&dir)
+            .arg("--turn"));
+        assert_eq!(output.stdout, plain.stdout);
+    }
+}
+
+#[test]
+fn prune_dry_run_apply_json_and_bad_usage() {
+    let home = Temp::new("prune");
+    let registry = home.path().join("state/runs");
+    let present = home.path().join("present");
+    let absent = home.path().join("absent");
+    std::fs::create_dir_all(&registry).unwrap();
+    std::fs::create_dir(&present).unwrap();
+    std::fs::write(present.join("trace.log"), "preserve me").unwrap();
+    std::fs::write(registry.join("present.run"), present.to_str().unwrap()).unwrap();
+    std::fs::write(registry.join("absent.run"), absent.to_str().unwrap()).unwrap();
+    std::fs::write(registry.join("bad.run"), "").unwrap();
+    let dry = run(ruddr(home.path()).arg("prune"));
+    assert_eq!(dry.status.code(), Some(0));
+    assert!(text(&dry.stdout).contains("would remove 1 registry entries; kept 1; unreadable 1"));
+    assert!(registry.join("absent.run").exists());
+    assert!(!registry.join(".registry.lock").exists(), "dry run must not write");
+    let applied = run(ruddr(home.path()).args(["prune", "--apply", "--json"]));
+    assert_eq!(applied.status.code(), Some(0), "{}", text(&applied.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(report["applied"], true);
+    assert_eq!(report["count"], 1);
+    assert_eq!(report["kept"], 1);
+    assert_eq!(report["unreadable"].as_array().unwrap().len(), 1);
+    assert!(!registry.join("absent.run").exists());
+    assert!(registry.join("present.run").exists());
+    assert!(registry.join("bad.run").exists());
+    assert_eq!(std::fs::read_to_string(present.join("trace.log")).unwrap(), "preserve me");
+    for args in [["prune", "--bogus"], ["prune", "unexpected"]] {
+        assert_eq!(run(ruddr(home.path()).args(args)).status.code(), Some(2));
+    }
+    let help = run(ruddr(home.path()).args(["prune", "--help"]));
+    assert_eq!(help.status.code(), Some(0));
+    assert!(text(&help.stderr).contains("--apply"));
 }

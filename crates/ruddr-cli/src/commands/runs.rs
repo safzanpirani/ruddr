@@ -4,6 +4,7 @@
 //! main.go.
 
 use super::args::{self, Parsed, Spec, multi};
+use super::progress::Progress;
 use ruddr_core::state::{RunState, STATE_FILE, Status, read_state};
 use ruddr_core::{Error, Result};
 use std::io::Write;
@@ -374,6 +375,7 @@ pub fn wait_for_runs(
     options: WaitOptions,
     alive: Alive,
     tick: Duration,
+    mut progress: Option<&mut Progress<'_>>,
 ) -> Result<()> {
     let mut views: Vec<Option<View>> = vec![None; refs.len()];
     let mut settled = vec![false; refs.len()];
@@ -383,6 +385,9 @@ pub fn wait_for_runs(
             if !settled[i] {
                 let view = read_view(run, alive);
                 settled[i] = view.turn_settled(options.turn);
+                if let Some(progress) = progress.as_deref_mut() {
+                    progress.observe(run, &view, settled[i]);
+                }
                 views[i] = Some(view);
             }
         }
@@ -425,7 +430,7 @@ pub fn wait_for_runs(
             }
             return Ok(());
         }
-        std::thread::sleep(tick);
+        std::thread::sleep(progress.as_ref().map_or(tick, |p| p.tick(tick)));
     }
 }
 
@@ -438,9 +443,18 @@ pub fn wait_for_run_state(
     turn: bool,
     alive: Alive,
     tick: Duration,
+    mut progress: Option<&mut Progress<'_>>,
 ) -> Result<()> {
+    let run = RunRef {
+        name: state_dir.display().to_string(),
+        state_dir: state_dir.to_path_buf(),
+    };
     loop {
         let state = read_state(state_dir)?;
+        if let Some(progress) = progress.as_deref_mut() {
+            let view = View::Run(Box::new(state.clone()));
+            progress.observe(&run, &view, view.turn_settled(turn));
+        }
         if state.status.is_terminal() || (turn && state.status == Status::Idle) {
             return report_wait_result(out, &state);
         }
@@ -451,7 +465,15 @@ pub fn wait_for_run_state(
             if let Ok(last) = read_state(state_dir)
                 && last.status.is_terminal()
             {
+                if let Some(progress) = progress.as_deref_mut() {
+                    progress.observe(&run, &View::Run(Box::new(last.clone())), true);
+                }
                 return report_wait_result(out, &last);
+            }
+            if let Some(progress) = progress.as_deref_mut() {
+                let mut stale = state.clone();
+                stale.status = Status::Stale;
+                progress.observe(&run, &View::Run(Box::new(stale)), true);
             }
             return Err(Error::stale(format!(
                 "Ruddr pid {} is not running; state is stale at status={}",
@@ -461,7 +483,7 @@ pub fn wait_for_run_state(
         if timed_out(deadline) {
             return Err(Error::running("wait timed out"));
         }
-        std::thread::sleep(tick);
+        std::thread::sleep(progress.as_ref().map_or(tick, |p| p.tick(tick)));
     }
 }
 
@@ -601,6 +623,11 @@ pub fn group_peek(out: &mut dyn Write, refs: &[RunRef], count: usize, alive: Ali
 pub fn wait(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
     let mut specs = SELECTION_SPECS.to_vec();
     specs.push(args::value("timeout", "DURATION", "maximum wait, such as 10m; zero means no limit"));
+    specs.push(args::value(
+        "progress",
+        "DURATION",
+        "report progress to stderr, such as 1m; must be positive",
+    ));
     specs.push(args::flag("any", "with several runs, return when the next running one finishes"));
     specs.push(args::flag(
         "turn",
@@ -611,6 +638,13 @@ pub fn wait(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
     let selection = Selection::from_parsed(&parsed)?;
     let timeout = parsed.duration("timeout", Duration::ZERO)?;
     let deadline = (!timeout.is_zero()).then(|| Instant::now() + timeout);
+    let interval = parsed.duration("progress", Duration::ZERO)?;
+    if parsed.string("progress").is_some() && interval.is_zero() {
+        return Err(Error::usage("--progress must be positive"));
+    }
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    let mut progress = (!interval.is_zero()).then(|| Progress::new(&mut stderr, interval));
     let options = WaitOptions {
         any: parsed.bool("any"),
         turn: parsed.bool("turn"),
@@ -618,11 +652,11 @@ pub fn wait(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
     match selection.single() {
         None => {
             let refs = selection.resolve()?;
-            wait_for_runs(out, &refs, deadline, options, &process_alive, WAIT_TICK)
+            wait_for_runs(out, &refs, deadline, options, &process_alive, WAIT_TICK, progress.as_mut())
         }
         Some(single) => {
             let dir = require_state_dir(single)?;
-            wait_for_run_state(out, dir, deadline, options.turn, &process_alive, WAIT_TICK)
+            wait_for_run_state(out, dir, deadline, options.turn, &process_alive, WAIT_TICK, progress.as_mut())
         }
     }
 }

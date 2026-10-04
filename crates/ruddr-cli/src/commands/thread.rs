@@ -48,7 +48,7 @@ fn specs() -> Vec<args::Spec> {
 
 pub fn thread_command(argv: Vec<String>) -> Result<()> {
     let Some((action, rest)) = argv.split_first() else {
-        return Err(Error::failed(format!("thread action is required: {ACTIONS}")));
+        return Err(Error::usage(format!("thread action is required: {ACTIONS}")));
     };
     if matches!(action.as_str(), "-h" | "--help" | "help") {
         eprint!(
@@ -61,7 +61,7 @@ pub fn thread_command(argv: Vec<String>) -> Result<()> {
         Some(marker) => {
             let child = rest[marker + 1..].to_vec();
             if child.is_empty() {
-                return Err(Error::failed("app-server command after -- is empty"));
+                return Err(Error::usage("app-server command after -- is empty"));
             }
             (&rest[..marker], Some(child))
         }
@@ -89,13 +89,13 @@ pub fn thread_command(argv: Vec<String>) -> Result<()> {
 fn child_command(parsed: &args::Parsed, child: Option<Vec<String>>) -> Result<Vec<String>> {
     let provider = parsed.string_or("provider", "codex");
     if !PROVIDERS.contains(&provider.as_str()) {
-        return Err(Error::failed(format!(
+        return Err(Error::usage(format!(
             "unsupported provider {provider:?}; expected codex, claude, opencode, pi, or droid"
         )));
     }
     if let Some(child) = child {
         if provider != "codex" {
-            return Err(Error::failed("a command after -- is supported only for Codex"));
+            return Err(Error::usage("a command after -- is supported only for Codex"));
         }
         return Ok(child);
     }
@@ -108,7 +108,7 @@ fn child_command(parsed: &args::Parsed, child: Option<Vec<String>>) -> Result<Ve
 
 fn require_thread_id(action: &str, positionals: &[String]) -> Result<String> {
     if positionals.len() != 1 || positionals[0].trim().is_empty() {
-        return Err(Error::failed(format!("thread {action} requires exactly one THREAD_ID")));
+        return Err(Error::usage(format!("thread {action} requires exactly one THREAD_ID")));
     }
     Ok(positionals[0].clone())
 }
@@ -137,7 +137,7 @@ pub fn build_request(action: &str, parsed: &args::Parsed) -> Result<(String, Map
         }
         "search" => {
             if positionals.is_empty() {
-                return Err(Error::failed("thread search requires a search term"));
+                return Err(Error::usage("thread search requires a search term"));
             }
             params.insert("searchTerm".into(), json!(positionals.join(" ")));
             if archived {
@@ -161,7 +161,7 @@ pub fn build_request(action: &str, parsed: &args::Parsed) -> Result<(String, Map
             let before = parsed.string("before-turn").filter(|t| !t.is_empty());
             let through = parsed.string("through-turn").filter(|t| !t.is_empty());
             if before.is_some() && through.is_some() {
-                return Err(Error::failed("--before-turn and --through-turn are mutually exclusive"));
+                return Err(Error::usage("--before-turn and --through-turn are mutually exclusive"));
             }
             params = Map::new();
             params.insert("threadId".into(), json!(id));
@@ -176,7 +176,7 @@ pub fn build_request(action: &str, parsed: &args::Parsed) -> Result<(String, Map
         }
         "name" => {
             if positionals.len() < 2 {
-                return Err(Error::failed("thread name requires THREAD_ID and NAME"));
+                return Err(Error::usage("thread name requires THREAD_ID and NAME"));
             }
             params = Map::new();
             params.insert("threadId".into(), json!(positionals[0]));
@@ -193,7 +193,7 @@ pub fn build_request(action: &str, parsed: &args::Parsed) -> Result<(String, Map
                 "thread/unarchive"
             }
         }
-        other => return Err(Error::failed(format!("unknown thread action {other:?}"))),
+        other => return Err(Error::usage(format!("unknown thread action {other:?}"))),
     };
     Ok((method.to_string(), params))
 }

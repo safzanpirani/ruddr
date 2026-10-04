@@ -56,10 +56,10 @@ fn split_flag(arg: &str) -> Option<(&str, Option<&str>)> {
 /// Validates the SSH target that follows `--remote`.
 pub fn check_target(target: Option<&str>) -> Result<String> {
     let Some(target) = target else {
-        return Err(Error::failed("--remote requires an SSH target"));
+        return Err(Error::usage("--remote requires an SSH target"));
     };
     if target.is_empty() || target.starts_with('-') {
-        return Err(Error::failed(format!("invalid --remote SSH target {target:?}")));
+        return Err(Error::usage(format!("invalid --remote SSH target {target:?}")));
     }
     Ok(target.to_string())
 }
@@ -108,7 +108,7 @@ pub struct Plan {
 /// terminal.
 pub fn plan(args: &[String], local_stdin: &mut dyn Read) -> Result<Plan> {
     let Some((command, rest)) = args.split_first() else {
-        return Err(Error::failed("a command is required after --remote TARGET"));
+        return Err(Error::usage("a command is required after --remote TARGET"));
     };
     let mut plan = Plan {
         args: args.to_vec(),
@@ -117,7 +117,7 @@ pub fn plan(args: &[String], local_stdin: &mut dyn Read) -> Result<Plan> {
     match command.as_str() {
         "run" => {
             if !has_flag(rest, "cwd") {
-                return Err(Error::failed(
+                return Err(Error::usage(
                     "--cwd is required with --remote; the local directory does not exist on the remote host",
                 ));
             }
@@ -148,7 +148,7 @@ pub fn plan(args: &[String], local_stdin: &mut dyn Read) -> Result<Plan> {
 
 fn read_local_payload(path: Option<&str>, local_stdin: &mut dyn Read) -> Result<Vec<u8>> {
     match path {
-        None | Some("") => Err(Error::failed("file flag requires a path")),
+        None | Some("") => Err(Error::usage("file flag requires a path")),
         Some("-") => {
             let mut data = Vec::new();
             local_stdin

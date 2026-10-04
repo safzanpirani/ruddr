@@ -10,7 +10,6 @@ use super::skill;
 use ruddr_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -345,11 +344,14 @@ pub struct Context<'a> {
 pub fn update_command(argv: Vec<String>) -> Result<()> {
     let parsed = args::parse(
         "update",
-        &[args::flag("check", "report whether a newer release exists without installing it")],
+        &[args::flag(
+            "check",
+            "report the latest release; only the release-check cache is written",
+        )],
         &argv,
     )?;
     if !parsed.positionals.is_empty() {
-        return Err(Error::failed(format!(
+        return Err(Error::usage(format!(
             "unexpected update arguments {:?}",
             parsed.positionals.join(" ")
         )));
@@ -378,7 +380,9 @@ pub fn update(out: &mut dyn Write, context: &Context, check_only: bool) -> Resul
     if compare_versions(&latest, current) <= 0 {
         writeln!(out, "ruddr {current} is up to date")?;
         // Still sync the skill: it may predate this binary or have been edited.
-        refresh_skill(out, context, false);
+        if !check_only {
+            refresh_skill(out, context, false);
+        }
         return Ok(());
     }
     if check_only {
@@ -389,8 +393,11 @@ pub fn update(out: &mut dyn Write, context: &Context, check_only: bool) -> Resul
     writeln!(out, "updating ruddr {current} -> {latest} via {}", channel.kind())?;
     out.flush()?;
     match channel {
-        Channel::Npm(root) => package_manager_update(out, "npm", &npm_update_args(&root, &latest))?,
-        Channel::Bun(_) => package_manager_update(out, "bun", &["add".into(), "-g".into(), format!("ruddr@{latest}").into()])?,
+        Channel::Npm(root) => package_manager_update(out, &mut npm_update_command(&root, &latest, cfg!(windows))?)?,
+        Channel::Bun(_) => package_manager_update(
+            out,
+            std::process::Command::new("bun").args(["add", "-g", &format!("ruddr@{latest}")]),
+        )?,
         Channel::Source => {
             refresh_skill(out, context, false);
             return Err(Error::failed(
@@ -435,40 +442,33 @@ fn refresh_skill(out: &mut dyn Write, context: &Context, with_new_binary: bool) 
     }
 }
 
-fn npm_update_args(package_root: &Path, latest: &str) -> Vec<OsString> {
-    let mut arguments = vec!["install".into(), "-g".into()];
-    if let Some(prefix) = npm_prefix(package_root) {
-        arguments.extend(["--prefix".into(), prefix.as_os_str().to_owned()]);
-    }
-    arguments.push(format!("ruddr@{latest}").into());
-    arguments
+/// npm stores the native binary at the package root. Global packages live in
+/// PREFIX/lib/node_modules on Unix and PREFIX/node_modules on Windows.
+fn npm_update_command(root: &Path, latest: &str, windows: bool) -> Result<std::process::Command> {
+    let prefix = root
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == "node_modules"))
+        .and_then(Path::parent)
+        .and_then(|p| {
+            if windows {
+                Some(p)
+            } else {
+                p.file_name().filter(|n| *n == "lib").and_then(|_| p.parent())
+            }
+        })
+        .ok_or_else(|| Error::failed(format!("cannot determine the npm install prefix from {}", root.display())))?;
+    let mut command = std::process::Command::new("npm");
+    command
+        .args(["install", "-g", "--prefix"])
+        .arg(prefix)
+        .arg(format!("ruddr@{latest}"));
+    Ok(command)
 }
 
-/// Global npm packages live in <prefix>/lib/node_modules on Unix and
-/// <prefix>/node_modules on Windows. Preserve the existing invocation when
-/// the detected package root does not follow the native global layout.
-fn npm_prefix(package_root: &Path) -> Option<&Path> {
-    if !package_root.is_absolute() {
-        return None;
-    }
-    let modules = package_root.parent()?;
-    if modules.file_name()? != "node_modules" {
-        return None;
-    }
-    let prefix = modules.parent()?;
-    #[cfg(not(windows))]
-    let prefix = {
-        if prefix.file_name()? != "lib" {
-            return None;
-        }
-        prefix.parent()?
-    };
-    Some(prefix)
-}
-
-fn package_manager_update(out: &mut dyn Write, tool: &str, arguments: &[OsString]) -> Result<()> {
-    let joined = arguments.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>().join(" ");
-    let status = std::process::Command::new(tool).args(arguments).status().map_err(|e| {
+fn package_manager_update(out: &mut dyn Write, command: &mut std::process::Command) -> Result<()> {
+    let tool = command.get_program().to_string_lossy().into_owned();
+    let joined = command.get_args().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>().join(" ");
+    let status = command.status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             Error::failed(format!("{tool} is not on PATH; add it to PATH and rerun `ruddr update`"))
         } else {
@@ -620,45 +620,140 @@ mod tests {
     }
 
     #[test]
-    fn npm_update_preserves_the_installed_prefix() {
-        let base = std::env::temp_dir();
-        for prefix in [base.join("custom prefix"), base.join("system"), base.join("lib")] {
-            let modules = if cfg!(windows) { prefix.clone() } else { prefix.join("lib") };
-            let root = modules.join("node_modules").join("ruddr");
-            let arguments = npm_update_args(&root, "99.0.0");
-            let mut command = std::process::Command::new("npm");
-            command.args(&arguments);
-            let expected: Vec<OsString> = vec![
+    fn npm_update_preserves_unix_and_windows_prefixes() {
+        let root = temp_dir("npm-prefix");
+        // Include spaces, and a Windows prefix named lib: only Unix strips lib.
+        for (windows, prefix) in [(false, root.join("user prefix")), (true, root.join("windows prefix").join("lib"))] {
+            let modules = if windows { prefix.clone() } else { prefix.join("lib") }.join("node_modules");
+            let package = modules.join("ruddr");
+            write(&package.join("package.json"), r#"{"name":"ruddr"}"#);
+            write(&package.join("scripts/npm-binary.cjs"), "");
+            let binary = package.join(if windows { "ruddr.exe" } else { "ruddr" });
+            let Channel::Npm(detected) = detect_channel(&binary) else {
+                panic!("npm package not detected")
+            };
+            let command = npm_update_command(&detected, "99.0.0", windows).unwrap();
+            let expected: Vec<std::ffi::OsString> = vec![
                 "install".into(),
                 "-g".into(),
                 "--prefix".into(),
-                prefix.into_os_string(),
+                prefix.clone().into_os_string(),
                 "ruddr@99.0.0".into(),
             ];
+            assert_eq!(command.get_program(), "npm");
             assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let fake = root.join("fake-npm");
+                let marker = root.join("npm-argv");
+                write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$NPM_ARGV\"\n");
+                std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let mut fake_command = std::process::Command::new(&fake);
+                fake_command.args(command.get_args()).env("NPM_ARGV", &marker);
+                package_manager_update(&mut Vec::new(), &mut fake_command).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(marker).unwrap(),
+                    format!("install\n-g\n--prefix\n{}\nruddr@99.0.0\n", prefix.display())
+                );
+            }
         }
-    }
-
-    #[test]
-    fn npm_update_keeps_the_fallback_for_unrecognized_layouts() {
-        let base = std::env::temp_dir();
-        for root in [PathBuf::new(), PathBuf::from("lib/node_modules/ruddr"), base.join("ruddr")] {
-            assert_eq!(
-                npm_update_args(&root, "99.0.0"),
-                vec![OsString::from("install"), "-g".into(), "ruddr@99.0.0".into()],
-            );
-        }
-        #[cfg(not(windows))]
-        assert!(npm_prefix(&base.join("project/node_modules/ruddr")).is_none());
+        assert!(npm_update_command(&root.join("unknown-package"), "99.0.0", false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn npm_update_preserves_non_unicode_prefixes() {
         use std::os::unix::ffi::OsStringExt;
-        let prefix = std::env::temp_dir().join(OsString::from_vec(b"prefix-\xff".to_vec()));
+        let prefix = std::env::temp_dir().join(std::ffi::OsString::from_vec(b"prefix-\xff".to_vec()));
         let root = prefix.join("lib/node_modules/ruddr");
-        assert_eq!(npm_update_args(&root, "99.0.0")[3], prefix.as_os_str());
+        let command = npm_update_command(&root, "99.0.0", false).unwrap();
+        assert_eq!(command.get_args().nth(3).unwrap(), prefix.as_os_str());
+    }
+
+    #[test]
+    fn missing_npm_does_not_suggest_an_unquoted_prefix_command() {
+        let root = temp_dir("missing-npm");
+        let mut command = std::process::Command::new(root.join("missing-npm"));
+        command
+            .args(["install", "-g", "--prefix"])
+            .arg(root.join("custom prefix"))
+            .arg("ruddr@99.0.0");
+        let error = package_manager_update(&mut Vec::new(), &mut command).unwrap_err();
+        assert!(
+            error.message.ends_with("add it to PATH and rerun `ruddr update`"),
+            "{}",
+            error.message
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A subprocess isolates PATH so parallel tests never see the fake npm.
+    #[cfg(unix)]
+    #[test]
+    fn npm_update_refreshes_the_skill_after_install() {
+        const ROOT_ENV: &str = "RUDDR_TEST_NPM_UPDATE_ROOT";
+        if let Some(root) = std::env::var_os(ROOT_ENV) {
+            let root = PathBuf::from(root);
+            let http = FakeHttp {
+                location: release_location("99.0.0"),
+                ..Default::default()
+            };
+            let mut context = context(&http, &root);
+            context.executable = root.join("user prefix/lib/node_modules/ruddr/ruddr");
+            update(&mut Vec::new(), &context, false).unwrap();
+            assert_eq!(http.calls.borrow().len(), 1, "npm owns the download");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_dir("npm-install");
+        let prefix = root.join("user prefix");
+        let package = prefix.join("lib/node_modules/ruddr");
+        write(&package.join("package.json"), r#"{"name":"ruddr"}"#);
+        write(&package.join("scripts/npm-binary.cjs"), "");
+        let npm = root.join("bin/npm");
+        write(
+            &npm,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RUDDR_TEST_NPM_UPDATE_ROOT/npm-argv\"\n",
+        );
+        let executable = package.join("ruddr");
+        write(
+            &executable,
+            "#!/bin/sh\n[ -f \"$RUDDR_TEST_NPM_UPDATE_ROOT/npm-argv\" ] || exit 98\nprintf '%s\\n' \"$@\" > \"$RUDDR_TEST_NPM_UPDATE_ROOT/skill-argv\"\n",
+        );
+        for script in [&npm, &executable] {
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::update::tests::npm_update_refreshes_the_skill_after_install",
+                "--nocapture",
+            ])
+            .env(ROOT_ENV, &root)
+            .env("PATH", root.join("bin"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("npm-argv")).unwrap(),
+            format!("install\n-g\n--prefix\n{}\nruddr@99.0.0\n", prefix.display())
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("skill-argv")).unwrap(),
+            format!(
+                "skill\ninstall\n--dir\n{}\n--dir\n{}\n",
+                root.join("home/.claude/skills").display(),
+                root.join("home/.agents/skills").display()
+            )
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn check(age_ms: i64, latest: &str) -> UpdateCheck {
@@ -781,18 +876,32 @@ mod tests {
 
     #[test]
     fn check_only_reports_without_downloading() {
-        let root = temp_dir("check");
-        let http = FakeHttp {
-            location: release_location("99.0.0"),
-            ..Default::default()
-        };
-        let context = context(&http, &root);
-        let mut out = Vec::new();
-        update(&mut out, &context, true).unwrap();
-        assert!(String::from_utf8_lossy(&out).contains("ruddr 99.0.0 is available"));
-        assert_eq!(http.calls.borrow().len(), 1);
-        assert!(!context.executable.exists());
-        std::fs::remove_dir_all(root).unwrap();
+        for latest in ["0.0.0", ruddr_core::VERSION, "99.0.0"] {
+            let root = temp_dir("check");
+            let http = FakeHttp {
+                location: release_location(latest),
+                ..Default::default()
+            };
+            let context = context(&http, &root);
+            let stale = context.skill_dirs[0].join(skill::DELEGATE_SKILL_NAME).join("SKILL.md");
+            write(&stale, "keep this skill");
+            let before = std::fs::metadata(&stale).unwrap().modified().unwrap();
+            let mut out = Vec::new();
+            update(&mut out, &context, true).unwrap();
+            let expected = if latest == "99.0.0" {
+                "ruddr 99.0.0 is available"
+            } else {
+                "is up to date"
+            };
+            assert!(String::from_utf8_lossy(&out).contains(expected));
+            assert_eq!(std::fs::read_to_string(&stale).unwrap(), "keep this skill");
+            assert_eq!(std::fs::metadata(&stale).unwrap().modified().unwrap(), before);
+            assert!(!context.skill_dirs[1].exists(), "check must not create missing skill directories");
+            assert_eq!(read_check(&context.cache_path).unwrap().latest, latest);
+            assert_eq!(http.calls.borrow().len(), 1);
+            assert!(!context.executable.exists());
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn release(binary: &[u8], checksum: Option<String>) -> FakeHttp {
