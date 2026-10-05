@@ -470,7 +470,7 @@ fn package_manager_update(out: &mut dyn Write, command: &mut std::process::Comma
     let joined = command.get_args().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>().join(" ");
     let status = command.status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            Error::failed(format!("{tool} is not on PATH; install the update with `{tool} {joined}`"))
+            Error::failed(format!("{tool} is not on PATH; add it to PATH and rerun `ruddr update`"))
         } else {
             Error::failed(format!("{tool} {joined}: {e}"))
         }
@@ -659,6 +659,33 @@ mod tests {
             }
         }
         assert!(npm_update_command(&root.join("unknown-package"), "99.0.0", false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_update_preserves_non_unicode_prefixes() {
+        use std::os::unix::ffi::OsStringExt;
+        let prefix = std::env::temp_dir().join(std::ffi::OsString::from_vec(b"prefix-\xff".to_vec()));
+        let root = prefix.join("lib/node_modules/ruddr");
+        let command = npm_update_command(&root, "99.0.0", false).unwrap();
+        assert_eq!(command.get_args().nth(3).unwrap(), prefix.as_os_str());
+    }
+
+    #[test]
+    fn missing_npm_does_not_suggest_an_unquoted_prefix_command() {
+        let root = temp_dir("missing-npm");
+        let mut command = std::process::Command::new(root.join("missing-npm"));
+        command
+            .args(["install", "-g", "--prefix"])
+            .arg(root.join("custom prefix"))
+            .arg("ruddr@99.0.0");
+        let error = package_manager_update(&mut Vec::new(), &mut command).unwrap_err();
+        assert!(
+            error.message.ends_with("add it to PATH and rerun `ruddr update`"),
+            "{}",
+            error.message
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
