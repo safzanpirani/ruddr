@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const PROVIDERS: [&str; 6] = ["codex", "claude", "opencode", "pi", "omp", "droid"];
+pub const PROVIDERS: [&str; 8] = ["codex", "claude", "opencode", "pi", "omp", "droid", "hermes", "openclaw"];
 pub const STARTUP_WINDOW: Duration = Duration::from_millis(1500);
 
 /// Inserts `--detach` after `run` unless the flags already hold it.

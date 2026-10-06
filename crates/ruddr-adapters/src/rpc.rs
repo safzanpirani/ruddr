@@ -1,4 +1,4 @@
-//! The request/response core shared by the Pi and Droid clients: a provider
+//! The request/response core shared by the Pi, Droid, and ACP clients: a provider
 //! CLI that speaks JSON lines on stdio, with requests matched to responses by
 //! ID. Port of the common half of `SubprocessPiClient` and
 //! `SubprocessDroidClient`.
@@ -107,6 +107,16 @@ impl RpcProcess {
             }
             Err(RecvTimeoutError::Disconnected) => Err(format!("{} is not running", self.labels.process)),
         }
+    }
+
+    /// Writes a message that expects no response, such as a JSON-RPC
+    /// notification, within the RPC deadline.
+    pub fn notify(&self, message: &Value) -> Result<(), String> {
+        let child = lock(&self.child)
+            .clone()
+            .ok_or_else(|| format!("{} is not running", self.labels.process))?;
+        self.write(&child, message, self.rpc_timeout)
+            .inspect_err(|error| self.fail(&child, error))
     }
 
     fn write(&self, child: &ChildProcess, message: &Value, timeout: Duration) -> Result<(), String> {

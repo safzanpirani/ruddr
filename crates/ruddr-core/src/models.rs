@@ -91,6 +91,9 @@ const PI_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"
 // omp 18.6.1 `--thinking` levels.
 const OMP_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"];
 const DROID_EFFORTS: &[&str] = &["low", "high", "max"];
+/// Hermes and OpenClaw run the model their own config selects; this entry
+/// passes no model to the agent.
+pub const AGENT_DEFAULT_MODEL: &str = "agent-default";
 
 /// The built-in catalog. Keep it short; users add models through models.json.
 pub fn builtin_catalog() -> Vec<ProviderModel> {
@@ -126,6 +129,8 @@ pub fn builtin_catalog() -> Vec<ProviderModel> {
         model(Pi, deepseek, "DeepSeek V4 Flash Vision Exp", PI_EFFORTS, true),
         model(Omp, "anthropic/claude-opus-5-5", "Claude Opus 5.5", OMP_EFFORTS, true),
         model(Droid, "glm-5.3-flash", "GLM-5.3-Flash", DROID_EFFORTS, true),
+        model(Hermes, AGENT_DEFAULT_MODEL, "Hermes default", &[], true),
+        model(OpenClaw, AGENT_DEFAULT_MODEL, "OpenClaw default", &[], true),
     ]
 }
 
@@ -355,7 +360,7 @@ pub fn file_path() -> PathBuf {
 fn edit_provider(provider: &str) -> Result<Provider> {
     if provider.is_empty() {
         return Err(Error::usage(
-            "unsupported provider \"\"; expected codex, claude, opencode, pi, omp, or droid",
+            "unsupported provider \"\"; expected codex, claude, opencode, pi, omp, droid, hermes, or openclaw",
         ));
     }
     Provider::parse(provider)

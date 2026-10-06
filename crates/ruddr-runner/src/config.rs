@@ -23,6 +23,8 @@ pub struct RunConfig {
     pub opencode_path: String,
     pub pi_path: String,
     pub omp_path: String,
+    pub hermes_path: String,
+    pub openclaw_path: String,
     pub droid_path: String,
     /// The OpenCode, Pi, omp, or Droid executable sent to the adapter.
     pub provider_path: String,
@@ -65,6 +67,8 @@ impl Default for RunConfig {
             opencode_path: String::new(),
             pi_path: String::new(),
             omp_path: String::new(),
+            hermes_path: String::new(),
+            openclaw_path: String::new(),
             droid_path: String::new(),
             provider_path: String::new(),
             ephemeral: false,
@@ -121,6 +125,22 @@ pub fn validate_run_config(cfg: &mut RunConfig) -> Result<()> {
             return Err(Error::failed(format!(
                 "{provider} runs require --approval-policy never because Ruddr has no interactive approval surface"
             )));
+        }
+        if matches!(provider, Provider::Hermes | Provider::OpenClaw) {
+            // ACP agents keep every session, and neither can confine a shell to reads.
+            if cfg.ephemeral {
+                return Err(Error::failed(format!("{provider} sessions always persist; drop --ephemeral")));
+            }
+            if cfg.sandbox == "read-only" {
+                return Err(Error::failed(format!(
+                    "{provider} has no read-only mode; use --sandbox workspace-write or danger-full-access"
+                )));
+            }
+            if !cfg.effort.is_empty() {
+                return Err(Error::failed(format!(
+                    "{provider} runs take no --effort; the agent's model settings apply"
+                )));
+            }
         }
         if provider == Provider::Droid {
             if selecting {
@@ -203,6 +223,8 @@ pub fn configure_provider_defaults(cfg: &mut RunConfig, child_args: &[String]) -
         Provider::OpenCode => cfg.opencode_path.clone(),
         Provider::Pi => cfg.pi_path.clone(),
         Provider::Omp => cfg.omp_path.clone(),
+        Provider::Hermes => cfg.hermes_path.clone(),
+        Provider::OpenClaw => cfg.openclaw_path.clone(),
         Provider::Droid => cfg.droid_path.clone(),
         Provider::Codex => String::new(),
     };
@@ -328,6 +350,48 @@ mod tests {
             ..droid.clone()
         };
         assert!(validate_run_config(&mut ephemeral).unwrap_err().message.contains("--ephemeral"));
+        for provider in ["hermes", "openclaw"] {
+            let acp = RunConfig {
+                provider: provider.into(),
+                model: "agent-default".into(),
+                sandbox: "workspace-write".into(),
+                ..base()
+            };
+            validate_run_config(&mut acp.clone()).unwrap();
+            for (bad, expected) in [
+                (
+                    RunConfig {
+                        ephemeral: true,
+                        ..acp.clone()
+                    },
+                    "--ephemeral",
+                ),
+                (
+                    RunConfig {
+                        sandbox: "read-only".into(),
+                        ..acp.clone()
+                    },
+                    "no read-only mode",
+                ),
+                (
+                    RunConfig {
+                        effort: "high".into(),
+                        ..acp.clone()
+                    },
+                    "no --effort",
+                ),
+                (
+                    RunConfig {
+                        fork_thread_id: "x".into(),
+                        ..acp.clone()
+                    },
+                    "--fork-thread",
+                ),
+            ] {
+                let error = validate_run_config(&mut bad.clone()).unwrap_err();
+                assert!(error.message.contains(expected), "{provider}: {}", error.message);
+            }
+        }
         for provider in ["pi", "omp"] {
             let mut forked = RunConfig {
                 provider: provider.into(),
@@ -451,6 +515,8 @@ mod tests {
                 ("opencode", "openrouter/deepseek/deepseek-v4-flash-vision-exp"),
                 ("pi", "openrouter/deepseek/deepseek-v4-flash-vision-exp"),
                 ("omp", "anthropic/claude-opus-5-5"),
+                ("hermes", "agent-default"),
+                ("openclaw", "agent-default"),
                 ("droid", "glm-5.3-flash"),
             ] {
                 let mut cfg = RunConfig {
@@ -461,6 +527,8 @@ mod tests {
                     "opencode" => cfg.opencode_path = "/opt/opencode2".into(),
                     "pi" => cfg.pi_path = "/opt/pi".into(),
                     "omp" => cfg.omp_path = "/opt/omp".into(),
+                    "hermes" => cfg.hermes_path = "/opt/hermes".into(),
+                    "openclaw" => cfg.openclaw_path = "/opt/openclaw".into(),
                     _ => cfg.droid_path = "/opt/droid".into(),
                 }
                 configure_provider_defaults(&mut cfg, &[]).unwrap();

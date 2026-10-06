@@ -95,6 +95,7 @@ fn fake_provider_entry() {
     let out = Arc::new(Mutex::new(unsafe { File::from_raw_fd(3) }));
     let code = match kind.as_str() {
         "pi" => fake_pi(&out),
+        "acp" => fake_acp(&dir, &out),
         "droid" => fake_droid(&out),
         "claude" => fake_claude(&dir, &out),
         "opencode" => fake_opencode(&dir, &out),
@@ -148,6 +149,24 @@ fn fake_pi(out: &Mutex<File>) -> i32 {
             "never_respond" => {}
             _ => write(out, &json!({ "type": "response", "id": id, "success": true })),
         }
+    }
+    0
+}
+
+/// A stand-in for `hermes acp` / `openclaw acp`: it records each request in
+/// `requests`, answers `initialize` with `loadSession`, and gives
+/// `session/new` a fixed session ID.
+fn fake_acp(dir: &Path, out: &Mutex<File>) -> i32 {
+    for message in stdin_lines() {
+        append(&dir.join("requests"), &message.to_string());
+        let Some(id) = message.get("id").cloned() else { continue };
+        let result = match message["method"].as_str().unwrap_or_default() {
+            "initialize" => json!({ "protocolVersion": 1, "agentCapabilities": { "loadSession": true } }),
+            "session/new" => json!({ "sessionId": "fake-acp-session",
+                "modes": { "currentModeId": "default", "availableModes": [{ "id": "default" }, { "id": "accept_edits" }] } }),
+            _ => json!({}),
+        };
+        write(out, &json!({ "jsonrpc": "2.0", "id": id, "result": result }));
     }
     0
 }

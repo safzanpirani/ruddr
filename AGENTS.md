@@ -51,7 +51,9 @@ comment that says what it owns.
   command, which lets Claude Code, OpenCode 2, Pi, omp, and Factory Droid speak
   the Codex app-server protocol on stdio. `pi.rs` drives both Pi and omp
   (oh-my-pi, a Pi fork); `Flavor` selects omp's flags, settle event, and
-  hashline edit reporting. `claude/cli.rs` drives the `claude`
+  hashline edit reporting. `acp.rs` drives Hermes Agent and OpenClaw over the
+  Agent Client Protocol; its `Flavor` decides steering (Hermes `/steer`,
+  OpenClaw none) and the sandbox's session mode. `claude/cli.rs` drives the `claude`
   CLI's stream-json protocol directly. `droid.rs` drives `droid exec` in
   stream JSON-RPC mode; the README records the droid versions and Factory
   protocol versions it is verified against. `testing.rs` holds the fake
@@ -149,7 +151,8 @@ comment that says what it owns.
   that turn.
 - Resume and fork are mutually exclusive. The two fork boundary selectors are
   mutually exclusive and invalid without `--fork-thread`.
-- Among the adapter providers, only Droid supports `--fork-thread`. A Droid
+- Among the adapter providers, only Droid supports `--fork-thread`. Hermes and
+  OpenClaw also reject `--ephemeral`, `--effort`, and `--sandbox read-only`. A Droid
   fork copies the whole session, so the boundary selectors are rejected for
   it. `validate_run_config` rejects every fork flag for the other adapters.
 - Conversation forks do not create Git worktrees or roll filesystem state back.

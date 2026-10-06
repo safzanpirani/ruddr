@@ -1,6 +1,6 @@
 ---
 name: ruddr-delegate
-description: Delegate a hard, stuck, or context-heavy implementation task to a live-steerable Codex, Claude Code, OpenCode, Pi, omp, or Factory Droid session managed by Ruddr, so a sub-agent investigates, edits, and verifies the current workspace end to end while the parent agent keeps working and can steer mid-turn. Use when the user asks to hand work to codex/claude/droid/a sub-agent, when a bug or feature has resisted a couple of attempts, or when long autonomous work should run outside the parent agent's context. Also covers fanning several independent tasks out to a swarm of parallel sub-agents.
+description: Delegate a hard, stuck, or context-heavy implementation task to a live-steerable Codex, Claude Code, OpenCode, Pi, omp, Factory Droid, Hermes Agent, or OpenClaw session managed by Ruddr, so a sub-agent investigates, edits, and verifies the current workspace end to end while the parent agent keeps working and can steer mid-turn. Use when the user asks to hand work to codex/claude/droid/a sub-agent, when a bug or feature has resisted a couple of attempts, or when long autonomous work should run outside the parent agent's context. Also covers fanning several independent tasks out to a swarm of parallel sub-agents.
 metadata:
   short-description: Delegate work to a steerable Ruddr sub-agent
 ---
@@ -54,6 +54,12 @@ and writes only the release-check cache; it leaves installed skills untouched.
   levels (`off` through `max`, plus `auto`). A fresh run gets the session ID
   omp picks; resume with that ID. Ruddr rejects `--fork-thread` for omp, and
   like Pi it relies on omp's own permissions rather than Ruddr containment.
+- `--provider hermes` runs Hermes Agent and `--provider openclaw` runs
+  OpenClaw, both over ACP. Use them when the user names them. The default
+  model `agent-default` keeps the agent's configured model. They reject
+  `--effort`, `--ephemeral`, `--fork-thread`, and `--sandbox read-only`.
+  Hermes accepts steers; OpenClaw does not, so interrupt and prompt instead.
+  OpenClaw needs its Gateway running on the same machine.
 - `--provider droid` runs Factory Droid. Use it when the user says "droid"
   or "factory". The default model is `glm-5.3-flash` with efforts `low`,
   `high`, and `max`; `droid exec --help` lists the rest. The sandbox sets
@@ -74,8 +80,9 @@ from `state.json`.
 
 Claude only: if the bare `claude` binary cannot reach its credentials from a
 detached process, pass the wrapper that works interactively via
-`--claude-path` or `RUDDR_CLAUDE_PATH`. OpenCode, Pi, omp, and Droid take
-`--opencode-path`, `--pi-path`, `--omp-path`, and `--droid-path` the same way. Never put tokens in argv or prompts.
+`--claude-path` or `RUDDR_CLAUDE_PATH`. OpenCode, Pi, omp, Droid, Hermes, and
+OpenClaw take `--opencode-path`, `--pi-path`, `--omp-path`, `--droid-path`,
+`--hermes-path`, and `--openclaw-path` the same way. Never put tokens in argv or prompts.
 
 ## Build the brief
 
@@ -146,8 +153,9 @@ ruddr run \
 ```
 
 Swap the first line for `--provider claude --model claude-opus-5-5 --effort
-medium`, `--provider opencode`, `--provider pi`, `--provider omp`, or
-`--provider droid --model glm-5.3-flash` as chosen above.
+medium`, `--provider opencode`, `--provider pi`, `--provider omp`,
+`--provider hermes`, `--provider openclaw`, or `--provider droid --model
+glm-5.3-flash` as chosen above.
 
 - Launch with the harness's background facility — a foreground tool call gets
   killed at the tool timeout, taking the controller with it. If the harness

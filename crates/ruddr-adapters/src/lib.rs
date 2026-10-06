@@ -1,5 +1,6 @@
 //! App-server adapters for providers that do not speak the Codex app-server
-//! protocol natively: Claude Code, OpenCode, Pi, omp, and Factory Droid. Each one
+//! protocol natively: Claude Code, OpenCode, Pi, omp, Factory Droid, Hermes,
+//! and OpenClaw. Each one
 //! runs as `ruddr app-server --provider NAME`, a child process that speaks
 //! line-delimited JSON-RPC on stdio exactly like `codex app-server`.
 //! Port of adapter/, claude/, opencode/, pi/, droid/.
@@ -11,6 +12,7 @@
 //! `thread/tokenUsage/updated`, and `turn/completed`. They never read or
 //! store provider credentials; each provider CLI authenticates itself.
 
+pub mod acp;
 pub mod child;
 pub mod claude;
 pub mod droid;
@@ -25,7 +27,7 @@ mod testing;
 use protocol::{Adapter, Emit, WriterSink};
 use std::sync::Arc;
 
-const USAGE: &str = "usage: ruddr app-server --provider claude|opencode|pi|omp|droid [--executable PATH]";
+const USAGE: &str = "usage: ruddr app-server --provider claude|opencode|pi|omp|droid|hermes|openclaw [--executable PATH]";
 
 /// Entry point for the hidden `ruddr app-server --provider NAME` command.
 /// `args` may start with `app-server`; the rest are its flags.
@@ -53,6 +55,12 @@ pub fn new_adapter(provider: &str, executable: Option<String>, emit: Emit) -> ru
         "pi" => Box::new(pi::PiAdapter::new(emit, resolve("PI", &["pi"]))),
         "omp" => Box::new(pi::PiAdapter::omp(emit, resolve("OMP", &["omp"]))),
         "droid" => Box::new(droid::DroidAdapter::new(emit, resolve("DROID", &["droid"]))),
+        "hermes" => Box::new(acp::AcpAdapter::new(acp::Flavor::Hermes, emit, resolve("HERMES", &["hermes"]))),
+        "openclaw" => Box::new(acp::AcpAdapter::new(
+            acp::Flavor::OpenClaw,
+            emit,
+            resolve("OPENCLAW", &["openclaw"]),
+        )),
         "codex" => {
             return Err(ruddr_core::Error::usage(
                 "codex speaks the app-server protocol itself; run `codex app-server`",
@@ -60,7 +68,7 @@ pub fn new_adapter(provider: &str, executable: Option<String>, emit: Emit) -> ru
         }
         other => {
             return Err(ruddr_core::Error::usage(format!(
-                "unsupported provider {other:?}; expected claude, opencode, pi, omp, or droid"
+                "unsupported provider {other:?}; expected claude, opencode, pi, omp, droid, hermes, or openclaw"
             )));
         }
     })
@@ -130,7 +138,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let shim = root.join("provider.cmd");
         std::fs::write(&shim, "@echo off\r\n").unwrap();
-        for provider in ["CLAUDE", "OPENCODE", "PI", "OMP", "DROID"] {
+        for provider in ["CLAUDE", "OPENCODE", "PI", "OMP", "DROID", "HERMES", "OPENCLAW"] {
             let resolved = resolve_executable(Some(root.join("provider").to_string_lossy().into_owned()), provider, &["unused"]);
             assert_eq!(std::fs::canonicalize(resolved).unwrap(), std::fs::canonicalize(&shim).unwrap());
         }

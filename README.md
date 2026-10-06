@@ -3,7 +3,8 @@
 **A control plane for agents that run other agents.**
 
 Ruddr is a single native binary that keeps a live handle on long-running Codex,
-Claude Code, OpenCode 2, Pi, omp, and Factory Droid sessions. An orchestrating agent
+Claude Code, OpenCode 2, Pi, omp, Factory Droid, Hermes Agent, and OpenClaw
+sessions. An orchestrating agent
 launches a turn in the background, reads its progress from plain files, and
 redirects it over a local socket while it runs, without waiting for it to
 finish or restarting it. Every command works the same from a human shell, so a
@@ -61,9 +62,13 @@ Providers:
   Pi adapter. A turn ends at omp's `session_settled` event.
 - **Factory Droid.** Ruddr runs `droid exec` in stream JSON-RPC mode. A steer
   is a user message that Droid queues and reads at its next step.
+- **Hermes Agent and OpenClaw.** Ruddr speaks the Agent Client Protocol (ACP)
+  to `hermes acp` and to `openclaw acp`, OpenClaw's bridge to its running
+  Gateway. Hermes steers through its `/steer` command; OpenClaw runs cannot be
+  steered.
 
 All providers use the same state directory, commands, and TUI. Codex speaks
-the app-server protocol itself. For the other five, Ruddr starts its own
+the app-server protocol itself. For the others, Ruddr starts its own
 binary as a hidden adapter, `ruddr app-server --provider NAME`, which
 translates the provider's protocol into the Codex app-server protocol on
 stdio.
@@ -333,7 +338,7 @@ command after `--`, add `-c KEY=VALUE` to that command instead.
 to the first turn. `steer` and `prompt` take the same flag. Ruddr checks that
 each file exists before it sends anything, and an invalid path exits 2. Codex
 receives each image as a `localImage` input. Claude Code, OpenCode, Pi, omp,
-and Droid get the absolute paths listed under the prompt text, and the agent opens
+Droid, Hermes, and OpenClaw get the absolute paths listed under the prompt text, and the agent opens
 them with its own file-reading tool, so keep images somewhere the provider's
 sandbox can read:
 
@@ -445,6 +450,38 @@ file change with the diff from omp's result once the edit lands. Ruddr rejects
 directory when omp's `autoResume` setting is on, so leave that setting off for
 delegated work. Like Pi, omp loads project-local resources, so run it only in
 trusted workspaces.
+
+Run Hermes Agent or OpenClaw the same way:
+
+```bash
+ruddr run --provider hermes --cwd "$PWD" \
+  --prompt-file .scratch/ruddr-demo/prompt.md \
+  --state-dir .scratch/ruddr-demo/hermes.run
+```
+
+Both speak ACP: a thread is an ACP session (`session/new`, or `session/load`
+for `--resume-thread`), a turn is one `session/prompt` request, and an
+interrupt is `session/cancel`. The built-in model `agent-default` keeps the
+model the agent's own config selects; another `--model` goes to
+`session/set_model` (Hermes model IDs look like `custom:gpt-5.6-sol`).
+`--effort`, `--ephemeral`, `--fork-thread`, and `--sandbox read-only` are
+rejected: these agents keep every session and cannot confine their shell
+tools to reads. Ruddr declares no file-system or terminal capability, so the
+agent uses its own tools, and it answers every permission request as
+cancelled. Hermes runs `workspace-write` in its `accept_edits` mode (workspace
+and `/tmp` edits allowed, sensitive paths still asked about, so refused) and
+`danger-full-access` in `dont_ask`.
+
+A Hermes steer is sent as `/steer <text>` while the turn runs. Hermes injects
+it into the active turn and confirms it; the confirmation never reaches the
+transcript, and a steer Hermes does not confirm fails instead of becoming a
+new turn. OpenClaw runs reject steers; interrupt the turn and send a prompt.
+`openclaw acp` needs the OpenClaw Gateway running on the same machine. Use
+`--hermes-path` or `RUDDR_HERMES_PATH`, and `--openclaw-path` or
+`RUDDR_OPENCLAW_PATH`, to select the executables; otherwise Ruddr looks for
+`hermes` and `openclaw` on `PATH`. Hermes 0.18 needs its ACP extra
+(`pip install -e '.[acp]'` in the Hermes checkout); `hermes acp --check`
+reports whether it is installed.
 
 Run Factory Droid the same way:
 
@@ -926,7 +963,7 @@ status, duration, working directory, input, and the last lines of output.
 Chat renders agent Markdown (headings, lists, quotes, inline code, and fenced
 code) and shows reasoning and tool calls inline. The text is live: Codex
 reports partial assistant text as `item/agentMessage/delta`, and the Claude,
-OpenCode, Pi, omp, and Droid adapters emit the same notification. Chat renders each
+OpenCode, Pi, omp, Droid, Hermes, and OpenClaw adapters emit the same notification. Chat renders each
 completed line as Markdown and shows the line still arriving as plain text, so
 a message appears while the model writes it. Your steers appear in the
 transcript too. While the selected session works, a spinner shows in the
@@ -1211,7 +1248,7 @@ Ruddr currently depends on:
 - `turn/interrupt`
 - `turn/started`, `item/*`, and `turn/completed` notifications
 
-The Claude, OpenCode 2, Pi, omp, and Droid adapters implement the lifecycle subset
+The Claude, OpenCode 2, Pi, omp, Droid, Hermes, and OpenClaw adapters implement the lifecycle subset
 needed by `ruddr run`, `steer`, `prompt`, and `interrupt`. They do not
 implement the general Codex app-server surface. Sessions launched by another process do not
 become live-observable through Ruddr. Each adapter forwards summarized or
@@ -1226,7 +1263,8 @@ steer provider sessions afterwards.
 ````text
 Set up Ruddr (https://github.com/safzanpirani/ruddr) on this machine, verify
 it works, and learn how to operate it. Ruddr runs Codex, Claude Code,
-OpenCode 2, Pi, omp, or Factory Droid as an observable, steerable child process. It writes every
+OpenCode 2, Pi, omp, Factory Droid, Hermes Agent, or OpenClaw as an observable,
+steerable child process. It writes every
 event to
 disk and exposes a control socket so you can redirect or stop a turn while it
 runs. Follow Part 1 in order and stop at the first failure; keep Part 2 as your
@@ -1236,8 +1274,8 @@ PART 1: INSTALL AND VERIFY
 
 1. Check prerequisites. Report the version of each and stop if any is missing:
    - At least one provider CLI: `codex --version`, `claude --version`,
-     `opencode2 --version`, `pi --version`, `omp --version`, or
-     `droid --version`.
+     `opencode2 --version`, `pi --version`, `omp --version`,
+     `droid --version`, `hermes --version`, or `openclaw --version`.
    - For the npm route: Node 18 or newer (`node --version`).
    - For a source build: Rust stable 1.88 or newer (`cargo --version`).
    Ruddr is one native binary. It does not need Bun or Go.
@@ -1299,7 +1337,7 @@ Trust output.md only when `ruddr status --json` says "completed"; on
 be fresh per run. Prompts always come from --prompt-file, never argv.
 
 Starting runs. Useful `ruddr run` flags:
-   --provider codex|claude|opencode|pi|omp|droid   default codex
+   --provider codex|claude|opencode|pi|omp|droid|hermes|openclaw   default codex
    --model / --effort           `ruddr models --json` lists configured choices
                                OpenCode maps effort to its model variant
    --sandbox                    read-only | workspace-write (default) |

@@ -1,5 +1,5 @@
 //! Provider selection. Codex speaks the app-server protocol natively; Claude
-//! Code, OpenCode, Pi, omp, and Factory Droid run behind `ruddr app-server
+//! Code, OpenCode, Pi, omp, Factory Droid, Hermes, and OpenClaw run behind `ruddr app-server
 //! --provider NAME`, which the runner starts as its own child. This module
 //! names the providers, validates user input, and finds the provider
 //! executables the adapters drive.
@@ -15,17 +15,21 @@ pub enum Provider {
     Pi,
     Omp,
     Droid,
+    Hermes,
+    OpenClaw,
 }
 
 impl Provider {
     /// Every provider, in the order usage text lists them.
-    pub const ALL: [Provider; 6] = [
+    pub const ALL: [Provider; 8] = [
         Provider::Codex,
         Provider::Claude,
         Provider::OpenCode,
         Provider::Pi,
         Provider::Omp,
         Provider::Droid,
+        Provider::Hermes,
+        Provider::OpenClaw,
     ];
 
     /// Parses a provider name. An empty name means Codex, the default.
@@ -37,8 +41,10 @@ impl Provider {
             "pi" => Ok(Provider::Pi),
             "omp" => Ok(Provider::Omp),
             "droid" => Ok(Provider::Droid),
+            "hermes" => Ok(Provider::Hermes),
+            "openclaw" => Ok(Provider::OpenClaw),
             other => Err(Error::usage(format!(
-                "unsupported provider {other:?}; expected codex, claude, opencode, pi, omp, or droid"
+                "unsupported provider {other:?}; expected codex, claude, opencode, pi, omp, droid, hermes, or openclaw"
             ))),
         }
     }
@@ -51,6 +57,8 @@ impl Provider {
             Provider::Pi => "pi",
             Provider::Omp => "omp",
             Provider::Droid => "droid",
+            Provider::Hermes => "hermes",
+            Provider::OpenClaw => "openclaw",
         }
     }
 
@@ -74,6 +82,8 @@ impl Provider {
             Provider::Pi => Some("pi-path"),
             Provider::Omp => Some("omp-path"),
             Provider::Droid => Some("droid-path"),
+            Provider::Hermes => Some("hermes-path"),
+            Provider::OpenClaw => Some("openclaw-path"),
         }
     }
 
@@ -87,6 +97,8 @@ impl Provider {
             Provider::Pi => Some("RUDDR_PI_PATH"),
             Provider::Omp => Some("RUDDR_OMP_PATH"),
             Provider::Droid => Some("RUDDR_DROID_PATH"),
+            Provider::Hermes => Some("RUDDR_HERMES_PATH"),
+            Provider::OpenClaw => Some("RUDDR_OPENCLAW_PATH"),
         }
     }
 
@@ -100,6 +112,8 @@ impl Provider {
             Provider::Pi => &["pi"],
             Provider::Omp => &["omp"],
             Provider::Droid => &["droid"],
+            Provider::Hermes => &["hermes"],
+            Provider::OpenClaw => &["openclaw"],
         }
     }
 }
@@ -126,8 +140,8 @@ pub fn previous_env_name(name: &str) -> String {
 /// The provider executable an adapter run should drive.
 ///
 /// The explicit flag wins, then the environment. Claude may resolve to
-/// `None`, which lets the adapter find `claude` itself. OpenCode, Pi, omp,
-/// and Droid also search `PATH` and fail when nothing is found.
+/// `None`, which lets the adapter find `claude` itself. The other adapters
+/// also search `PATH` and fail when nothing is found.
 pub fn resolve_executable(provider: Provider, flag: &str) -> Result<Option<String>> {
     if !flag.is_empty() {
         return Ok(Some(flag.to_string()));
@@ -229,7 +243,19 @@ mod tests {
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&second).unwrap();
         let path = std::env::join_paths([Path::new(""), &first, &second]).unwrap();
-        for name in ["npm", "bun", "codex", "claude", "opencode2", "opencode-next", "pi", "omp", "droid"] {
+        for name in [
+            "npm",
+            "bun",
+            "codex",
+            "claude",
+            "opencode2",
+            "opencode-next",
+            "pi",
+            "omp",
+            "droid",
+            "hermes",
+            "openclaw",
+        ] {
             std::fs::write(first.join(format!("{name}.CMD")), "shim").unwrap();
             std::fs::write(second.join(format!("{name}.EXE")), "exe").unwrap();
             assert_eq!(
@@ -276,7 +302,11 @@ mod tests {
         }
         let error = Provider::parse("other").unwrap_err();
         assert_eq!(error.exit, crate::Exit::Usage);
-        assert!(error.message.contains("expected codex, claude, opencode, pi, omp, or droid"));
+        assert!(
+            error
+                .message
+                .contains("expected codex, claude, opencode, pi, omp, droid, hermes, or openclaw")
+        );
         assert!(Provider::Droid.supports_fork() && !Provider::Pi.supports_fork() && !Provider::Omp.supports_fork());
     }
 
