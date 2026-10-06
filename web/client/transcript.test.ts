@@ -110,6 +110,13 @@ describe("file edits", () => {
     expect(fileEditsFromItem({ input: { filePath: "o.ts", oldString: "p", newString: "q" } })).toEqual([{ path: "o.ts", kind: "update", fragment: true, oldText: "p", newText: "q" }]);
   });
 
+  test("omp hashline edits yield no empty fragments", () => {
+    const hashline = { path: "h.ts", edits: [{ op: "replace", pos: "2#VY", lines: ["new"] }] };
+    expect(fileEditsFromItem({ input: hashline })).toEqual([{ path: "h.ts", kind: "update" }]);
+    const landed = fileEditsFromItem({ input: hashline, changes: [{ path: "h.ts", kind: { type: "update" }, diff: "@@ -2,1 +2,1 @@\n-old\n+new\n" }] });
+    expect(landed).toEqual([{ path: "h.ts", kind: "update", diff: "@@ -2,1 +2,1 @@\n-old\n+new\n" }]);
+  });
+
   test("splits apply_patch envelopes", () => {
     const edits = editsFromPatchText("*** Begin Patch\n*** Add File: n.txt\n+hi\n*** Update File: u.txt\n@@\n-a\n+b\n*** End Patch");
     expect(edits).toEqual([

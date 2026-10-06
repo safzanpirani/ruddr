@@ -678,19 +678,21 @@ mod tests {
             {"source":"pi", "path":"/pi session.jsonl", "resume":"pi --session /pi session.jsonl"},
             {"source":"opencode", "path":"opencode:///db#ses_a", "resume":"opencode2 -s ses_a"},
             {"source":"droid", "path":"/d.jsonl", "resume":"droid --resume d"},
-            {"source":"codex", "path":"/no-resume.jsonl", "resume":null}
+            {"source":"codex", "path":"/no-resume.jsonl", "resume":null},
+            {"source":"omp", "path":"/omp session.jsonl", "resume":"omp --resume /omp session.jsonl"}
         ]});
         let Reply::Sessions(hits) = parse_reply(&Request::Find("match".into()), &hits.to_string()).unwrap() else {
             panic!()
         };
         assert_eq!(
             hits.iter().map(|h| h.provider.as_str()).collect::<Vec<_>>(),
-            ["claude", "codex", "pi", "opencode", "droid", "codex"]
+            ["claude", "codex", "pi", "opencode", "droid", "codex", "omp"]
         );
         assert_eq!(hits[0].excerpt, "MATCH");
         assert_eq!(hits[2].session_id, "/pi session.jsonl");
         assert_eq!(hits[3].session_id, "ses_a");
         assert!(hits[5].session_id.is_empty());
+        assert_eq!(hits[6].session_id, "/omp session.jsonl");
     }
 
     #[test]

@@ -462,7 +462,7 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     if visible.is_empty() {
         let scratch = std::env::current_dir().unwrap_or_default().join(".scratch");
         let text = if history == Some(true) {
-            "Reading Codex, Claude, Pi,\nOpenCode, and Droid sessions…".to_string()
+            "Reading Codex, Claude, Pi, omp,\nOpenCode, and Droid sessions…".to_string()
         } else if edits_only && scanning {
             "Looking for sessions\nthat edited files…".to_string()
         } else if edits_only {

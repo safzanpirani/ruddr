@@ -3,6 +3,7 @@
 //! files, exit codes, control messages, JSON-RPC framing) and pure helpers.
 
 pub mod control;
+pub mod diff;
 pub mod duration;
 pub mod error;
 pub mod fsutil;

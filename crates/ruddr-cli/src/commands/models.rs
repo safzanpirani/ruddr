@@ -9,7 +9,7 @@ use ruddr_core::{Error, Result};
 use std::io::Write;
 use std::path::PathBuf;
 
-const PROVIDERS: [&str; 5] = ["codex", "claude", "opencode", "pi", "droid"];
+const PROVIDERS: [&str; 6] = ["codex", "claude", "opencode", "pi", "omp", "droid"];
 
 /// One catalog entry as `models` lists it.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -164,7 +164,7 @@ fn edit(out: &mut dyn Write, catalog: &dyn Catalog, action: &str, argv: &[String
     };
     if !PROVIDERS.contains(&provider.as_str()) {
         return Err(Error::usage(format!(
-            "unsupported provider {provider:?}; expected codex, claude, opencode, pi, or droid"
+            "unsupported provider {provider:?}; expected codex, claude, opencode, pi, omp, or droid"
         )));
     }
     let mut set_config = Vec::new();

@@ -1,5 +1,5 @@
-//! JSONL parsing and the tree walks for Claude and Pi, which record every
-//! branch of a conversation in one file.
+//! JSONL parsing and the tree walks for Claude, Pi, and omp, which record
+//! every branch of a conversation in one file.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -35,9 +35,13 @@ pub fn claude_branch(entries: Vec<Value>) -> Vec<Value> {
     walk(&entries, leaf, &by_id, &["parentUuid", "logicalParentUuid"])
 }
 
-/// Pi's active branch: from the last entry back through `parentId`.
+/// Pi's active branch: from the last entry back through `parentId`. The
+/// `session` header and omp's `title` row are not tree nodes.
 pub fn pi_branch(entries: Vec<Value>) -> Vec<Value> {
-    let tree: Vec<Value> = entries.into_iter().filter(|e| id(e, "type") != Some("session")).collect();
+    let tree: Vec<Value> = entries
+        .into_iter()
+        .filter(|e| !matches!(id(e, "type"), Some("session" | "title")))
+        .collect();
     let by_id: HashMap<String, usize> = tree
         .iter()
         .enumerate()

@@ -57,11 +57,13 @@ impl PiClient for Arc<FakePiClient> {
 }
 
 fn adapter(client: &Arc<FakePiClient>) -> (Arc<PiAdapter>, Arc<Collector>) {
+    flavored(Flavor::Pi, client)
+}
+
+fn flavored(flavor: Flavor, client: &Arc<FakePiClient>) -> (Arc<PiAdapter>, Arc<Collector>) {
     let emitted = Collector::new();
-    (
-        Arc::new(PiAdapter::with_client(emitted.clone(), "pi".into(), Box::new(client.clone()))),
-        emitted,
-    )
+    let adapter = PiAdapter::with_client(flavor, emitted.clone(), flavor.slug().into(), Box::new(client.clone()));
+    (Arc::new(adapter), emitted)
 }
 
 fn call(adapter: &PiAdapter, emitted: &Collector, id: i64, method: &str, params: Value) {
@@ -221,6 +223,7 @@ fn a_process_failure_fails_the_turn_and_interrupt_aborts() {
 #[test]
 fn builds_pi_argv_for_each_session_mode() {
     let mut config = PiThread {
+        flavor: Flavor::Pi,
         id: "sid".into(),
         cwd: "/w".into(),
         model: Some("m".into()),
@@ -260,10 +263,11 @@ fn rejects_interactive_extension_ui_and_times_out_unanswered_commands() {
     let fake = crate::testing::FakeDir::new();
     // The 500ms deadline is what this test asserts on; starting the fake gets
     // a generous budget of its own.
-    let client = SubprocessPiClient::new(Duration::from_millis(500), Duration::from_secs(30));
+    let client = SubprocessPiClient::new(Flavor::Pi, Duration::from_millis(500), Duration::from_secs(30));
     let events = Arc::new(Mutex::new(Vec::<Map<String, Value>>::new()));
     let sink = events.clone();
     let config = PiThread {
+        flavor: Flavor::Pi,
         id: "fresh".into(),
         cwd: fake.dir.to_string_lossy().into_owned(),
         model: None,
@@ -306,4 +310,181 @@ fn rejects_interactive_extension_ui_and_times_out_unanswered_commands() {
         "Pi RPC process is not running"
     );
     client.close();
+}
+
+#[test]
+fn builds_omp_argv_for_each_session_mode() {
+    let mut config = PiThread {
+        flavor: Flavor::Omp,
+        id: "sid".into(),
+        cwd: "/w".into(),
+        model: Some("anthropic/m".into()),
+        effort: Some("high".into()),
+        executable: "omp".into(),
+        sandbox: "read-only".into(),
+        ephemeral: false,
+        resumed: false,
+    };
+    assert_eq!(
+        pi_args(&config),
+        [
+            "--mode",
+            "rpc",
+            "--auto-approve",
+            "--allow-home",
+            "--model",
+            "anthropic/m",
+            "--thinking",
+            "high",
+            "--no-extensions",
+            "--tools",
+            "read,grep,find,glob"
+        ]
+    );
+    config.resumed = true;
+    config.sandbox = "workspace-write".into();
+    config.model = None;
+    config.effort = None;
+    assert_eq!(pi_args(&config)[4..], ["--resume", "sid"]);
+    config.ephemeral = true;
+    assert_eq!(pi_args(&config)[4..], ["--no-session"]);
+}
+
+#[test]
+fn omp_turns_end_at_session_settled_not_agent_settled() {
+    let client = FakePiClient::new();
+    let (adapter, emitted) = flavored(Flavor::Omp, &client);
+    start(&adapter, &emitted, "workspace-write");
+    assert_eq!(emitted.result(json!(1))["serverInfo"]["name"], "ruddr-omp-adapter");
+    client.event(json!({ "type": "message_end", "message": { "role": "assistant", "content": [
+        { "type": "text", "text": "OMP_OK" } ], "stopReason": "stop" } }));
+    client.event(json!({ "type": "agent_settled" }));
+    client.event(
+        json!({ "type": "prompt_result", "id": "ruddr-omp-1", "agentInvoked": true, "status": "completed", "sessionSettled": true }),
+    );
+    thread::sleep(Duration::from_millis(30));
+    assert!(emitted.notification("turn/completed").is_none());
+    client.event(json!({ "type": "session_settled" }));
+    emitted.wait_for_method("turn/completed");
+    assert_eq!(emitted.notifications("turn/completed").len(), 1);
+    let items = emitted.completed_items();
+    assert_eq!(items.iter().find(|i| i["type"] == "agentMessage").unwrap()["text"], "OMP_OK");
+    assert_eq!(
+        emitted.notification("turn/completed").unwrap()["params"]["turn"]["status"],
+        "completed"
+    );
+    adapter.close();
+}
+
+#[test]
+fn omp_edits_report_file_changes_from_the_numbered_diff() {
+    let client = FakePiClient::new();
+    let (adapter, emitted) = flavored(Flavor::Omp, &client);
+    start(&adapter, &emitted, "workspace-write");
+    let args = json!({ "path": "/w/a.rs", "edits": [{ "op": "replace", "pos": "2#VY", "lines": ["new"] }] });
+    client.event(json!({ "type": "tool_execution_start", "toolCallId": "e1", "toolName": "edit", "args": args }));
+    client.event(
+        json!({ "type": "tool_execution_end", "toolCallId": "e1", "toolName": "edit", "isError": false,
+        "result": { "content": [{ "type": "text", "text": "Updated a.rs" }],
+            "details": { "diff": " 1|keep\n-2|old\n+2|new", "op": "update" } } }),
+    );
+    client.event(json!({ "type": "tool_execution_start", "toolCallId": "r1", "toolName": "read", "args": { "path": "/w/a.rs" } }));
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while emitted.notifications("item/started").len() < 2 {
+        assert!(std::time::Instant::now() < deadline, "tool events never arrived");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let started = emitted.notification("item/started").unwrap();
+    assert_eq!(started["params"]["item"]["type"], "fileChange");
+    assert!(started["params"]["item"].get("changes").is_none());
+    let edit = emitted.completed_items().into_iter().find(|i| i["id"] == "e1").unwrap();
+    assert_eq!(
+        (edit["type"].as_str(), edit["status"].as_str()),
+        (Some("fileChange"), Some("completed"))
+    );
+    assert_eq!(
+        edit["changes"],
+        json!([{ "path": "/w/a.rs", "kind": { "type": "update" }, "diff": "@@ -1,2 +1,2 @@\n keep\n-old\n+new\n" }])
+    );
+    let reads = emitted.notifications("item/started");
+    assert_eq!(reads.last().unwrap()["params"]["item"]["type"], "toolCall");
+    adapter.close();
+}
+
+#[test]
+fn omp_prompt_that_never_reaches_the_agent_fails_the_turn_with_its_error() {
+    let client = FakePiClient::new();
+    let (adapter, emitted) = flavored(Flavor::Omp, &client);
+    start(&adapter, &emitted, "workspace-write");
+    client.event(json!({ "type": "prompt_result", "agentInvoked": false, "status": "error",
+        "error": { "message": "No API key for anthropic", "retryable": false }, "sessionSettled": true }));
+    emitted.wait_for_method("turn/completed");
+    let turn = &emitted.notification("turn/completed").unwrap()["params"]["turn"];
+    assert_eq!(turn["status"], "failed");
+    assert_eq!(turn["error"]["message"], "No API key for anthropic");
+    adapter.close();
+}
+
+#[test]
+fn omp_reports_the_prompt_error_when_the_model_fails() {
+    let client = FakePiClient::new();
+    let (adapter, emitted) = flavored(Flavor::Omp, &client);
+    let (thread_id, turn_id) = start(&adapter, &emitted, "workspace-write");
+    client.event(json!({ "type": "prompt_result", "agentInvoked": true, "status": "error",
+        "error": { "message": "overloaded", "retryable": true }, "sessionSettled": false }));
+    client.event(json!({ "type": "session_settled" }));
+    emitted.wait_for_method("turn/completed");
+    let turn = &emitted.notification("turn/completed").unwrap()["params"]["turn"];
+    assert_eq!(
+        (turn["status"].as_str(), turn["error"]["message"].as_str()),
+        (Some("failed"), Some("overloaded"))
+    );
+
+    // The next turn starts clean; an aborted prompt reads as interrupted.
+    call(
+        &adapter,
+        &emitted,
+        5,
+        "turn/start",
+        json!({ "threadId": thread_id, "input": [{ "type": "text", "text": "again" }] }),
+    );
+    assert_ne!(emitted.result(json!(5))["turn"]["id"], json!(turn_id));
+    client.event(json!({ "type": "prompt_result", "agentInvoked": true, "status": "aborted", "sessionSettled": true }));
+    client.event(json!({ "type": "session_settled" }));
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while emitted.notifications("turn/completed").len() < 2 {
+        assert!(std::time::Instant::now() < deadline, "second turn never completed");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        emitted.notifications("turn/completed")[1]["params"]["turn"]["status"],
+        "interrupted"
+    );
+    adapter.close();
+}
+
+#[cfg(unix)]
+#[test]
+fn omp_client_takes_the_session_id_omp_reports() {
+    let fake = crate::testing::FakeDir::new();
+    let client = SubprocessPiClient::new(Flavor::Omp, Duration::from_secs(5), Duration::from_secs(30));
+    let config = PiThread {
+        flavor: Flavor::Omp,
+        id: "ignored".into(),
+        cwd: fake.dir.to_string_lossy().into_owned(),
+        model: None,
+        effort: None,
+        executable: fake.script("pi"),
+        sandbox: "workspace-write".into(),
+        ephemeral: false,
+        resumed: false,
+    };
+    let session = client.start(&config, Arc::new(|_| {})).unwrap();
+    assert_eq!(session, "pi_test_session");
+    assert_eq!(fake.argv(), ["--mode", "rpc", "--auto-approve", "--allow-home"]);
+    client.close();
+    assert_eq!(
+        client.send(json!({ "type": "get_state" })).unwrap_err().message,
+        "omp RPC process is not running"
+    );
 }

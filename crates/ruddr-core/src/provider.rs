@@ -1,5 +1,5 @@
 //! Provider selection. Codex speaks the app-server protocol natively; Claude
-//! Code, OpenCode, Pi, and Factory Droid run behind `ruddr app-server
+//! Code, OpenCode, Pi, omp, and Factory Droid run behind `ruddr app-server
 //! --provider NAME`, which the runner starts as its own child. This module
 //! names the providers, validates user input, and finds the provider
 //! executables the adapters drive.
@@ -13,12 +13,20 @@ pub enum Provider {
     Claude,
     OpenCode,
     Pi,
+    Omp,
     Droid,
 }
 
 impl Provider {
     /// Every provider, in the order usage text lists them.
-    pub const ALL: [Provider; 5] = [Provider::Codex, Provider::Claude, Provider::OpenCode, Provider::Pi, Provider::Droid];
+    pub const ALL: [Provider; 6] = [
+        Provider::Codex,
+        Provider::Claude,
+        Provider::OpenCode,
+        Provider::Pi,
+        Provider::Omp,
+        Provider::Droid,
+    ];
 
     /// Parses a provider name. An empty name means Codex, the default.
     pub fn parse(name: &str) -> Result<Provider> {
@@ -27,9 +35,10 @@ impl Provider {
             "claude" => Ok(Provider::Claude),
             "opencode" => Ok(Provider::OpenCode),
             "pi" => Ok(Provider::Pi),
+            "omp" => Ok(Provider::Omp),
             "droid" => Ok(Provider::Droid),
             other => Err(Error::usage(format!(
-                "unsupported provider {other:?}; expected codex, claude, opencode, pi, or droid"
+                "unsupported provider {other:?}; expected codex, claude, opencode, pi, omp, or droid"
             ))),
         }
     }
@@ -40,6 +49,7 @@ impl Provider {
             Provider::Claude => "claude",
             Provider::OpenCode => "opencode",
             Provider::Pi => "pi",
+            Provider::Omp => "omp",
             Provider::Droid => "droid",
         }
     }
@@ -62,6 +72,7 @@ impl Provider {
             Provider::Claude => Some("claude-path"),
             Provider::OpenCode => Some("opencode-path"),
             Provider::Pi => Some("pi-path"),
+            Provider::Omp => Some("omp-path"),
             Provider::Droid => Some("droid-path"),
         }
     }
@@ -74,6 +85,7 @@ impl Provider {
             Provider::Claude => Some("RUDDR_CLAUDE_PATH"),
             Provider::OpenCode => Some("RUDDR_OPENCODE_PATH"),
             Provider::Pi => Some("RUDDR_PI_PATH"),
+            Provider::Omp => Some("RUDDR_OMP_PATH"),
             Provider::Droid => Some("RUDDR_DROID_PATH"),
         }
     }
@@ -86,6 +98,7 @@ impl Provider {
             Provider::Claude => &[],
             Provider::OpenCode => &["opencode2", "opencode-next"],
             Provider::Pi => &["pi"],
+            Provider::Omp => &["omp"],
             Provider::Droid => &["droid"],
         }
     }
@@ -113,8 +126,8 @@ pub fn previous_env_name(name: &str) -> String {
 /// The provider executable an adapter run should drive.
 ///
 /// The explicit flag wins, then the environment. Claude may resolve to
-/// `None`, which lets the adapter find `claude` itself. OpenCode, Pi, and
-/// Droid also search `PATH` and fail when nothing is found.
+/// `None`, which lets the adapter find `claude` itself. OpenCode, Pi, omp,
+/// and Droid also search `PATH` and fail when nothing is found.
 pub fn resolve_executable(provider: Provider, flag: &str) -> Result<Option<String>> {
     if !flag.is_empty() {
         return Ok(Some(flag.to_string()));
@@ -216,7 +229,7 @@ mod tests {
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&second).unwrap();
         let path = std::env::join_paths([Path::new(""), &first, &second]).unwrap();
-        for name in ["npm", "bun", "codex", "claude", "opencode2", "opencode-next", "pi", "droid"] {
+        for name in ["npm", "bun", "codex", "claude", "opencode2", "opencode-next", "pi", "omp", "droid"] {
             std::fs::write(first.join(format!("{name}.CMD")), "shim").unwrap();
             std::fs::write(second.join(format!("{name}.EXE")), "exe").unwrap();
             assert_eq!(
@@ -263,8 +276,8 @@ mod tests {
         }
         let error = Provider::parse("other").unwrap_err();
         assert_eq!(error.exit, crate::Exit::Usage);
-        assert!(error.message.contains("expected codex, claude, opencode, pi, or droid"));
-        assert!(Provider::Droid.supports_fork() && !Provider::Pi.supports_fork());
+        assert!(error.message.contains("expected codex, claude, opencode, pi, omp, or droid"));
+        assert!(Provider::Droid.supports_fork() && !Provider::Pi.supports_fork() && !Provider::Omp.supports_fork());
     }
 
     #[test]

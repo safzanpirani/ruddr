@@ -1,8 +1,8 @@
 //! Session history from every agent on this machine: Codex, Claude Code, Pi,
-//! OpenCode, and Factory Droid, whether or not Ruddr started the session.
+//! omp, OpenCode, and Factory Droid, whether or not Ruddr started the session.
 //!
-//! The parsers follow dejavu's (`~/Development/projects/dejavu`): Claude and
-//! Pi transcripts are trees, so only the active branch is read; Codex,
+//! The parsers follow dejavu's (`~/Development/projects/dejavu`): Claude,
+//! Pi, and omp transcripts are trees, so only the active branch is read; Codex,
 //! Droid, and OpenCode are linear. File edits are rebuilt as unified diffs:
 //! Codex records them, Claude records exact patches beside its edit tools,
 //! and the other providers' edit-tool inputs are diffed here.
@@ -20,6 +20,7 @@ mod pi;
 mod stores;
 
 pub use diff::{line_diff, unified_diff};
+pub use ruddr_core::diff::numbered_diff;
 pub use stores::Stores;
 
 use serde_json::Value;
@@ -30,18 +31,27 @@ pub enum Provider {
     Codex,
     Claude,
     Pi,
+    Omp,
     OpenCode,
     Droid,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 5] = [Provider::Codex, Provider::Claude, Provider::Pi, Provider::OpenCode, Provider::Droid];
+    pub const ALL: [Provider; 6] = [
+        Provider::Codex,
+        Provider::Claude,
+        Provider::Pi,
+        Provider::Omp,
+        Provider::OpenCode,
+        Provider::Droid,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Provider::Codex => "codex",
             Provider::Claude => "claude",
             Provider::Pi => "pi",
+            Provider::Omp => "omp",
             Provider::OpenCode => "opencode",
             Provider::Droid => "droid",
         }
@@ -118,7 +128,7 @@ pub fn list_sessions(stores: &Stores, limit: usize) -> Vec<SessionInfo> {
             let mut info = match provider {
                 Provider::Claude | Provider::Droid => claude::info(provider, &path),
                 Provider::Codex => codex::info(&path),
-                Provider::Pi => pi::info(&path),
+                Provider::Pi | Provider::Omp => pi::info(provider, &path),
                 Provider::OpenCode => None,
             }?;
             info.updated_ms = mtime;
@@ -147,7 +157,7 @@ pub fn find_session(stores: &Stores, provider: Provider, id: &str) -> Option<Ses
             let mut info = match provider {
                 Provider::Claude | Provider::Droid => claude::info(provider, &path),
                 Provider::Codex => codex::info(&path),
-                Provider::Pi => pi::info(&path),
+                Provider::Pi | Provider::Omp => pi::info(provider, &path),
                 Provider::OpenCode => None,
             }?;
             info.updated_ms = mtime;
@@ -164,7 +174,7 @@ pub fn load(info: &SessionInfo) -> Result<Transcript, String> {
             match provider {
                 Provider::Claude | Provider::Droid => claude::events(provider, &text),
                 Provider::Codex => codex::events(&text),
-                Provider::Pi => pi::events(&text),
+                Provider::Pi | Provider::Omp => pi::events(&text),
                 Provider::OpenCode => unreachable!(),
             }
         }

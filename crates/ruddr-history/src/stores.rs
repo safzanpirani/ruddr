@@ -2,7 +2,10 @@
 //! home-directory default the way the agent itself resolves it: Claude Code
 //! `$CLAUDE_CONFIG_DIR/projects`, Codex `$CODEX_HOME/sessions`, Pi
 //! `$PI_CODING_AGENT_DIR/sessions` (otherwise every `~/.pi/*/sessions`
-//! profile), OpenCode `$OPENCODE_DB` or `$XDG_DATA_HOME/opencode/*.db`, and
+//! profile), omp `~/.omp/agent/sessions` plus each `~/.omp/profiles/*`
+//! profile and `$XDG_DATA_HOME/omp/sessions` (omp also honors
+//! `$PI_CODING_AGENT_DIR`, which this reads as Pi's), OpenCode
+//! `$OPENCODE_DB` or `$XDG_DATA_HOME/opencode/*.db`, and
 //! Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (Droid's replacement for
 //! the home directory, not a Factory directory) or `~/.factory/sessions`.
 
@@ -15,6 +18,7 @@ pub struct Stores {
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
     pub pi: Vec<PathBuf>,
+    pub omp: Vec<PathBuf>,
     pub opencode: Vec<PathBuf>,
     pub droid: Option<PathBuf>,
 }
@@ -53,6 +57,23 @@ impl Stores {
                 profiles
             }
         };
+        let omp_root = home.join(".omp");
+        let mut omp: Vec<PathBuf> = std::fs::read_dir(omp_root.join("profiles"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path().join("agent").join("sessions"))
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        omp.sort();
+        let omp_xdg = env("XDG_DATA_HOME").map(|dir| PathBuf::from(dir).join("omp").join("sessions"));
+        for dir in [Some(omp_root.join("agent").join("sessions")), omp_xdg].into_iter().flatten().rev() {
+            if dir.is_dir() {
+                omp.insert(0, dir);
+            }
+        }
         let opencode_data = configured("XDG_DATA_HOME", home.join(".local").join("share")).join("opencode");
         let opencode = match env("OPENCODE_DB") {
             Some(db) if db == ":memory:" => Vec::new(),
@@ -72,6 +93,7 @@ impl Stores {
             claude: existing(configured("CLAUDE_CONFIG_DIR", home.join(".claude")).join("projects")),
             codex: existing(configured("CODEX_HOME", home.join(".codex")).join("sessions")),
             pi,
+            omp,
             opencode,
             droid: existing(
                 configured("FACTORY_HOME_OVERRIDE", home.to_path_buf())
@@ -95,6 +117,9 @@ impl Stores {
         }
         for root in &self.pi {
             collect(root, 2, Provider::Pi, &mut files);
+        }
+        for root in &self.omp {
+            collect(root, 2, Provider::Omp, &mut files);
         }
         if let Some(root) = &self.droid {
             collect(root, 2, Provider::Droid, &mut files);
@@ -131,13 +156,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn variables_replace_defaults_and_pi_profiles_are_found() {
+    fn variables_replace_defaults_and_pi_and_omp_profiles_are_found() {
         let home = std::env::temp_dir().join(format!("ruddr-history-stores-{}", ruddr_core::fsutil::random_hex(4)));
         for dir in [
             ".claude/projects/-w/",
             ".codex/sessions/2026/10/02",
             ".pi/agent/sessions/--w--",
             ".pi/juna/sessions/--w--",
+            ".omp/agent/sessions/--w--",
+            ".omp/profiles/work/agent/sessions/--w--",
             ".factory/sessions/-w",
             "custom/projects/-w",
         ] {
@@ -148,6 +175,8 @@ mod tests {
             ".codex/sessions/2026/10/02/rollout-x.jsonl",
             ".pi/agent/sessions/--w--/p.jsonl",
             ".pi/juna/sessions/--w--/q.jsonl",
+            ".omp/agent/sessions/--w--/o.jsonl",
+            ".omp/profiles/work/agent/sessions/--w--/w.jsonl",
             ".factory/sessions/-w/d.jsonl",
             ".factory/sessions/-w/d.settings.json",
             "custom/projects/-w/c.jsonl",
@@ -157,6 +186,10 @@ mod tests {
         let none = |_: &str| None;
         let stores = Stores::from_env(&none, &home);
         assert_eq!(stores.pi.len(), 2, "both Pi profiles");
+        assert_eq!(
+            stores.omp,
+            [home.join(".omp/agent/sessions"), home.join(".omp/profiles/work/agent/sessions")]
+        );
         let mut found: Vec<(Provider, String)> = stores
             .transcript_files()
             .into_iter()
@@ -170,6 +203,8 @@ mod tests {
                 (Provider::Claude, "a.jsonl".into()),
                 (Provider::Pi, "p.jsonl".into()),
                 (Provider::Pi, "q.jsonl".into()),
+                (Provider::Omp, "o.jsonl".into()),
+                (Provider::Omp, "w.jsonl".into()),
                 (Provider::Droid, "d.jsonl".into()),
             ]
         );

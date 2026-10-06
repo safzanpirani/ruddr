@@ -271,7 +271,7 @@ async fn rejects_api_calls_without_the_token() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let meta = body_json(response).await;
     assert_eq!(meta["theme"], "ruddr");
-    assert_eq!(meta["providers"], json!(["codex", "claude", "opencode", "pi", "droid"]));
+    assert_eq!(meta["providers"], json!(["codex", "claude", "opencode", "pi", "omp", "droid"]));
     assert!(meta["themes"].as_array().unwrap().len() > 10);
     assert!(meta.get("updateAvailable").is_none());
 }

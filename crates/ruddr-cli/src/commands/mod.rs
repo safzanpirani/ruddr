@@ -80,7 +80,7 @@ pub fn usage_text(name: &str) -> String {
         "Ruddr {version} - live steering for coding agents
 
 Usage:
-  {name} run [--provider codex|claude|opencode|pi|droid] --prompt-file FILE [--state-dir DIR] [options]
+  {name} run [--provider codex|claude|opencode|pi|omp|droid] --prompt-file FILE [--state-dir DIR] [options]
          [-- APP_SERVER_COMMAND...]
   {name} thread list|search|read|turns|fork|name|archive|unarchive [--provider NAME] [options]
   {name} tui [--root DIR] [--state-dir DIR] [--all] [--theme NAME]

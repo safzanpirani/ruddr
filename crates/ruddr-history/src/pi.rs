@@ -1,13 +1,18 @@
-//! Pi (`~/.pi/<profile>/sessions/--<project>--/<time>_<id>.jsonl`). The
-//! first row is the session header with `id` and `cwd`; message rows form a
-//! tree through `parentId`, and only the active branch is read.
+//! Pi (`~/.pi/<profile>/sessions/--<project>--/<time>_<id>.jsonl`) and omp
+//! (`~/.omp/agent/sessions/...`, the same layout). The session header row
+//! has `id` and `cwd`; omp writes a `title` row before it. Message rows form
+//! a tree through `parentId`, and only the active branch is read.
+//!
+//! omp's hashline `edit` arguments name anchored lines rather than old and
+//! new text, so its edits come from the tool result instead: `details.diff`
+//! (numbered rows), or `details.perFileResults` for a multi-file edit.
 
-use crate::{Event, Provider, SessionInfo, edit_from_tool, jsonl, str_field, text_of, title_from};
+use crate::{ChangeKind, Event, Provider, SessionInfo, diff, edit_from_tool, jsonl, str_field, text_of, title_from};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-pub fn info(path: &Path) -> Option<SessionInfo> {
+pub fn info(provider: Provider, path: &Path) -> Option<SessionInfo> {
     let head = crate::read_head(path, 256 * 1024)?;
     let entries = jsonl::parse(&head);
     let header = entries.iter().find(|e| str_field(e, "type") == Some("session"));
@@ -16,17 +21,25 @@ pub fn info(path: &Path) -> Option<SessionInfo> {
         stem.rsplit('_').next().unwrap_or(&stem).to_string()
     });
     let cwd = header.and_then(|h| str_field(h, "cwd")).unwrap_or("").to_string();
-    let title = entries
+    let named = entries
         .iter()
-        .filter(|e| str_field(e, "type") == Some("message"))
-        .filter_map(|e| e.get("message"))
-        .filter(|m| str_field(m, "role") == Some("user"))
-        .map(|m| text_of(m.get("content").unwrap_or(&Value::Null)))
+        .filter(|e| str_field(e, "type") == Some("title"))
+        .filter_map(|e| str_field(e, "title"))
         .find(|t| !t.trim().is_empty())
-        .map(|t| title_from(&t))
-        .unwrap_or_default();
+        .map(title_from);
+    let title = named.unwrap_or_else(|| {
+        entries
+            .iter()
+            .filter(|e| str_field(e, "type") == Some("message"))
+            .filter_map(|e| e.get("message"))
+            .filter(|m| str_field(m, "role") == Some("user"))
+            .map(|m| text_of(m.get("content").unwrap_or(&Value::Null)))
+            .find(|t| !t.trim().is_empty())
+            .map(|t| title_from(&t))
+            .unwrap_or_default()
+    });
     Some(SessionInfo {
-        provider: Provider::Pi,
+        provider,
         locator: path.to_string_lossy().into_owned(),
         id,
         cwd,
@@ -39,6 +52,8 @@ pub fn events(text: &str) -> Vec<Event> {
     let mut events = Vec::new();
     let mut edits = HashMap::new();
     let mut failed_edits = HashSet::new();
+    // Edit calls whose arguments gave no diff, by call ID, with their path.
+    let mut result_edits: HashMap<String, String> = HashMap::new();
     for entry in jsonl::pi_branch(jsonl::parse(text)) {
         if str_field(&entry, "type") != Some("message") {
             continue;
@@ -59,6 +74,12 @@ pub fn events(text: &str) -> Vec<Event> {
                 output: text_of(message.get("content").unwrap_or(&Value::Null)),
                 is_error,
             });
+            if let Some(path) = call_id.and_then(|id| result_edits.remove(id))
+                && !is_error
+                && let Some(details) = message.get("details")
+            {
+                events.extend(changes_from_details(details, &path));
+            }
             continue;
         }
         if role != "user" && role != "assistant" {
@@ -85,6 +106,13 @@ pub fn events(text: &str) -> Vec<Event> {
                     let name = str_field(block, "name").unwrap_or("unknown").to_string();
                     let input = block.get("arguments").cloned().unwrap_or(Value::Null);
                     let edit = edit_from_tool(&name, &input);
+                    if edit.is_none()
+                        && matches!(name.as_str(), "edit" | "ast_edit")
+                        && let Some(id) = str_field(block, "id")
+                    {
+                        let path = str_field(&input, "path").unwrap_or_default().to_string();
+                        result_edits.insert(id.to_string(), path);
+                    }
                     events.push(Event::ToolCall {
                         name,
                         input,
@@ -106,6 +134,36 @@ pub fn events(text: &str) -> Vec<Event> {
         .into_iter()
         .enumerate()
         .filter_map(|(index, event)| (!failed_edits.contains(&index)).then_some(event))
+        .collect()
+}
+
+/// File changes from an edit result's `details`: one per file, each with
+/// its own path when omp records one, else the path the call named.
+fn changes_from_details(details: &Value, call_path: &str) -> Vec<Event> {
+    let files: Vec<&Value> = match details.get("perFileResults").and_then(Value::as_array) {
+        Some(files) => files.iter().collect(),
+        None => vec![details],
+    };
+    files
+        .into_iter()
+        .filter_map(|file| {
+            let path = str_field(file, "path").unwrap_or(call_path);
+            let hunks = match (str_field(file, "diff"), str_field(file, "oldText"), str_field(file, "newText")) {
+                (Some(numbered), ..) if !numbered.is_empty() => ruddr_core::diff::numbered_diff(numbered),
+                (_, Some(old), Some(new)) => diff::line_diff(old, new),
+                _ => String::new(),
+            };
+            let kind = match str_field(file, "op") {
+                Some("create") => ChangeKind::Add,
+                Some("delete") => ChangeKind::Delete,
+                _ => ChangeKind::Update,
+            };
+            (!path.is_empty() && !hunks.is_empty()).then(|| Event::FileChange {
+                path: path.to_string(),
+                kind,
+                hunks,
+            })
+        })
         .collect()
 }
 
@@ -150,6 +208,58 @@ mod tests {
                 .any(|event| matches!(event, Event::ToolResult { call_id: Some(id), is_error: true, .. } if id == "failed"))
         );
         assert_eq!(events.iter().filter(|event| matches!(event, Event::ToolCall { .. })).count(), 2);
+    }
+
+    #[test]
+    fn omp_edits_come_from_the_numbered_diff_in_the_result() {
+        let rows = [
+            json!({"type": "title", "v": 1, "title": "Rename the flag"}),
+            json!({"type": "session", "version": 3, "id": "o1", "cwd": "/w"}),
+            json!({"type": "message", "id": "1", "parentId": null, "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "hash", "name": "edit", "arguments": {"path": "/w/a.rs",
+                    "edits": [{"op": "replace", "pos": "2#VY", "lines": ["new"]}]}},
+                {"type": "toolCall", "id": "bad", "name": "edit", "arguments": {"path": "/w/b.rs",
+                    "edits": [{"op": "replace", "pos": "1#AA", "lines": ["x"]}]}},
+                {"type": "toolCall", "id": "multi", "name": "edit", "arguments": {"edits": []}}
+            ]}}),
+            json!({"type": "message", "id": "2", "parentId": "1", "message": {"role": "toolResult", "toolCallId": "hash",
+                "toolName": "edit", "isError": false, "content": [{"type": "text", "text": "ok"}],
+                "details": {"diff": " 1|keep\n-2|old\n+2|new\n 3|...", "op": "update"}}}),
+            json!({"type": "message", "id": "3", "parentId": "2", "message": {"role": "toolResult", "toolCallId": "bad",
+                "toolName": "edit", "isError": true, "content": "stale anchor", "details": {"diff": "+1|x"}}}),
+            json!({"type": "message", "id": "4", "parentId": "3", "message": {"role": "toolResult", "toolCallId": "multi",
+            "toolName": "edit", "isError": false, "content": "ok", "details": {"perFileResults": [
+                {"path": "/w/c.rs", "diff": "+1|created", "op": "create"},
+                {"path": "/w/d.rs", "oldText": "a\n", "newText": "b\n", "op": "update"}
+            ]}}}),
+        ];
+        let mut text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        // omp rewrites its title row in place; one written last is still not the leaf.
+        text.push_str(&format!("{}\n", json!({"type": "title", "v": 1, "title": "Rename the flag"})));
+        let changes: Vec<(String, ChangeKind, String)> = events(&text)
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::FileChange { path, kind, hunks } => Some((path, kind, hunks)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            changes,
+            [
+                ("/w/a.rs".into(), ChangeKind::Update, "@@ -1,2 +1,2 @@\n keep\n-old\n+new\n".into()),
+                ("/w/c.rs".into(), ChangeKind::Add, "@@ -0,0 +1,1 @@\n+created\n".into()),
+                ("/w/d.rs".into(), ChangeKind::Update, "@@ -1,1 +1,1 @@\n-a\n+b\n".into()),
+            ]
+        );
+
+        let dir = std::env::temp_dir().join(format!("ruddr-history-omp-{}", ruddr_core::fsutil::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("2026-10-06T08-24-49-835Z_o1.jsonl");
+        std::fs::write(&file, &text).unwrap();
+        let info = info(Provider::Omp, &file).unwrap();
+        assert_eq!((info.provider, info.id.as_str(), info.cwd.as_str()), (Provider::Omp, "o1", "/w"));
+        assert_eq!(info.title, "Rename the flag");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

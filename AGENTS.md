@@ -30,7 +30,8 @@ comment that says what it owns.
   for multi-run commands and the dashboards (`session.rs`), well-known paths
   and environment overrides (`paths.rs`), owner-only file helpers and
   file identity for detecting replaced logs (`fsutil.rs`), image attachments and the `localImage` input items
-  (`images.rs`), Go-syntax durations capped at Go's range (`duration.rs`),
+  (`images.rs`), omp's numbered edit diffs as unified hunks (`diff.rs`),
+  Go-syntax durations capped at Go's range (`duration.rs`),
   provider selection, executable lookup, and `provider::command`, which
   resolves `.cmd` shims through PATHEXT on Windows (`provider.rs`), the model catalog (`models.rs`), and the
   theme list shared by the TUI and the web dashboard (`themes.json`).
@@ -47,8 +48,10 @@ comment that says what it owns.
   app-server the lifecycle tests in `tests/` drive; extend it when adding
   protocol behavior.
 - `crates/ruddr-adapters` — the hidden `ruddr app-server --provider NAME`
-  command, which lets Claude Code, OpenCode 2, Pi, and Factory Droid speak the
-  Codex app-server protocol on stdio. `claude/cli.rs` drives the `claude`
+  command, which lets Claude Code, OpenCode 2, Pi, omp, and Factory Droid speak
+  the Codex app-server protocol on stdio. `pi.rs` drives both Pi and omp
+  (oh-my-pi, a Pi fork); `Flavor` selects omp's flags, settle event, and
+  hashline edit reporting. `claude/cli.rs` drives the `claude`
   CLI's stream-json protocol directly. `droid.rs` drives `droid exec` in
   stream JSON-RPC mode; the README records the droid versions and Factory
   protocol versions it is verified against. `testing.rs` holds the fake
@@ -72,7 +75,7 @@ comment that says what it owns.
   the `H` list of every agent's past sessions, read-only, with the `e`
   filter for sessions that edited files.
 - `crates/ruddr-history` — reads every local agent's session transcripts
-  (Codex, Claude Code, Pi, OpenCode, Factory Droid) whether or not Ruddr
+  (Codex, Claude Code, Pi, omp, OpenCode, Factory Droid) whether or not Ruddr
   started them, and rebuilds their file edits as unified diffs. The parsers
   follow dejavu's. It never opens the auth files stored beside transcripts.
   The TUI and the web server both use it.

@@ -27,7 +27,7 @@ const SPECS: &[Spec] = &[
         name: "provider",
         kind: Kind::Text,
         value: "NAME",
-        help: "provider: codex, claude, opencode, pi, or droid (default codex)",
+        help: "provider: codex, claude, opencode, pi, omp, or droid (default codex)",
     },
     Spec {
         name: "cwd",
@@ -94,6 +94,12 @@ const SPECS: &[Spec] = &[
         kind: Kind::Text,
         value: "PATH",
         help: "Pi executable for --provider pi",
+    },
+    Spec {
+        name: "omp-path",
+        kind: Kind::Text,
+        value: "PATH",
+        help: "omp (oh-my-pi) executable for --provider omp",
     },
     Spec {
         name: "droid-path",
@@ -166,7 +172,7 @@ const SPECS: &[Spec] = &[
 /// The `ruddr run --help` text.
 pub fn usage() -> String {
     let mut text = String::from(
-        "Usage: ruddr run [--provider codex|claude|opencode|pi|droid] --prompt-file FILE [--state-dir DIR] [options]\n\
+        "Usage: ruddr run [--provider codex|claude|opencode|pi|omp|droid] --prompt-file FILE [--state-dir DIR] [options]\n\
          \x20                [-- APP_SERVER_COMMAND...]\n\nOptions:\n",
     );
     for spec in SPECS {
@@ -307,6 +313,7 @@ fn apply(parsed: &mut Parsed, spec: &Spec, value: &str) -> Result<()> {
         "claude-path" => cfg.claude_path = value.into(),
         "opencode-path" => cfg.opencode_path = value.into(),
         "pi-path" => cfg.pi_path = value.into(),
+        "omp-path" => cfg.omp_path = value.into(),
         "droid-path" => cfg.droid_path = value.into(),
         "ephemeral" => cfg.ephemeral = parse_bool(spec.name, value)?,
         "resume-thread" => cfg.resume_thread_id = value.into(),
@@ -399,6 +406,8 @@ mod tests {
             "/o",
             "--pi-path",
             "/p",
+            "--omp-path",
+            "/m",
             "--droid-path",
             "/d",
             "--ephemeral",
@@ -437,9 +446,10 @@ mod tests {
                 cfg.claude_path.as_str(),
                 cfg.opencode_path.as_str(),
                 cfg.pi_path.as_str(),
+                cfg.omp_path.as_str(),
                 cfg.droid_path.as_str()
             ),
-            ("/c", "/o", "/p", "/d")
+            ("/c", "/o", "/p", "/m", "/d")
         );
         assert!(cfg.ephemeral && cfg.idle && parsed.detach);
         assert_eq!((cfg.resume_thread_id.as_str(), cfg.fork_thread_id.as_str()), ("r", "f"));

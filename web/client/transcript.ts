@@ -515,7 +515,8 @@ function stringField(input: Record<string, unknown>, ...keys: string[]): string 
 /**
  * Normalizes every provider's file-change shape. Codex sends `changes` with
  * per-file patches. The Claude, Droid, OpenCode, and Pi adapters send the
- * edit tool's input, which holds the old and new text.
+ * edit tool's input, which holds the old and new text. The omp adapter sends
+ * Codex-style `changes` once an edit lands.
  */
 export function fileEditsFromItem(item: RawItem): FileEdit[] {
   if (Array.isArray(item.changes) && item.changes.length) {
@@ -534,7 +535,15 @@ export function fileEditsFromItem(item: RawItem): FileEdit[] {
   const patch = stringField(input, "patch", "diff", "input");
   if (patch && /^(\*\*\* Begin Patch|diff --git|--- |@@(?: |$))/m.test(patch)) return editsFromPatchText(patch, path);
   if (!path) return [];
-  const edits = Array.isArray(input.edits) ? (input.edits as Array<Record<string, unknown>>) : undefined;
+  // omp's hashline edits name anchored lines and carry no old or new text;
+  // the adapter reports their change separately, so they yield no fragment.
+  const edits = Array.isArray(input.edits)
+    ? (input.edits as Array<Record<string, unknown>>).filter(
+        (edit) =>
+          stringField(edit, "old_string", "oldString", "old_str", "oldText") !== undefined ||
+          stringField(edit, "new_string", "newString", "new_str", "newText") !== undefined,
+      )
+    : undefined;
   if (edits?.length) {
     return edits.map((edit) => ({
       path,

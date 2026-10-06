@@ -88,6 +88,8 @@ const LUNA_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 // OpenCode 2.0.22 model.list variants for the built-in OpenRouter DeepSeek model.
 const OPENCODE_EFFORTS: &[&str] = &["none", "low", "high", "max"];
 const PI_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+// omp 18.6.1 `--thinking` levels.
+const OMP_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"];
 const DROID_EFFORTS: &[&str] = &["low", "high", "max"];
 
 /// The built-in catalog. Keep it short; users add models through models.json.
@@ -122,6 +124,7 @@ pub fn builtin_catalog() -> Vec<ProviderModel> {
         model(Claude, "claude-haiku-4-5-20251001", "Claude Haiku 4.5", &[], false),
         model(OpenCode, deepseek, "DeepSeek V4 Flash Vision Exp", OPENCODE_EFFORTS, true),
         model(Pi, deepseek, "DeepSeek V4 Flash Vision Exp", PI_EFFORTS, true),
+        model(Omp, "anthropic/claude-opus-5-5", "Claude Opus 5.5", OMP_EFFORTS, true),
         model(Droid, "glm-5.3-flash", "GLM-5.3-Flash", DROID_EFFORTS, true),
     ]
 }
@@ -352,7 +355,7 @@ pub fn file_path() -> PathBuf {
 fn edit_provider(provider: &str) -> Result<Provider> {
     if provider.is_empty() {
         return Err(Error::usage(
-            "unsupported provider \"\"; expected codex, claude, opencode, pi, or droid",
+            "unsupported provider \"\"; expected codex, claude, opencode, pi, omp, or droid",
         ));
     }
     Provider::parse(provider)
@@ -511,6 +514,7 @@ pub(crate) mod tests {
             assert_eq!(default_model(Provider::Codex).unwrap().as_deref(), Some("gpt-6-astra"));
             assert_eq!(default_model(Provider::Claude).unwrap().as_deref(), Some("claude-opus-5-5"));
             assert_eq!(default_model(Provider::Droid).unwrap().as_deref(), Some("glm-5.3-flash"));
+            assert_eq!(default_model(Provider::Omp).unwrap().as_deref(), Some("anthropic/claude-opus-5-5"));
         });
         let catalog = builtin_catalog();
         for provider in Provider::ALL {

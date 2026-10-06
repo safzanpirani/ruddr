@@ -593,6 +593,7 @@ pub fn parse_deja_hit(hit: &Value) -> Option<DejaHit> {
         ("codex resume ", "codex"),
         ("droid --resume ", "droid"),
         ("pi --session ", "pi"),
+        ("omp --resume ", "omp"),
         ("opencode2 -s ", "opencode"),
     ];
     let parsed = prefixes
@@ -604,7 +605,8 @@ pub fn parse_deja_hit(hit: &Value) -> Option<DejaHit> {
         return None;
     }
     let session_id = parsed
-        .filter(|(p, id)| *p == provider && !id.is_empty() && (*p == "pi" || !id.contains(char::is_whitespace)))
+        // Pi and omp sessions resume by transcript path, which may hold spaces.
+        .filter(|(p, id)| *p == provider && !id.is_empty() && (matches!(*p, "pi" | "omp") || !id.contains(char::is_whitespace)))
         .map(|(_, id)| id.to_string())
         .unwrap_or_default();
     let locator = text("path");

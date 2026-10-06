@@ -22,7 +22,7 @@ const EXIT_GRACE: Duration = Duration::from_secs(3);
 const MAX_LINE_BYTES: u64 = 64 * 1024 * 1024;
 
 const ACTIONS: &str = "list, search, read, turns, fork, name, archive, or unarchive";
-const PROVIDERS: [&str; 5] = ["codex", "claude", "opencode", "pi", "droid"];
+const PROVIDERS: [&str; 6] = ["codex", "claude", "opencode", "pi", "omp", "droid"];
 
 fn specs() -> Vec<args::Spec> {
     vec![
@@ -90,7 +90,7 @@ fn child_command(parsed: &args::Parsed, child: Option<Vec<String>>) -> Result<Ve
     let provider = parsed.string_or("provider", "codex");
     if !PROVIDERS.contains(&provider.as_str()) {
         return Err(Error::usage(format!(
-            "unsupported provider {provider:?}; expected codex, claude, opencode, pi, or droid"
+            "unsupported provider {provider:?}; expected codex, claude, opencode, pi, omp, or droid"
         )));
     }
     if let Some(child) = child {

@@ -1,9 +1,12 @@
-//! The Pi adapter. Port of pi/runtime.ts.
+//! The Pi adapter, which also drives omp (oh-my-pi). Port of pi/runtime.ts.
 //!
-//! The adapter runs `pi --mode rpc` and sends it JSON commands with string
-//! IDs. A turn is a `prompt` command; a steer is a `steer` command; the turn
-//! ends at `agent_settled`, unless a steer was accepted after that event, in
-//! which case the next `agent_settled` ends it.
+//! The adapter runs `pi --mode rpc` (or `omp --mode rpc`) and sends it JSON
+//! commands with string IDs. A turn is a `prompt` command; a steer is a
+//! `steer` command; the turn ends at Pi's `agent_settled` or omp's
+//! `session_settled`, unless a steer was accepted after that event, in which
+//! case the next one ends it. omp also reports a `prompt_result` for every
+//! prompt; one that never reached the agent ends the turn itself, because no
+//! settle event follows it.
 
 use crate::protocol::{
     AResult, Adapter, AdapterError, Emit, compact, finite, lock, num, number, optional_string, read_text_input, record, required_string,
@@ -25,10 +28,62 @@ const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(60);
 // UI requests Pi does not wait on; every other extension UI request is
 // cancelled so it cannot hang a turn.
-const FIRE_AND_FORGET_UI_METHODS: [&str; 5] = ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"];
+// omp's `cancel` withdraws an earlier request and expects no answer.
+const FIRE_AND_FORGET_UI_METHODS: [&str; 6] = ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text", "cancel"];
+
+/// Which CLI the adapter drives. omp is a Pi fork whose RPC mode keeps Pi's
+/// commands and events but renames session flags and the settle event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavor {
+    Pi,
+    Omp,
+}
+
+impl Flavor {
+    /// The name errors and labels use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Flavor::Pi => "Pi",
+            Flavor::Omp => "omp",
+        }
+    }
+
+    fn slug(self) -> &'static str {
+        match self {
+            Flavor::Pi => "pi",
+            Flavor::Omp => "omp",
+        }
+    }
+
+    /// The event that says the session went quiet and the turn is over.
+    fn settle_event(self) -> &'static str {
+        match self {
+            Flavor::Pi => "agent_settled",
+            Flavor::Omp => "session_settled",
+        }
+    }
+
+    fn labels(self) -> Labels {
+        match self {
+            Flavor::Pi => Labels {
+                prefix: "Pi RPC",
+                process: "Pi RPC process",
+                client: "Pi RPC client",
+                message: "Pi RPC message",
+            },
+            Flavor::Omp => Labels {
+                prefix: "omp RPC",
+                process: "omp RPC process",
+                client: "omp RPC client",
+                message: "omp RPC message",
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PiThread {
+    pub flavor: Flavor,
     pub id: String,
     pub cwd: String,
     pub model: Option<String>,
@@ -55,6 +110,9 @@ struct Turn {
     steer_generation: u64,
     pending_steers: u32,
     assistant_messages: Vec<Map<String, Value>>,
+    /// omp's `prompt_result` status and error, when one arrived.
+    prompt_status: Option<String>,
+    prompt_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -68,6 +126,7 @@ struct State {
 }
 
 struct Inner {
+    flavor: Flavor,
     emit: Emit,
     client: Box<dyn PiClient>,
     executable: String,
@@ -81,16 +140,22 @@ pub struct PiAdapter {
 
 impl PiAdapter {
     pub fn new(emit: Emit, executable: String) -> PiAdapter {
-        PiAdapter::with_client(
-            emit,
-            executable,
-            Box::new(SubprocessPiClient::new(DEFAULT_RPC_TIMEOUT, DEFAULT_START_TIMEOUT)),
-        )
+        PiAdapter::for_flavor(Flavor::Pi, emit, executable)
     }
 
-    pub fn with_client(emit: Emit, executable: String, client: Box<dyn PiClient>) -> PiAdapter {
+    pub fn omp(emit: Emit, executable: String) -> PiAdapter {
+        PiAdapter::for_flavor(Flavor::Omp, emit, executable)
+    }
+
+    fn for_flavor(flavor: Flavor, emit: Emit, executable: String) -> PiAdapter {
+        let client = SubprocessPiClient::new(flavor, DEFAULT_RPC_TIMEOUT, DEFAULT_START_TIMEOUT);
+        PiAdapter::with_client(flavor, emit, executable, Box::new(client))
+    }
+
+    pub fn with_client(flavor: Flavor, emit: Emit, executable: String, client: Box<dyn PiClient>) -> PiAdapter {
         PiAdapter {
             inner: Arc::new(Inner {
+                flavor,
                 emit,
                 client,
                 executable,
@@ -108,7 +173,7 @@ impl Adapter for PiAdapter {
             "initialize" => {
                 lock(&inner.state).initialized = true;
                 Ok(json!({
-                    "serverInfo": { "name": "ruddr-pi-adapter", "version": "1" },
+                    "serverInfo": { "name": format!("ruddr-{}-adapter", inner.flavor.slug()), "version": "1" },
                     "capabilities": { "experimentalApi": true },
                 }))
             }
@@ -119,7 +184,8 @@ impl Adapter for PiAdapter {
             "turn/steer" => inner.steer_turn(params),
             "turn/interrupt" => inner.interrupt_turn(params),
             _ => Err(AdapterError::not_found(format!(
-                "method {method} is not supported by the Pi adapter"
+                "method {method} is not supported by the {} adapter",
+                inner.flavor.name()
             ))),
         }
     }
@@ -149,6 +215,7 @@ impl Inner {
         }
         let input = record(params, "thread parameters")?;
         let mut thread = PiThread {
+            flavor: self.flavor,
             id: if resumed {
                 required_string(input.get("threadId"), "threadId")?
             } else {
@@ -162,7 +229,7 @@ impl Inner {
             model: optional_string(input.get("model")),
             effort: optional_string(input.get("effort")),
         };
-        // Pi events are handled one at a time on a worker thread, so the
+        // Provider events are handled one at a time on a worker thread, so the
         // client's reader thread never waits on the adapter.
         let (events, receiver) = mpsc::channel::<Map<String, Value>>();
         let worker = self.clone();
@@ -192,7 +259,7 @@ impl Inner {
             thread.id.clone()
         };
         let input = record(params, "turn parameters")?;
-        require_thread(&thread_id, input)?;
+        require_thread(self.flavor, &thread_id, input)?;
         let text = read_text_input(input.get("input"))?;
         if let Some(effort) = optional_string(input.get("effort")) {
             self.client.send(json!({ "type": "set_thinking_level", "level": effort }))?;
@@ -210,6 +277,8 @@ impl Inner {
                 steer_generation: 0,
                 pending_steers: 0,
                 assistant_messages: Vec::new(),
+                prompt_status: None,
+                prompt_error: None,
             });
             self.emit.emit(json!({
                 "method": "turn/started",
@@ -231,7 +300,7 @@ impl Inner {
         let input = record(params, "steer parameters")?;
         let (thread_id, turn_id, serial) = {
             let mut state = lock(&self.state);
-            let (thread_id, turn) = require_turn(&mut state, input, "expectedTurnId")?;
+            let (thread_id, turn) = require_turn(self.flavor, &mut state, input, "expectedTurnId")?;
             turn.pending_steers += 1;
             (thread_id, turn.id.clone(), turn.serial)
         };
@@ -252,7 +321,7 @@ impl Inner {
         sent?;
         let text = text?;
         // Codex reports a steer as its own userMessage item, which is what
-        // puts it in the transcript. Pi echoes nothing back.
+        // puts it in the transcript. Pi and omp echo nothing back.
         self.emit.emit(json!({
             "method": "item/completed",
             "params": { "threadId": thread_id, "item": { "id": uuid_v4(), "type": "userMessage", "status": "completed", "text": text } },
@@ -264,7 +333,7 @@ impl Inner {
         let input = record(params, "interrupt parameters")?;
         {
             let mut state = lock(&self.state);
-            let (_, turn) = require_turn(&mut state, input, "turnId")?;
+            let (_, turn) = require_turn(self.flavor, &mut state, input, "turnId")?;
             turn.interrupted = true;
         }
         self.client.send(json!({ "type": "abort" }))?;
@@ -280,7 +349,13 @@ impl Inner {
         let serial = turn.serial;
         let generation = turn.steer_generation;
         let tool_id = optional_string(event.get("toolCallId"));
-        match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+        let kind = event.get("type").and_then(Value::as_str).unwrap_or_default();
+        if kind == self.flavor.settle_event() {
+            drop(state);
+            self.complete_turn(serial, None, None, generation);
+            return;
+        }
+        match kind {
             "message_end" => {
                 if let Some(message) = event.get("message").and_then(Value::as_object)
                     && message.get("role").and_then(Value::as_str) == Some("assistant")
@@ -311,12 +386,19 @@ impl Inner {
                 };
                 self.emit_tool(&state, "item/completed", &merged, status);
             }
-            "agent_settled" => {
-                drop(state);
-                self.complete_turn(serial, None, None, generation);
+            // omp only. A prompt that never reached the agent (a local slash
+            // command, or a failure before the model call) gets no settle
+            // event, so its result ends the turn.
+            "prompt_result" if self.flavor == Flavor::Omp => {
+                turn.prompt_status = optional_string(event.get("status"));
+                turn.prompt_error = event.get("error").and_then(|error| optional_string(error.get("message")));
+                if event.get("agentInvoked") == Some(&Value::Bool(false)) {
+                    drop(state);
+                    self.complete_turn(serial, None, None, generation);
+                }
             }
             "ruddr_error" => {
-                let message = optional_string(event.get("error")).unwrap_or_else(|| "Pi RPC process failed".into());
+                let message = optional_string(event.get("error")).unwrap_or_else(|| format!("{} RPC process failed", self.flavor.name()));
                 drop(state);
                 self.complete_turn(serial, Some("failed"), Some(message), generation);
             }
@@ -338,13 +420,22 @@ impl Inner {
             .cloned()
             .unwrap_or_default();
         let command = optional_string(input.get("command")).unwrap_or_else(|| format!("{name} {}", compact(&input)));
-        self.emit.emit(json!({
-            "method": method,
-            "params": { "threadId": thread.id, "item": {
-                "id": id, "type": "toolCall", "status": status, "toolName": name, "command": command, "input": input,
-                "output": text_content(result.get("content"), true),
-            } },
-        }));
+        let mut item = json!({
+            "id": id, "type": "toolCall", "status": status, "toolName": name, "command": command, "input": input,
+            "output": text_content(result.get("content"), true),
+        });
+        // omp's hashline edits name anchored lines, not old and new text, so
+        // the change comes from the result's numbered diff once it lands.
+        if self.flavor == Flavor::Omp && matches!(name.as_str(), "edit" | "ast_edit") {
+            item["type"] = json!("fileChange");
+            let path = optional_string(input.get("path")).unwrap_or_default();
+            let changes = omp_changes(result.get("details"), &path);
+            if !changes.is_empty() {
+                item["changes"] = Value::Array(changes);
+            }
+        }
+        self.emit
+            .emit(json!({ "method": method, "params": { "threadId": thread.id, "item": item } }));
     }
 
     fn complete_turn(&self, serial: u64, forced_status: Option<&str>, forced_error: Option<String>, settled_generation: u64) {
@@ -372,10 +463,16 @@ impl Inner {
             }
         }
         let thread_id = state.thread.as_ref().map(|t| t.id.clone()).unwrap_or_default();
-        let (turn_id, interrupted, messages) = {
+        let (turn_id, interrupted, messages, prompt_status, prompt_error) = {
             let turn = state.turn.as_mut().expect("turn is current");
             turn.settling = true;
-            (turn.id.clone(), turn.interrupted, std::mem::take(&mut turn.assistant_messages))
+            (
+                turn.id.clone(),
+                turn.interrupted,
+                std::mem::take(&mut turn.assistant_messages),
+                turn.prompt_status.take(),
+                turn.prompt_error.take(),
+            )
         };
         // TODO(review): Define terminal statuses for unfinished Pi tool calls before clearing them at turn completion.
         for (index, message) in messages.iter().enumerate() {
@@ -428,9 +525,10 @@ impl Inner {
             self.emit_usage(&thread_id, stats);
         }
         let stop_reason = messages.last().and_then(|message| optional_string(message.get("stopReason")));
-        let status = forced_status.unwrap_or(if interrupted || stop_reason.as_deref() == Some("aborted") {
+        let ended = |reason: &str| stop_reason.as_deref() == Some(reason) || prompt_status.as_deref() == Some(reason);
+        let status = forced_status.unwrap_or(if interrupted || ended("aborted") {
             "interrupted"
-        } else if stop_reason.as_deref() == Some("error") {
+        } else if ended("error") {
             "failed"
         } else {
             "completed"
@@ -439,7 +537,10 @@ impl Inner {
         self.steers_settled.notify_all();
         let mut turn = json!({ "id": turn_id, "status": status });
         if status == "failed" {
-            turn["error"] = json!({ "message": forced_error.unwrap_or_else(|| "Pi model returned an error".into()) });
+            let message = forced_error
+                .or(prompt_error)
+                .unwrap_or_else(|| format!("{} model returned an error", self.flavor.name()));
+            turn["error"] = json!({ "message": message });
         }
         self.emit
             .emit(json!({ "method": "turn/completed", "params": { "threadId": thread_id, "turn": turn } }));
@@ -480,6 +581,26 @@ impl Inner {
     }
 }
 
+/// Codex-style `changes` from an omp edit result's `details`: one entry per
+/// file, from `perFileResults` for a multi-file edit. Every entry is an
+/// `update` carrying hunks, because a Codex `add` carries file content and
+/// a created file's hunks already read as all additions.
+fn omp_changes(details: Option<&Value>, call_path: &str) -> Vec<Value> {
+    let Some(details) = details else { return Vec::new() };
+    let files: Vec<&Value> = match details.get("perFileResults").and_then(Value::as_array) {
+        Some(files) => files.iter().collect(),
+        None => vec![details],
+    };
+    files
+        .into_iter()
+        .filter_map(|file| {
+            let path = file.get("path").and_then(Value::as_str).unwrap_or(call_path);
+            let hunks = ruddr_core::diff::numbered_diff(file.get("diff").and_then(Value::as_str).unwrap_or_default());
+            (!path.is_empty() && !hunks.is_empty()).then(|| json!({ "path": path, "kind": { "type": "update" }, "diff": hunks }))
+        })
+        .collect()
+}
+
 fn merge_tool(state: &mut State, id: &str, event: &Map<String, Value>) -> Map<String, Value> {
     let mut merged = state.tools.get(id).cloned().unwrap_or_default();
     merged.extend(event.clone());
@@ -487,30 +608,36 @@ fn merge_tool(state: &mut State, id: &str, event: &Map<String, Value>) -> Map<St
     merged
 }
 
-fn require_thread(thread_id: &str, input: &Map<String, Value>) -> AResult<()> {
+fn require_thread(flavor: Flavor, thread_id: &str, input: &Map<String, Value>) -> AResult<()> {
     if required_string(input.get("threadId"), "threadId")? != thread_id {
-        return Err(AdapterError::invalid("threadId does not match the configured Pi session"));
+        return Err(AdapterError::invalid(format!(
+            "threadId does not match the configured {} session",
+            flavor.name()
+        )));
     }
     Ok(())
 }
 
-fn require_turn<'a>(state: &'a mut State, input: &Map<String, Value>, turn_key: &str) -> AResult<(String, &'a mut Turn)> {
+fn require_turn<'a>(flavor: Flavor, state: &'a mut State, input: &Map<String, Value>, turn_key: &str) -> AResult<(String, &'a mut Turn)> {
     let thread_id = state.thread.as_ref().map(|t| t.id.clone()).unwrap_or_default();
-    require_thread(&thread_id, input)?;
+    require_thread(flavor, &thread_id, input)?;
+    let name = flavor.name();
     let Some(turn) = state.turn.as_mut() else {
-        return Err(AdapterError::invalid("there is no active Pi turn"));
+        return Err(AdapterError::invalid(format!("there is no active {name} turn")));
     };
     if turn.settling {
-        return Err(AdapterError::invalid("the active Pi turn is settling"));
+        return Err(AdapterError::invalid(format!("the active {name} turn is settling")));
     }
     if required_string(input.get(turn_key), turn_key)? != turn.id {
-        return Err(AdapterError::invalid(format!("{turn_key} does not match the active Pi turn")));
+        return Err(AdapterError::invalid(format!("{turn_key} does not match the active {name} turn")));
     }
     Ok((thread_id, turn))
 }
 
-/// Runs `pi --mode rpc` and matches responses to commands by ID.
+/// Runs `pi --mode rpc` or `omp --mode rpc` and matches responses to
+/// commands by ID.
 pub struct SubprocessPiClient {
+    flavor: Flavor,
     rpc_timeout: Duration,
     start_timeout: Duration,
     process: Mutex<Option<Arc<RpcProcess>>>,
@@ -518,8 +645,9 @@ pub struct SubprocessPiClient {
 }
 
 impl SubprocessPiClient {
-    pub fn new(rpc_timeout: Duration, start_timeout: Duration) -> SubprocessPiClient {
+    pub fn new(flavor: Flavor, rpc_timeout: Duration, start_timeout: Duration) -> SubprocessPiClient {
         SubprocessPiClient {
+            flavor,
             rpc_timeout,
             start_timeout: start_timeout.max(rpc_timeout),
             process: Mutex::new(None),
@@ -528,22 +656,28 @@ impl SubprocessPiClient {
     }
 
     fn send_with_timeout(&self, command: Value, timeout: Duration) -> AResult<Map<String, Value>> {
+        let labels = self.flavor.labels();
         let process = lock(&self.process)
             .clone()
-            .ok_or_else(|| AdapterError::failed("Pi RPC process is not running"))?;
-        let id = format!("ruddr-pi-{}", self.sequence.fetch_add(1, Ordering::SeqCst) + 1);
+            .ok_or_else(|| AdapterError::failed(format!("{} is not running", labels.process)))?;
+        let id = format!("ruddr-{}-{}", self.flavor.slug(), self.sequence.fetch_add(1, Ordering::SeqCst) + 1);
         let kind = command.get("type").and_then(Value::as_str).unwrap_or("command").to_string();
         let mut message = command;
         if let Some(object) = message.as_object_mut() {
             object.insert("id".into(), json!(id));
         }
-        let timeout_message = format!("Pi RPC {kind} timed out after {}ms", timeout.as_millis());
+        let timeout_message = format!("{} {kind} timed out after {}ms", labels.prefix, timeout.as_millis());
         process.call(&id, &message, timeout, timeout_message).map_err(AdapterError::failed)
     }
 }
 
-/// Pi's argv: RPC mode, the session selector, and the read-only tool set.
+/// The provider argv: RPC mode, the session selector, and the read-only tool
+/// set. omp has no `--session-id`, so a fresh omp session takes the ID omp
+/// picks, which `get_state` reports.
 pub fn pi_args(config: &PiThread) -> Vec<String> {
+    if config.flavor == Flavor::Omp {
+        return omp_args(config);
+    }
     // TODO(review): Define Pi approval behavior for inherited project resources before changing --approve.
     let mut args: Vec<String> = ["--mode", "rpc", "--approve"].map(String::from).to_vec();
     if let Some(model) = &config.model {
@@ -565,6 +699,29 @@ pub fn pi_args(config: &PiThread) -> Vec<String> {
     args
 }
 
+/// omp's argv. `--auto-approve` matches the `never` approval policy Ruddr
+/// requires, because a tool approval prompt would be cancelled unanswered.
+/// `--allow-home` keeps omp in the run's working directory when that is the
+/// home directory, where omp otherwise moves to a temporary one.
+fn omp_args(config: &PiThread) -> Vec<String> {
+    let mut args: Vec<String> = ["--mode", "rpc", "--auto-approve", "--allow-home"].map(String::from).to_vec();
+    if let Some(model) = &config.model {
+        args.extend(["--model".into(), model.clone()]);
+    }
+    if let Some(effort) = &config.effort {
+        args.extend(["--thinking".into(), effort.clone()]);
+    }
+    if config.ephemeral {
+        args.push("--no-session".into());
+    } else if config.resumed {
+        args.extend(["--resume".into(), config.id.clone()]);
+    }
+    if config.sandbox == "read-only" {
+        args.extend(["--no-extensions", "--tools", "read,grep,find,glob"].map(String::from));
+    }
+    args
+}
+
 fn classify(message: &Map<String, Value>) -> Incoming {
     let kind = message.get("type").and_then(Value::as_str);
     let id = message.get("id").and_then(Value::as_str);
@@ -573,7 +730,7 @@ fn classify(message: &Map<String, Value>) -> Incoming {
             let outcome = if message.get("success") == Some(&Value::Bool(true)) {
                 Ok(message.clone())
             } else {
-                Err(optional_string(message.get("error")).unwrap_or_else(|| "Pi RPC command returned a malformed response".into()))
+                Err(optional_string(message.get("error")).unwrap_or_else(|| "RPC command returned a malformed response".into()))
             };
             Incoming::Response(id.to_string(), outcome)
         }
@@ -601,23 +758,22 @@ impl PiClient for SubprocessPiClient {
     fn start(&self, config: &PiThread, on_event: EventFn) -> AResult<String> {
         let mut command = Command::new(&config.executable);
         command.args(pi_args(config)).current_dir(&config.cwd);
-        let labels = Labels {
-            prefix: "Pi RPC",
-            process: "Pi RPC process",
-            client: "Pi RPC client",
-            message: "Pi RPC message",
-        };
-        let process = RpcProcess::spawn(command, labels, self.rpc_timeout, classify, on_event, failure_event).map_err(|error| {
-            AdapterError::failed(if error.kind() == std::io::ErrorKind::NotFound {
-                format!("Pi executable not found at {}; install pi or pass --pi-path", config.executable)
-            } else {
-                format!("start Pi: {error}")
-            })
-        })?;
+        let (name, slug) = (self.flavor.name(), self.flavor.slug());
+        let process =
+            RpcProcess::spawn(command, self.flavor.labels(), self.rpc_timeout, classify, on_event, failure_event).map_err(|error| {
+                AdapterError::failed(if error.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "{name} executable not found at {}; install {slug} or pass --{slug}-path",
+                        config.executable
+                    )
+                } else {
+                    format!("start {name}: {error}")
+                })
+            })?;
         *lock(&self.process) = Some(process);
         let response = self.send_with_timeout(json!({ "type": "get_state" }), self.start_timeout)?;
-        let state = record(response.get("data").unwrap_or(&Value::Null), "Pi state")?;
-        required_string(state.get("sessionId"), "Pi session id")
+        let state = record(response.get("data").unwrap_or(&Value::Null), &format!("{name} state"))?;
+        required_string(state.get("sessionId"), &format!("{name} session id"))
     }
 
     fn send(&self, command: Value) -> AResult<Map<String, Value>> {

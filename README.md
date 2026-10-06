@@ -3,7 +3,7 @@
 **A control plane for agents that run other agents.**
 
 Ruddr is a single native binary that keeps a live handle on long-running Codex,
-Claude Code, OpenCode 2, Pi, and Factory Droid sessions. An orchestrating agent
+Claude Code, OpenCode 2, Pi, omp, and Factory Droid sessions. An orchestrating agent
 launches a turn in the background, reads its progress from plain files, and
 redirects it over a local socket while it runs, without waiting for it to
 finish or restarting it. Every command works the same from a human shell, so a
@@ -57,11 +57,13 @@ Providers:
   inbox. Steering uses `delivery: "steer"` on the active session.
 - **Pi.** Ruddr runs Pi in JSONL RPC mode. Pi exposes native steering,
   interruption, session persistence, streamed tool events, and usage totals.
+- **omp (oh-my-pi).** omp is a Pi fork. Ruddr drives its RPC mode with the
+  Pi adapter. A turn ends at omp's `session_settled` event.
 - **Factory Droid.** Ruddr runs `droid exec` in stream JSON-RPC mode. A steer
   is a user message that Droid queues and reads at its next step.
 
 All providers use the same state directory, commands, and TUI. Codex speaks
-the app-server protocol itself. For the other four, Ruddr starts its own
+the app-server protocol itself. For the other five, Ruddr starts its own
 binary as a hidden adapter, `ruddr app-server --provider NAME`, which
 translates the provider's protocol into the Codex app-server protocol on
 stdio.
@@ -226,7 +228,7 @@ GitHub release, and publishes the npm package.
 ### Companion: dejavu
 
 [dejavu](https://github.com/safzanpirani/dejavu) searches past Codex, Claude
-Code, Pi, OpenCode, and Factory Droid transcripts on the same machine. Ruddr
+Code, Pi, omp, OpenCode, and Factory Droid transcripts on the same machine. Ruddr
 uses it in two places: the TUI's and the web dashboard's `f` key runs `deja
 find` to look up an earlier session, open it read-only, or continue it under
 Ruddr, and agents driving Ruddr use
@@ -278,7 +280,8 @@ uses the `/api/experimental/session` wait and
 export routes that 2.0.15 introduced, and falls back to the older
 `/api/session` routes on a 404.
 
-Pi runs require the `pi` executable with RPC mode. Droid runs require the
+Pi runs require the `pi` executable with RPC mode. omp runs require the `omp`
+executable; the adapter follows the RPC protocol of omp 18.6.1. Droid runs require the
 `droid` executable and are verified against droid 0.228.0 and 0.230.0, which
 speak Factory protocols 1.233.0 and 1.241.0. The adapters inherit each CLI's normal authentication
 environment.
@@ -328,8 +331,8 @@ command after `--`, add `-c KEY=VALUE` to that command instead.
 `--image FILE` (repeatable, up to 10) attaches a png, jpg, gif, or webp image
 to the first turn. `steer` and `prompt` take the same flag. Ruddr checks that
 each file exists before it sends anything, and an invalid path exits 2. Codex
-receives each image as a `localImage` input. Claude Code, OpenCode, Pi, and
-Droid get the absolute paths listed under the prompt text, and the agent opens
+receives each image as a `localImage` input. Claude Code, OpenCode, Pi, omp,
+and Droid get the absolute paths listed under the prompt text, and the agent opens
 them with its own file-reading tool, so keep images somewhere the provider's
 sandbox can read:
 
@@ -412,6 +415,35 @@ model's default variant. Ruddr records the effective model and variant in
 Run these adapters only in trusted workspaces. OpenCode 2 loads project
 configuration and plugins, and Pi loads project-local resources after approval.
 Those resources can execute code outside the adapters' tool permission rules.
+
+Run omp the same way:
+
+```bash
+ruddr run --provider omp --cwd "$PWD" \
+  --prompt-file .scratch/ruddr-demo/prompt.md \
+  --state-dir .scratch/ruddr-demo/omp.run
+```
+
+The default omp model is `anthropic/claude-opus-5-5`. omp matches model names
+fuzzily and also accepts its own roles, so `--model opus` works. Efforts are
+omp's thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max`, and `auto`. Use `--omp-path` or `RUDDR_OMP_PATH` to select an omp
+executable; without either, Ruddr looks for `omp` on `PATH`. omp
+authenticates itself, so a shell wrapper that injects credentials does not run
+under Ruddr; export the variable or log in with omp instead.
+
+Ruddr starts omp with `--auto-approve`, because Ruddr has no approval surface,
+and with `--allow-home`, so a run in the home directory stays there. omp has no
+option to choose a new session's ID, so `thread/start` returns the ID omp
+picks. `--resume-thread` accepts that ID or a transcript path, and
+`--ephemeral` maps to `--no-session`. `read-only` disables extensions and
+enables only omp's read, grep, find, and glob tools. omp's hashline edits name
+anchored lines instead of old and new text, so Ruddr reports each edit as a
+file change with the diff from omp's result once the edit lands. Ruddr rejects
+`--fork-thread` for omp. A fresh run resumes the newest session in the
+directory when omp's `autoResume` setting is on, so leave that setting off for
+delegated work. Like Pi, omp loads project-local resources, so run it only in
+trusted workspaces.
 
 Run Factory Droid the same way:
 
@@ -833,15 +865,18 @@ also appear in the command palette. They require `deja` on `PATH`.
 `H` (or "Browse every agent's sessions" in the palette) switches the sessions
 list to every agent's local history, whether or not Ruddr started the session:
 Codex (`$CODEX_HOME/sessions`), Claude Code (`$CLAUDE_CONFIG_DIR/projects`),
-Pi (`~/.pi/*/sessions` or `$PI_CODING_AGENT_DIR/sessions`), OpenCode (its
+Pi (`~/.pi/*/sessions` or `$PI_CODING_AGENT_DIR/sessions`), omp
+(`~/.omp/agent/sessions`, `~/.omp/profiles/*/agent/sessions`, and
+`$XDG_DATA_HOME/omp/sessions`), OpenCode (its
 SQLite databases under `$XDG_DATA_HOME/opencode`, or `$OPENCODE_DB`), and
 Factory Droid (`~/.factory/sessions`, or `$FACTORY_HOME_OVERRIDE/.factory/sessions`). The newest 400 sessions are listed with
 their titles. Selecting one shows the whole conversation in Chat, its assistant
 messages in Output, and every file edit it made in Diff, with the same file
-tree. Claude and Pi follow the active branch of their transcript trees. Codex
-and Claude diffs come from the patches they recorded; other providers' diffs
-are rebuilt from their edit-tool inputs, so their hunk line numbers count from
-the edited fragment. Each row shows the lines a session added and removed once a
+tree. Claude, Pi, and omp follow the active branch of their transcript trees.
+Codex and Claude diffs come from the patches they recorded, and omp diffs from
+the numbered diff in each edit result, all with real line numbers. Other
+providers' diffs are rebuilt from their edit-tool inputs, so their hunk line
+numbers count from the edited fragment. Each row shows the lines a session added and removed once a
 background scan has read it, and `e` (or "Only sessions that edited files" in
 the palette) hides the sessions with an empty diff. History sessions are
 read-only: prompts, stops, and deletes are disabled for them. Ruddr reads only transcripts, never the auth
@@ -885,7 +920,7 @@ status, duration, working directory, input, and the last lines of output.
 Chat renders agent Markdown (headings, lists, quotes, inline code, and fenced
 code) and shows reasoning and tool calls inline. The text is live: Codex
 reports partial assistant text as `item/agentMessage/delta`, and the Claude,
-OpenCode, Pi, and Droid adapters emit the same notification. Chat renders each
+OpenCode, Pi, omp, and Droid adapters emit the same notification. Chat renders each
 completed line as Markdown and shows the line still arriving as plain text, so
 a message appears while the model writes it. Your steers appear in the
 transcript too. While the selected session works, a spinner shows in the
@@ -1170,7 +1205,7 @@ Ruddr currently depends on:
 - `turn/interrupt`
 - `turn/started`, `item/*`, and `turn/completed` notifications
 
-The Claude, OpenCode 2, Pi, and Droid adapters implement the lifecycle subset
+The Claude, OpenCode 2, Pi, omp, and Droid adapters implement the lifecycle subset
 needed by `ruddr run`, `steer`, `prompt`, and `interrupt`. They do not
 implement the general Codex app-server surface. Sessions launched by another process do not
 become live-observable through Ruddr. Each adapter forwards summarized or
@@ -1185,7 +1220,7 @@ steer provider sessions afterwards.
 ````text
 Set up Ruddr (https://github.com/safzanpirani/ruddr) on this machine, verify
 it works, and learn how to operate it. Ruddr runs Codex, Claude Code,
-OpenCode 2, Pi, or Factory Droid as an observable, steerable child process. It writes every
+OpenCode 2, Pi, omp, or Factory Droid as an observable, steerable child process. It writes every
 event to
 disk and exposes a control socket so you can redirect or stop a turn while it
 runs. Follow Part 1 in order and stop at the first failure; keep Part 2 as your
@@ -1195,7 +1230,8 @@ PART 1: INSTALL AND VERIFY
 
 1. Check prerequisites. Report the version of each and stop if any is missing:
    - At least one provider CLI: `codex --version`, `claude --version`,
-     `opencode2 --version`, `pi --version`, or `droid --version`.
+     `opencode2 --version`, `pi --version`, `omp --version`, or
+     `droid --version`.
    - For the npm route: Node 18 or newer (`node --version`).
    - For a source build: Rust stable 1.88 or newer (`cargo --version`).
    Ruddr is one native binary. It does not need Bun or Go.
@@ -1257,7 +1293,7 @@ Trust output.md only when `ruddr status --json` says "completed"; on
 be fresh per run. Prompts always come from --prompt-file, never argv.
 
 Starting runs. Useful `ruddr run` flags:
-   --provider codex|claude|opencode|pi|droid   default codex
+   --provider codex|claude|opencode|pi|omp|droid   default codex
    --model / --effort           `ruddr models --json` lists configured choices
                                OpenCode maps effort to its model variant
    --sandbox                    read-only | workspace-write (default) |

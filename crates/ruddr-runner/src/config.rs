@@ -22,8 +22,9 @@ pub struct RunConfig {
     pub claude_path: String,
     pub opencode_path: String,
     pub pi_path: String,
+    pub omp_path: String,
     pub droid_path: String,
-    /// The OpenCode, Pi, or Droid executable sent to the adapter.
+    /// The OpenCode, Pi, omp, or Droid executable sent to the adapter.
     pub provider_path: String,
     pub ephemeral: bool,
     pub resume_thread_id: String,
@@ -63,6 +64,7 @@ impl Default for RunConfig {
             claude_path: String::new(),
             opencode_path: String::new(),
             pi_path: String::new(),
+            omp_path: String::new(),
             droid_path: String::new(),
             provider_path: String::new(),
             ephemeral: false,
@@ -200,6 +202,7 @@ pub fn configure_provider_defaults(cfg: &mut RunConfig, child_args: &[String]) -
         Provider::Claude => cfg.claude_path.clone(),
         Provider::OpenCode => cfg.opencode_path.clone(),
         Provider::Pi => cfg.pi_path.clone(),
+        Provider::Omp => cfg.omp_path.clone(),
         Provider::Droid => cfg.droid_path.clone(),
         Provider::Codex => String::new(),
     };
@@ -325,16 +328,18 @@ mod tests {
             ..droid.clone()
         };
         assert!(validate_run_config(&mut ephemeral).unwrap_err().message.contains("--ephemeral"));
-        let mut pi = RunConfig {
-            provider: "pi".into(),
-            ..fork
-        };
-        assert!(
-            validate_run_config(&mut pi)
-                .unwrap_err()
-                .message
-                .contains("do not yet support --fork-thread")
-        );
+        for provider in ["pi", "omp"] {
+            let mut forked = RunConfig {
+                provider: provider.into(),
+                ..fork.clone()
+            };
+            assert!(
+                validate_run_config(&mut forked)
+                    .unwrap_err()
+                    .message
+                    .contains("do not yet support --fork-thread")
+            );
+        }
         let mut approval = RunConfig {
             approval_policy: "on-request".into(),
             ..droid.clone()
@@ -445,6 +450,7 @@ mod tests {
             for (name, model) in [
                 ("opencode", "openrouter/deepseek/deepseek-v4-flash-vision-exp"),
                 ("pi", "openrouter/deepseek/deepseek-v4-flash-vision-exp"),
+                ("omp", "anthropic/claude-opus-5-5"),
                 ("droid", "glm-5.3-flash"),
             ] {
                 let mut cfg = RunConfig {
@@ -454,6 +460,7 @@ mod tests {
                 match name {
                     "opencode" => cfg.opencode_path = "/opt/opencode2".into(),
                     "pi" => cfg.pi_path = "/opt/pi".into(),
+                    "omp" => cfg.omp_path = "/opt/omp".into(),
                     _ => cfg.droid_path = "/opt/droid".into(),
                 }
                 configure_provider_defaults(&mut cfg, &[]).unwrap();

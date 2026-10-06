@@ -56,8 +56,8 @@ override. The default layout keeps the sessions dashboard visible. Terminals
 64 columns wide or narrower get the single-column mobile layout with a tappable
 action bar; --mobile or RUDDR_TUI_MOBILE=1 forces it, and mobileWidthThreshold
 in tui.json changes the width.
-Press H to browse every agent's local sessions (Codex, Claude, Pi, OpenCode,
-Droid) read-only, with each session's chat and file diff. In that list, e shows
+Press H to browse every agent's local sessions (Codex, Claude, Pi, omp,
+OpenCode, Droid) read-only, with each session's chat and file diff. In that list, e shows
 only the sessions that edited files.
 With deja on PATH: f searches sessions as you type, L opens the last session in
 the launch repo/cwd, M searches Claude project memories, and Q asks about the
