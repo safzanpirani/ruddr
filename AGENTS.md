@@ -48,8 +48,8 @@ comment that says what it owns.
   app-server the lifecycle tests in `tests/` drive; extend it when adding
   protocol behavior.
 - `crates/ruddr-adapters` — the hidden `ruddr app-server --provider NAME`
-  command, which lets Claude Code, OpenCode 2, Pi, omp, and Factory Droid speak
-  the Codex app-server protocol on stdio. `pi.rs` drives both Pi and omp
+  command, which lets Claude Code, OpenCode 2, Pi, omp, Factory Droid, Hermes
+  Agent, and OpenClaw speak the Codex app-server protocol on stdio. `pi.rs` drives both Pi and omp
   (oh-my-pi, a Pi fork); `Flavor` selects omp's flags, settle event, and
   hashline edit reporting. `acp.rs` drives Hermes Agent and OpenClaw over the
   Agent Client Protocol; its `Flavor` decides steering (Hermes `/steer`,
@@ -151,10 +151,12 @@ comment that says what it owns.
   that turn.
 - Resume and fork are mutually exclusive. The two fork boundary selectors are
   mutually exclusive and invalid without `--fork-thread`.
-- Among the adapter providers, only Droid supports `--fork-thread`. Hermes and
-  OpenClaw also reject `--ephemeral`, `--effort`, and `--sandbox read-only`. A Droid
+- Among the adapter providers, only Droid supports `--fork-thread`. A Droid
   fork copies the whole session, so the boundary selectors are rejected for
   it. `validate_run_config` rejects every fork flag for the other adapters.
+- Hermes and OpenClaw keep every ACP session and cannot confine their shell
+  tools, so they also reject `--ephemeral`, `--effort`, and `--sandbox
+  read-only`.
 - Conversation forks do not create Git worktrees or roll filesystem state back.
 - Thread subcommands print raw app-server results as formatted JSON. Do not
   replace this with presentation-oriented output; callers depend on complete
@@ -254,9 +256,9 @@ waiting to be asked:
    `crates/ruddr-core/src/models.rs` and its tests, and every skill that names
    the model. The TUI and the web dashboard read the catalog from `ruddr
    models --json`; there is no TypeScript copy. The web server falls back to
-   `ruddr_core::models::builtin_catalog()`. The TUI still keeps its own
-   fallback list in `fallback_models` (`crates/ruddr-tui/src/core.rs`), so
-   update that list too. Users add or override models in
+   `ruddr_core::models::builtin_catalog()`, and the TUI's `fallback_models`
+   (`crates/ruddr-tui/src/core.rs`) builds from the same function. Users add
+   or override models in
    `~/.config/ruddr/models.json` through `ruddr models add|default|remove`.
    Keep the built-in list short, and do not bulk-import provider model lists.
 5. **Skills installed on this machine.** Run `cargo build -p ruddr-cli &&
@@ -301,6 +303,15 @@ tmux send-keys -t ruddr-check -l $'\e[<0;COL;ROWm'
 Keep mobile controls large enough to tap. Action-bar buttons span three rows
 and take the tap anywhere on the box. Do not submit prompts during a visual
 check, because that starts real provider runs.
+
+## Live-testing agents on other hosts
+
+Hermes Agent and OpenClaw run only on ampere. To drive them from a Mac build
+without cross-compiling, pass a wrapper script as `--hermes-path` or
+`--openclaw-path` that runs the agent over `ssh -T ampere`, and use `--cwd
+/tmp`, which exists on both machines. A non-interactive ssh shell lacks
+`~/.local/bin` and the nvm Node directory on `PATH`, so the wrapper names
+absolute paths. A live turn spends a real model call; ask before sending one.
 
 ## Remote and detached runs
 
