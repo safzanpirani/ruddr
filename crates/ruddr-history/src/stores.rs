@@ -5,7 +5,9 @@
 //! profile), omp `~/.omp/agent/sessions` plus each `~/.omp/profiles/*`
 //! profile and `$XDG_DATA_HOME/omp/sessions` (omp also honors
 //! `$PI_CODING_AGENT_DIR`, which this reads as Pi's), OpenCode
-//! `$OPENCODE_DB` or `$XDG_DATA_HOME/opencode/*.db`, and
+//! `$OPENCODE_DB` or `$XDG_DATA_HOME/opencode/*.db`, OpenClaw
+//! `$OPENCLAW_STATE_DIR/agents/*/agent/openclaw-agent.sqlite` (default
+//! `~/.openclaw`), Hermes `$HERMES_HOME/state.db` (default `~/.hermes`), and
 //! Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (Droid's replacement for
 //! the home directory, not a Factory directory) or `~/.factory/sessions`.
 
@@ -20,6 +22,9 @@ pub struct Stores {
     pub pi: Vec<PathBuf>,
     pub omp: Vec<PathBuf>,
     pub opencode: Vec<PathBuf>,
+    /// Each OpenClaw agent's SQLite store.
+    pub openclaw: Vec<PathBuf>,
+    pub hermes: Option<PathBuf>,
     pub droid: Option<PathBuf>,
 }
 
@@ -74,6 +79,17 @@ impl Stores {
                 omp.insert(0, dir);
             }
         }
+        let openclaw_agents = configured("OPENCLAW_STATE_DIR", home.join(".openclaw")).join("agents");
+        let mut openclaw: Vec<PathBuf> = std::fs::read_dir(&openclaw_agents)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path().join("agent").join("openclaw-agent.sqlite"))
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default();
+        openclaw.sort();
         let opencode_data = configured("XDG_DATA_HOME", home.join(".local").join("share")).join("opencode");
         let opencode = match env("OPENCODE_DB") {
             Some(db) if db == ":memory:" => Vec::new(),
@@ -95,6 +111,8 @@ impl Stores {
             pi,
             omp,
             opencode,
+            openclaw,
+            hermes: Some(configured("HERMES_HOME", home.join(".hermes")).join("state.db")).filter(|p| p.is_file()),
             droid: existing(
                 configured("FACTORY_HOME_OVERRIDE", home.to_path_buf())
                     .join(".factory")
@@ -165,6 +183,9 @@ mod tests {
             ".pi/juna/sessions/--w--",
             ".omp/agent/sessions/--w--",
             ".omp/profiles/work/agent/sessions/--w--",
+            ".openclaw/agents/main/agent",
+            ".openclaw/agents/idle/agent",
+            ".hermes",
             ".factory/sessions/-w",
             "custom/projects/-w",
         ] {
@@ -177,6 +198,8 @@ mod tests {
             ".pi/juna/sessions/--w--/q.jsonl",
             ".omp/agent/sessions/--w--/o.jsonl",
             ".omp/profiles/work/agent/sessions/--w--/w.jsonl",
+            ".openclaw/agents/main/agent/openclaw-agent.sqlite",
+            ".hermes/state.db",
             ".factory/sessions/-w/d.jsonl",
             ".factory/sessions/-w/d.settings.json",
             "custom/projects/-w/c.jsonl",
@@ -186,6 +209,8 @@ mod tests {
         let none = |_: &str| None;
         let stores = Stores::from_env(&none, &home);
         assert_eq!(stores.pi.len(), 2, "both Pi profiles");
+        assert_eq!(stores.openclaw, [home.join(".openclaw/agents/main/agent/openclaw-agent.sqlite")]);
+        assert_eq!(stores.hermes, Some(home.join(".hermes/state.db")));
         assert_eq!(
             stores.omp,
             [home.join(".omp/agent/sessions"), home.join(".omp/profiles/work/agent/sessions")]

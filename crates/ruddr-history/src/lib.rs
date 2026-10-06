@@ -1,5 +1,7 @@
 //! Session history from every agent on this machine: Codex, Claude Code, Pi,
-//! omp, OpenCode, and Factory Droid, whether or not Ruddr started the session.
+//! omp, OpenCode, Factory Droid, OpenClaw, and Hermes, whether or not Ruddr
+//! started the session. OpenClaw and Hermes keep SQLite stores that render as
+//! Pi transcripts (`sqlite_agents`).
 //!
 //! The parsers follow dejavu's (`~/Development/projects/dejavu`): Claude,
 //! Pi, and omp transcripts are trees, so only the active branch is read; Codex,
@@ -17,6 +19,7 @@ mod diff;
 mod jsonl;
 mod opencode;
 mod pi;
+mod sqlite_agents;
 mod stores;
 
 pub use diff::{line_diff, unified_diff};
@@ -34,17 +37,26 @@ pub enum Provider {
     Omp,
     OpenCode,
     Droid,
+    OpenClaw,
+    Hermes,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 6] = [
+    pub const ALL: [Provider; 8] = [
         Provider::Codex,
         Provider::Claude,
         Provider::Pi,
         Provider::Omp,
         Provider::OpenCode,
         Provider::Droid,
+        Provider::OpenClaw,
+        Provider::Hermes,
     ];
+
+    /// Whether the provider keeps sessions in SQLite rather than JSONL files.
+    pub fn is_sqlite(self) -> bool {
+        matches!(self, Provider::OpenCode | Provider::OpenClaw | Provider::Hermes)
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -53,6 +65,8 @@ impl Provider {
             Provider::Pi => "pi",
             Provider::Omp => "omp",
             Provider::OpenCode => "opencode",
+            Provider::OpenClaw => "openclaw",
+            Provider::Hermes => "hermes",
             Provider::Droid => "droid",
         }
     }
@@ -62,7 +76,8 @@ impl Provider {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionInfo {
     pub provider: Provider,
-    /// A transcript path, or `opencode://<database>#<session>`.
+    /// A transcript path, or `opencode://`, `openclaw://`, or
+    /// `hermes://<database>#<session>`.
     pub locator: String,
     /// The provider's session ID, used to resume it.
     pub id: String,
@@ -129,7 +144,7 @@ pub fn list_sessions(stores: &Stores, limit: usize) -> Vec<SessionInfo> {
                 Provider::Claude | Provider::Droid => claude::info(provider, &path),
                 Provider::Codex => codex::info(&path),
                 Provider::Pi | Provider::Omp => pi::info(provider, &path),
-                Provider::OpenCode => None,
+                Provider::OpenCode | Provider::OpenClaw | Provider::Hermes => None,
             }?;
             info.updated_ms = mtime;
             Some(info)
@@ -138,16 +153,28 @@ pub fn list_sessions(stores: &Stores, limit: usize) -> Vec<SessionInfo> {
     for database in &stores.opencode {
         sessions.extend(opencode::list(database, limit));
     }
+    for database in &stores.openclaw {
+        sessions.extend(sqlite_agents::list(Provider::OpenClaw, database, limit));
+    }
+    if let Some(database) = &stores.hermes {
+        sessions.extend(sqlite_agents::list(Provider::Hermes, database, limit));
+    }
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_ms));
     sessions.truncate(limit);
     sessions
 }
 
-/// The JSONL session a provider's ID names, at any age. Transcript file
-/// names end with the session ID, so only matching files are read.
+/// The session a provider's ID names, at any age. Transcript file names end
+/// with the session ID, so only matching files are read; SQLite stores are
+/// searched through their session lists.
 pub fn find_session(stores: &Stores, provider: Provider, id: &str) -> Option<SessionInfo> {
     if id.is_empty() {
         return None;
+    }
+    if provider.is_sqlite() {
+        return list_sessions(stores, usize::MAX)
+            .into_iter()
+            .find(|s| s.provider == provider && s.id == id);
     }
     stores
         .transcript_files()
@@ -158,24 +185,31 @@ pub fn find_session(stores: &Stores, provider: Provider, id: &str) -> Option<Ses
                 Provider::Claude | Provider::Droid => claude::info(provider, &path),
                 Provider::Codex => codex::info(&path),
                 Provider::Pi | Provider::Omp => pi::info(provider, &path),
-                Provider::OpenCode => None,
+                Provider::OpenCode | Provider::OpenClaw | Provider::Hermes => None,
             }?;
             info.updated_ms = mtime;
             (info.id == id).then_some(info)
         })
 }
 
+/// The session ID an `openclaw://` or `hermes://` locator names; OpenClaw
+/// resume commands carry a session key instead.
+pub fn session_id_from_locator(locator: &str) -> Option<String> {
+    sqlite_agents::session_id(locator)
+}
+
 /// Reads a whole session.
 pub fn load(info: &SessionInfo) -> Result<Transcript, String> {
     let events = match info.provider {
         Provider::OpenCode => opencode::events(&info.locator)?,
+        Provider::OpenClaw | Provider::Hermes => sqlite_agents::events(&info.locator)?,
         provider => {
             let text = std::fs::read_to_string(Path::new(&info.locator)).map_err(|e| format!("read {}: {e}", info.locator))?;
             match provider {
                 Provider::Claude | Provider::Droid => claude::events(provider, &text),
                 Provider::Codex => codex::events(&text),
                 Provider::Pi | Provider::Omp => pi::events(&text),
-                Provider::OpenCode => unreachable!(),
+                Provider::OpenCode | Provider::OpenClaw | Provider::Hermes => unreachable!(),
             }
         }
     };
@@ -278,7 +312,8 @@ pub(crate) fn edit_from_tool(name: &str, input: &Value) -> Option<Event> {
         .to_string();
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
-        "write" | "create" => {
+        // Hermes names them write_file and patch (replace mode).
+        "write" | "create" | "write_file" => {
             let content = ["content", "contents"].iter().find_map(|key| str_field(input, key)).unwrap_or("");
             Some(Event::FileChange {
                 path,
@@ -286,7 +321,7 @@ pub(crate) fn edit_from_tool(name: &str, input: &Value) -> Option<Event> {
                 hunks: diff::line_diff("", content),
             })
         }
-        "edit" | "multiedit" | "str_replace" | "str_replace_editor" => {
+        "edit" | "multiedit" | "str_replace" | "str_replace_editor" | "patch" => {
             let mut pairs: Vec<(String, String)> = Vec::new();
             if let Some(edits) = input.get("edits").and_then(Value::as_array) {
                 for edit in edits {

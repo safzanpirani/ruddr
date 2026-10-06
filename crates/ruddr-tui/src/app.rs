@@ -2359,7 +2359,7 @@ impl App {
                 "H",
                 Cmd::History,
             )
-            .hint("Codex, Claude, Pi, omp, OpenCode, and Droid history, read-only, with each session's diff"),
+            .hint("Codex, Claude, Pi, omp, OpenCode, Droid, OpenClaw, and Hermes history, read-only, with each session's diff"),
             cmd(
                 if self.history.as_ref().is_some_and(|h| h.edits_only) {
                     "Show every history session"

@@ -604,12 +604,14 @@ pub fn parse_deja_hit(hit: &Value) -> Option<DejaHit> {
     if !ruddr_history::Provider::ALL.iter().any(|p| p.name() == provider) {
         return None;
     }
+    let locator = text("path");
     let session_id = parsed
         // Pi and omp sessions resume by transcript path, which may hold spaces.
         .filter(|(p, id)| *p == provider && !id.is_empty() && (matches!(*p, "pi" | "omp") || !id.contains(char::is_whitespace)))
         .map(|(_, id)| id.to_string())
+        // OpenClaw resumes by session key, so its ID comes from the locator.
+        .or_else(|| ruddr_history::session_id_from_locator(&locator))
         .unwrap_or_default();
-    let locator = text("path");
     if session_id.is_empty() && locator.is_empty() {
         return None;
     }

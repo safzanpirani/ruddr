@@ -1300,7 +1300,7 @@ function paletteItems(): PaletteItem[] {
       id: "history",
       label: state.history ? "Back to Ruddr sessions" : "Browse every agent's sessions",
       key: "H",
-      hint: "Codex, Claude, Pi, omp, OpenCode, and Droid history, read-only, with each session's diff",
+      hint: "Codex, Claude, Pi, omp, OpenCode, Droid, OpenClaw, and Hermes history, read-only, with each session's diff",
       run: () => toggleHistory(),
     },
     { id: "stop", label: session?.status === "idle" ? "End idle session" : "Interrupt turn", key: "x x", disabled: stoppable ? undefined : "no active or idle session", run: () => void requestStop() },

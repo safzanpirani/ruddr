@@ -400,15 +400,8 @@ fn query_locator(target: &Target) -> Result<String, String> {
         .into_iter()
         .find(|p| p.name() == target.provider)
         .ok_or("Unknown session provider")?;
-    let stores = ruddr_history::Stores::discover();
-    let info = if provider == ruddr_history::Provider::OpenCode {
-        ruddr_history::list_sessions(&stores, usize::MAX)
-            .into_iter()
-            .find(|s| s.provider == provider && s.id == target.id)
-    } else {
-        ruddr_history::find_session(&stores, provider, &target.id)
-    };
-    info.map(|s| s.locator)
+    ruddr_history::find_session(&ruddr_history::Stores::discover(), provider, &target.id)
+        .map(|s| s.locator)
         .ok_or_else(|| format!("No {} transcript found for {}", target.provider, target.id))
 }
 
@@ -679,15 +672,19 @@ mod tests {
             {"source":"opencode", "path":"opencode:///db#ses_a", "resume":"opencode2 -s ses_a"},
             {"source":"droid", "path":"/d.jsonl", "resume":"droid --resume d"},
             {"source":"codex", "path":"/no-resume.jsonl", "resume":null},
-            {"source":"omp", "path":"/omp session.jsonl", "resume":"omp --resume /omp session.jsonl"}
+            {"source":"omp", "path":"/omp session.jsonl", "resume":"omp --resume /omp session.jsonl"},
+            {"source":"openclaw", "path":"openclaw:///s/openclaw-agent.sqlite#s%201", "resume":"openclaw resume agent:main:cron:x"},
+            {"source":"hermes", "path":"hermes:///h/state.db#20260715_101952_8b547a", "resume":"hermes --resume 20260715_101952_8b547a"}
         ]});
         let Reply::Sessions(hits) = parse_reply(&Request::Find("match".into()), &hits.to_string()).unwrap() else {
             panic!()
         };
         assert_eq!(
             hits.iter().map(|h| h.provider.as_str()).collect::<Vec<_>>(),
-            ["claude", "codex", "pi", "opencode", "droid", "codex", "omp"]
+            ["claude", "codex", "pi", "opencode", "droid", "codex", "omp", "openclaw", "hermes"]
         );
+        assert_eq!(hits[7].session_id, "s 1");
+        assert_eq!(hits[8].session_id, "20260715_101952_8b547a");
         assert_eq!(hits[0].excerpt, "MATCH");
         assert_eq!(hits[2].session_id, "/pi session.jsonl");
         assert_eq!(hits[3].session_id, "ses_a");

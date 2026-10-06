@@ -75,9 +75,12 @@ comment that says what it owns.
   the `H` list of every agent's past sessions, read-only, with the `e`
   filter for sessions that edited files.
 - `crates/ruddr-history` — reads every local agent's session transcripts
-  (Codex, Claude Code, Pi, omp, OpenCode, Factory Droid) whether or not Ruddr
-  started them, and rebuilds their file edits as unified diffs. The parsers
-  follow dejavu's. It never opens the auth files stored beside transcripts.
+  (Codex, Claude Code, Pi, omp, OpenCode, Factory Droid, OpenClaw, Hermes)
+  whether or not Ruddr started them, and rebuilds their file edits as unified
+  diffs. The parsers follow dejavu's. It never opens the auth files stored
+  beside transcripts. OpenClaw keeps auth profiles inside the same SQLite file
+  as its transcripts, so `sqlite_agents.rs` opens it read-only and queries only
+  transcript tables; it renders OpenClaw and Hermes sessions as Pi JSONL.
   The TUI and the web server both use it.
 - `crates/ruddr-web` — `ruddr web`, the browser dashboard server (axum and
   tokio, the only async code in the workspace). It gates every API call on

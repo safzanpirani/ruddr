@@ -228,7 +228,8 @@ GitHub release, and publishes the npm package.
 ### Companion: dejavu
 
 [dejavu](https://github.com/safzanpirani/dejavu) searches past Codex, Claude
-Code, Pi, omp, OpenCode, and Factory Droid transcripts on the same machine. Ruddr
+Code, Pi, omp, OpenCode, Factory Droid, OpenClaw, and Hermes transcripts on the
+same machine. Ruddr
 uses it in two places: the TUI's and the web dashboard's `f` key runs `deja
 find` to look up an earlier session, open it read-only, or continue it under
 Ruddr, and agents driving Ruddr use
@@ -868,11 +869,16 @@ Codex (`$CODEX_HOME/sessions`), Claude Code (`$CLAUDE_CONFIG_DIR/projects`),
 Pi (`~/.pi/*/sessions` or `$PI_CODING_AGENT_DIR/sessions`), omp
 (`~/.omp/agent/sessions`, `~/.omp/profiles/*/agent/sessions`, and
 `$XDG_DATA_HOME/omp/sessions`), OpenCode (its
-SQLite databases under `$XDG_DATA_HOME/opencode`, or `$OPENCODE_DB`), and
-Factory Droid (`~/.factory/sessions`, or `$FACTORY_HOME_OVERRIDE/.factory/sessions`). The newest 400 sessions are listed with
+SQLite databases under `$XDG_DATA_HOME/opencode`, or `$OPENCODE_DB`),
+Factory Droid (`~/.factory/sessions`, or `$FACTORY_HOME_OVERRIDE/.factory/sessions`),
+OpenClaw (each agent's `agents/<agent>/agent/openclaw-agent.sqlite` under
+`$OPENCLAW_STATE_DIR` or `~/.openclaw`), and Hermes Agent (`$HERMES_HOME/state.db`
+or `~/.hermes/state.db`). OpenClaw and Hermes open read-only, and only their
+transcript tables are queried; OpenClaw keeps auth profiles in the same file,
+and Ruddr never reads them. The newest 400 sessions are listed with
 their titles. Selecting one shows the whole conversation in Chat, its assistant
 messages in Output, and every file edit it made in Diff, with the same file
-tree. Claude, Pi, and omp follow the active branch of their transcript trees.
+tree. Claude, Pi, omp, and OpenClaw follow the active branch of their transcript trees.
 Codex and Claude diffs come from the patches they recorded, and omp diffs from
 the numbered diff in each edit result, all with real line numbers. Other
 providers' diffs are rebuilt from their edit-tool inputs, so their hunk line

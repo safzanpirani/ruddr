@@ -35,6 +35,8 @@ ureq = "3"
 sha2 = "0.11"
 # OpenCode keeps its sessions in SQLite; bundled so Windows needs no sqlite3.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# OpenClaw zstd-compresses large transcript rows; a pure-Rust decoder needs no C build.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 [profile.dev]
 # Debug info is most of target/debug; line tables keep backtraces useful.
