@@ -66,8 +66,8 @@ and writes only the release-check cache; it leaves installed skills untouched.
   Droid's autonomy (`read-only` off, `workspace-write` medium,
   `danger-full-access` high). Ruddr rejects Droid's permission requests, so a
   tool call above that level ends the turn as failed. Droid refuses
-  `--ephemeral` and fork turn selectors; `--fork-thread` copies the whole
-  session.
+  `--ephemeral`. `--fork-thread` copies the whole session, and the fork turn
+  selectors work on turns Ruddr started after 0.6.7.
 
 `ruddr models --json` lists every model and effort per provider, including
 any the user added with `ruddr models add`; `ruddr run` without `--model`

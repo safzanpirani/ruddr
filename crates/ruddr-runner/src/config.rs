@@ -143,11 +143,6 @@ pub fn validate_run_config(cfg: &mut RunConfig) -> Result<()> {
             }
         }
         if provider == Provider::Droid {
-            if selecting {
-                return Err(Error::failed(
-                    "droid forks copy the whole session; drop --fork-before-turn and --fork-through-turn",
-                ));
-            }
             if cfg.ephemeral {
                 return Err(Error::failed("droid sessions always persist; drop --ephemeral"));
             }
@@ -328,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn droid_forks_whole_sessions_only() {
+    fn droid_forks_accept_turn_selectors_but_not_ephemeral() {
         let droid = RunConfig {
             provider: "droid".into(),
             model: "glm-5.3-flash".into(),
@@ -344,7 +339,7 @@ mod tests {
             fork_through_turn_id: "turn-a".into(),
             ..fork.clone()
         };
-        assert!(validate_run_config(&mut selector).unwrap_err().message.contains("whole session"));
+        validate_run_config(&mut selector).unwrap();
         let mut ephemeral = RunConfig {
             ephemeral: true,
             ..droid.clone()

@@ -151,9 +151,11 @@ comment that says what it owns.
   that turn.
 - Resume and fork are mutually exclusive. The two fork boundary selectors are
   mutually exclusive and invalid without `--fork-thread`.
-- Among the adapter providers, only Droid supports `--fork-thread`. A Droid
-  fork copies the whole session, so the boundary selectors are rejected for
-  it. `validate_run_config` rejects every fork flag for the other adapters.
+- Among the adapter providers, only Droid supports `--fork-thread`. The
+  Droid adapter sends each turn ID as the Droid user message ID, and a
+  bounded fork calls `droid.execute_rewind` at that turn's message (or the
+  next turn's, for `--fork-through-turn`) with no files to restore.
+  `validate_run_config` rejects every fork flag for the other adapters.
 - Hermes and OpenClaw keep every ACP session and cannot confine their shell
   tools, so they also reject `--ephemeral`, `--effort`, and `--sandbox
   read-only`.
@@ -263,7 +265,7 @@ waiting to be asked:
    Keep the built-in list short, and do not bulk-import provider model lists.
 5. **Skills installed on this machine.** Run `cargo build -p ruddr-cli &&
    target/debug/ruddr skill install` so `~/.claude/skills`,
-   `~/.agents/skills`, and `~/.codex/skills` get the new delegate skill. Other
+   `~/.agents/skills`, `~/.codex/skills`, and `~/.factory/skills` get the new delegate skill. Other
    personal skills on this machine also drive Ruddr, such as the review/solve
    `*-auto` skills. Search the skill directories for `ruddr` and bring each one
    in line. Each such skill has one canonical copy; edit it, copy it over the

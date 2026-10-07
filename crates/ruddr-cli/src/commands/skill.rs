@@ -36,7 +36,7 @@ fn install_command(argv: &[String]) -> Result<()> {
     let specs = [args::multi(
         "dir",
         "DIR",
-        "skills directory to install into; repeatable (default: ~/.claude/skills, ~/.agents/skills, and ~/.codex/skills when Codex is installed)",
+        "skills directory to install into; repeatable (default: ~/.claude/skills, ~/.agents/skills, plus ~/.codex/skills and ~/.factory/skills when Codex or Droid is installed)",
     )];
     let parsed = args::parse("skill install", &specs, argv)?;
     if !parsed.positionals.is_empty() {
@@ -75,11 +75,14 @@ pub fn install_into(out: &mut dyn Write, targets: &[PathBuf]) -> Result<()> {
     }
 }
 
-/// Claude Code, the shared `~/.agents` location, and Codex when it is installed.
+/// Claude Code, the shared `~/.agents` location, and Codex and Factory Droid
+/// when they are installed.
 pub fn default_skill_dirs(home: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![home.join(".claude").join("skills"), home.join(".agents").join("skills")];
-    if home.join(".codex").is_dir() {
-        dirs.push(home.join(".codex").join("skills"));
+    for agent in [".codex", ".factory"] {
+        if home.join(agent).is_dir() {
+            dirs.push(home.join(agent).join("skills"));
+        }
     }
     dirs
 }
@@ -115,7 +118,8 @@ fn print_skill_usage() {
   ruddr skill show                      print the skill
 
 Without --dir the skill is installed into ~/.claude/skills, ~/.agents/skills,
-and ~/.codex/skills when ~/.codex exists. ruddr update, the npm postinstall
+~/.codex/skills when ~/.codex exists, and ~/.factory/skills when ~/.factory
+exists. ruddr update, the npm postinstall
 hook, and scripts/install-local.sh run skill install for you.
 "
     );
@@ -191,13 +195,16 @@ mod tests {
     }
 
     #[test]
-    fn default_dirs_include_codex_only_when_installed() {
+    fn default_dirs_include_codex_and_droid_only_when_installed() {
         let home = temp_dir("home");
         assert_eq!(default_skill_dirs(&home).len(), 2);
+        std::fs::create_dir(home.join(".factory")).unwrap();
+        assert_eq!(default_skill_dirs(&home)[2], home.join(".factory").join("skills"));
         std::fs::create_dir(home.join(".codex")).unwrap();
         let dirs = default_skill_dirs(&home);
-        assert_eq!(dirs.len(), 3);
+        assert_eq!(dirs.len(), 4);
         assert_eq!(dirs[2], home.join(".codex").join("skills"));
+        assert_eq!(dirs[3], home.join(".factory").join("skills"));
         std::fs::remove_dir_all(home).unwrap();
     }
 

@@ -288,8 +288,8 @@ export routes that 2.0.15 introduced, and falls back to the older
 
 Pi runs require the `pi` executable with RPC mode. omp runs require the `omp`
 executable; the adapter follows the RPC protocol of omp 18.6.1. Droid runs require the
-`droid` executable and are verified against droid 0.228.0 and 0.230.0, which
-speak Factory protocols 1.233.0 and 1.241.0. The adapters inherit each CLI's normal authentication
+`droid` executable and are verified against droid 0.228.0, 0.230.0, and
+0.234.0, which speak Factory protocols 1.233.0, 1.241.0, and 1.246.0. The adapters inherit each CLI's normal authentication
 environment.
 
 ## Run a task
@@ -501,8 +501,11 @@ itself. Ruddr adds no filesystem containment. Ruddr rejects every Droid
 permission request and question. A tool call above the autonomy level
 therefore ends the turn as failed, and the error names the autonomy level.
 Droid sessions always persist, so `--ephemeral` is refused. `--fork-thread`
-copies the whole Droid session. `--fork-before-turn` and `--fork-through-turn`
-are not supported for Droid.
+copies the whole Droid session. With `--fork-before-turn` or
+`--fork-through-turn`, Ruddr asks Droid to rewind a copy of the session at
+that turn's message, leaving files alone. Ruddr gives each Droid turn's
+message the turn's ID, so the selectors work only on turns Ruddr started
+after 0.6.7.
 
 Run it in the background from an agent harness so the harness can continue
 reading user messages and issue steering commands. `--detach` does this without
@@ -1447,7 +1450,7 @@ package and `scripts/install-local.sh` install it into `~/.claude/skills/` and
 reinstall it or to target another location:
 
 ```bash
-ruddr skill install                      # ~/.claude, ~/.agents, and ~/.codex (if present)
+ruddr skill install                      # ~/.claude, ~/.agents, ~/.codex and ~/.factory (if present)
 ruddr skill install --dir .claude/skills # this project only
 ruddr skill show                         # print the skill
 ```

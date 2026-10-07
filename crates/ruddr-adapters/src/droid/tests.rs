@@ -39,10 +39,23 @@ impl DroidClient for Arc<FakeDroidClient> {
         Ok(())
     }
     fn request(&self, method: &str, params: Value, id: Option<String>, _timeout: Option<Duration>) -> AResult<Map<String, Value>> {
-        lock(&self.requests).push((method.into(), params, id));
+        lock(&self.requests).push((method.into(), params.clone(), id));
         let result = match method {
             "droid.initialize_session" => json!({ "sessionId": "droid-session" }),
             "droid.fork_session" => json!({ "newSessionId": "droid-fork" }),
+            "droid.execute_rewind" => json!({ "newSessionId": "droid-rewind", "restoredCount": 0, "deletedCount": 0 }),
+            "droid.load_session" if params["sessionId"] == "two-turns" => json!({ "session": { "messages": [
+                { "id": "hook-1", "role": "user", "content": [], "visibility": "user_only" },
+                { "id": "context-turn-a", "role": "user", "content": [{ "type": "text", "text": "ctx" }], "visibility": "llm_only" },
+                { "id": "turn-a", "role": "user", "content": [{ "type": "text", "text": "first" }] },
+                { "id": "a-1", "role": "assistant", "content": [{ "type": "tool_use", "id": "call" }] },
+                { "id": "r-1", "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "call" }] },
+                { "id": "steer-x", "role": "user", "content": [{ "type": "text", "text": "steer" }] },
+                { "id": "a-2", "role": "assistant", "content": [{ "type": "text", "text": "done" }] },
+                { "id": "hook-2", "role": "user", "content": [], "visibility": "user_only" },
+                { "id": "turn-b", "role": "user", "content": [{ "type": "text", "text": "second" }] },
+                { "id": "a-3", "role": "assistant", "content": [{ "type": "text", "text": "done" }] },
+            ] } }),
             "droid.get_context_stats" => json!({ "used": 40, "remaining": 960, "limit": 1000 }),
             _ => json!({}),
         };
@@ -128,7 +141,15 @@ fn starts_a_session_reports_tools_and_messages_and_completes_the_turn() {
     assert_eq!(params["autonomyLevel"], "medium");
     assert_eq!(params["autoRejectPermissionRequests"], true);
     assert!(params["machineId"].as_str().is_some_and(|m| !m.is_empty()));
-    assert_eq!(requests[1], ("droid.add_user_message".into(), json!({ "text": "first" }), None));
+    // The turn ID doubles as Droid's message ID so forks can name the turn.
+    assert_eq!(
+        requests[1],
+        (
+            "droid.add_user_message".into(),
+            json!({ "messageId": s.turn_id, "text": "first" }),
+            None
+        )
+    );
 
     let c = &s.client;
     c.notify(json!({ "type": "tool_call", "toolUse": { "id": "tool-1", "name": "Execute", "input": {} } }));
@@ -236,6 +257,7 @@ fn keeps_the_turn_open_until_a_queued_steer_runs() {
         .find(|(m, p, _)| m == "droid.add_user_message" && p["text"] == "correction")
         .unwrap();
     let steer_id = steer.2.expect("the steer carries its own request ID");
+    assert!(steer.1["messageId"].as_str().unwrap().starts_with(STEER_MESSAGE_PREFIX));
     let users: Vec<Value> = s.completed_items().into_iter().filter(|i| i["type"] == "userMessage").collect();
     assert_eq!(
         users.iter().map(|i| i["text"].as_str().unwrap()).collect::<Vec<_>>(),
@@ -387,9 +409,9 @@ fn resumes_and_forks_sessions_and_rejects_unsupported_thread_options() {
         &forked,
         2,
         "thread/fork",
-        json!({ "threadId": "old-session", "cwd": "/tmp", "sandbox": "workspace-write", "lastTurnId": "t-1" }),
+        json!({ "threadId": "old-session", "cwd": "/tmp", "sandbox": "workspace-write", "lastTurnId": "t-1", "beforeTurnId": "t-2" }),
     );
-    assert!(forked.text().contains("--fork-through-turn"));
+    assert!(forked.text().contains("mutually exclusive"));
     call(
         &fork,
         &forked,
@@ -505,4 +527,46 @@ fn client_declines_interactive_requests_and_times_out_unanswered_calls() {
         thread::sleep(Duration::from_millis(5));
     }
     client.close();
+}
+
+fn fork_requests(boundary: Value) -> (Arc<Collector>, Vec<(String, Value)>) {
+    let (fork, client, emitted) = adapter(STEER_PICKUP_TIMEOUT);
+    call(&fork, &emitted, 1, "initialize", json!({}));
+    let mut params = json!({ "threadId": "two-turns", "cwd": "/tmp", "sandbox": "workspace-write" });
+    params.as_object_mut().unwrap().extend(boundary.as_object().unwrap().clone());
+    call(&fork, &emitted, 2, "thread/fork", params);
+    fork.close();
+    let requests = client.requests().into_iter().map(|(method, params, _)| (method, params)).collect();
+    (emitted, requests)
+}
+
+#[test]
+fn fork_boundaries_rewind_at_the_turn_message_without_touching_files() {
+    let rewind = |message: &str| {
+        (
+            "droid.execute_rewind".to_string(),
+            json!({ "sessionId": "two-turns", "messageId": message, "filesToRestore": [], "filesToDelete": [], "forkTitle": "Ruddr fork" }),
+        )
+    };
+    // Before a turn rewinds at that turn's own message.
+    let (emitted, requests) = fork_requests(json!({ "beforeTurnId": "turn-b" }));
+    assert_eq!(emitted.result(json!(2)), json!({ "thread": { "id": "droid-rewind" } }));
+    assert_eq!(requests[1], rewind("turn-b"));
+    assert_eq!(requests[2].1["sessionId"], "droid-rewind");
+    // Through a turn rewinds at the next turn start, past tool results,
+    // steers, hook records, and injected context.
+    let (_, requests) = fork_requests(json!({ "lastTurnId": "turn-a" }));
+    assert_eq!(requests[1], rewind("turn-b"));
+    // Through the last turn keeps the whole session.
+    let (emitted, requests) = fork_requests(json!({ "lastTurnId": "turn-b" }));
+    assert_eq!(emitted.result(json!(2)), json!({ "thread": { "id": "droid-fork" } }));
+    assert_eq!(requests[1].0, "droid.fork_session");
+    // A turn Droid does not know fails before anything is written.
+    let (emitted, requests) = fork_requests(json!({ "beforeTurnId": "older-turn" }));
+    assert!(
+        emitted.text().contains("turn older-turn is not in the Droid session"),
+        "{}",
+        emitted.text()
+    );
+    assert_eq!(requests.len(), 1);
 }

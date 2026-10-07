@@ -2,9 +2,9 @@
 //!
 //! The adapter runs `droid exec --input-format stream-jsonrpc
 //! --output-format stream-jsonrpc` and speaks Factory's JSON-RPC envelope
-//! (`factoryApiVersion` 1.0.0). It is verified against droid 0.228.0 and
-//! 0.230.0, which speak Factory protocols 1.233.0 and 1.241.0. Factory
-//! publishes no schema; these behaviors were observed live:
+//! (`factoryApiVersion` 1.0.0). It is verified against droid 0.228.0,
+//! 0.230.0, and 0.234.0, which speak Factory protocols 1.233.0, 1.241.0, and
+//! 1.246.0. Factory publishes no schema; these behaviors were observed live:
 //!
 //! - `droid.load_session` works without `droid.initialize_session`. Calling
 //!   initialize first would create a stray empty session, so resume and fork
@@ -15,6 +15,11 @@
 //!   the same Droid turn; near the end of a turn Droid first emits
 //!   `agent_turn_completed` and then runs the message as a new Droid turn. A
 //!   Ruddr turn therefore stays open while a steer is pending.
+//! - `droid.add_user_message` keeps a caller-chosen `messageId`, so each
+//!   turn's user message carries the Ruddr turn ID. `droid.execute_rewind` at
+//!   a message, with no files to restore or delete, writes a new session that
+//!   holds everything before that message and leaves files alone. Fork
+//!   boundaries use it.
 //! - `autoRejectPermissionRequests: true` ends the whole turn with reason
 //!   `permission_rejected` instead of handing the model an error. At autonomy
 //!   `off`, even `echo` needs permission.
@@ -229,12 +234,18 @@ impl Inner {
         if mode == Mode::Start && input.get("ephemeral") == Some(&Value::Bool(true)) {
             return Err(AdapterError::invalid("Droid sessions always persist; --ephemeral is not supported"));
         }
-        if mode == Mode::Fork
-            && (optional_string(input.get("beforeTurnId")).is_some() || optional_string(input.get("lastTurnId")).is_some())
-        {
-            return Err(AdapterError::invalid(
-                "Droid forks copy the whole session; --fork-before-turn and --fork-through-turn are not supported",
-            ));
+        let boundary = match (optional_string(input.get("beforeTurnId")), optional_string(input.get("lastTurnId"))) {
+            (Some(_), Some(_)) => {
+                return Err(AdapterError::invalid(
+                    "--fork-before-turn and --fork-through-turn are mutually exclusive",
+                ));
+            }
+            (Some(turn), None) => Some(Boundary::Before(turn)),
+            (None, Some(turn)) => Some(Boundary::Through(turn)),
+            (None, None) => None,
+        };
+        if boundary.is_some() && mode != Mode::Fork {
+            return Err(AdapterError::invalid("fork turn selectors need thread/fork"));
         }
         // `ruddr thread fork` sends only the thread ID: it forks from the
         // app-server's working directory and leaves the session settings
@@ -295,11 +306,24 @@ impl Inner {
             thread.id = required_string(result.get("sessionId"), "Droid session id")?;
         } else {
             let mut session = required_string(input.get("threadId"), "threadId")?;
-            self.load_session(&session)?;
+            let loaded = self.load_session(&session)?;
             if mode == Mode::Fork {
-                // fork_session copies the loaded session but leaves this
-                // process on the source, so the copy is loaded before any turn.
-                let forked = self.client.request("droid.fork_session", json!({}), None, None)?;
+                // Both fork_session and execute_rewind write a new session but
+                // leave this process on the source, so the copy is loaded
+                // before any turn.
+                let rewind_at = match &boundary {
+                    Some(boundary) => rewind_point(&loaded, boundary)?,
+                    None => None,
+                };
+                let forked = match rewind_at {
+                    Some(message) => self.client.request(
+                        "droid.execute_rewind",
+                        json!({ "sessionId": session, "messageId": message, "filesToRestore": [], "filesToDelete": [], "forkTitle": "Ruddr fork" }),
+                        None,
+                        Some(DEFAULT_START_TIMEOUT),
+                    )?,
+                    None => self.client.request("droid.fork_session", json!({}), None, None)?,
+                };
                 session = required_string(forked.get("newSessionId"), "Droid fork session id")?;
                 self.load_session(&session)?;
             }
@@ -314,14 +338,13 @@ impl Inner {
         Ok(json!({ "thread": { "id": id } }))
     }
 
-    fn load_session(&self, session: &str) -> AResult<()> {
+    fn load_session(&self, session: &str) -> AResult<Map<String, Value>> {
         self.client.request(
             "droid.load_session",
             json!({ "sessionId": session, "autoRejectPermissionRequests": true }),
             None,
             Some(DEFAULT_START_TIMEOUT),
-        )?;
-        Ok(())
+        )
     }
 
     fn start_turn(&self, params: &Value) -> AResult<Value> {
@@ -369,7 +392,12 @@ impl Inner {
             }));
             (id, serial)
         };
-        if let Err(error) = self.client.request("droid.add_user_message", json!({ "text": text }), None, None) {
+        // The turn ID doubles as the Droid message ID, which is what lets a
+        // later fork name this turn as a boundary.
+        if let Err(error) = self
+            .client
+            .request("droid.add_user_message", json!({ "messageId": turn_id, "text": text }), None, None)
+        {
             let mut state = lock(&self.state);
             if state.turn.as_ref().is_some_and(|turn| turn.serial == serial) {
                 state.turn = None;
@@ -392,10 +420,12 @@ impl Inner {
             turn.pending_steers.insert(request_id.clone());
             (thread_id, turn.id.clone(), turn.serial, request_id, text)
         };
-        if let Err(error) = self
-            .client
-            .request("droid.add_user_message", json!({ "text": text }), Some(request_id.clone()), None)
-        {
+        if let Err(error) = self.client.request(
+            "droid.add_user_message",
+            json!({ "messageId": format!("{STEER_MESSAGE_PREFIX}{}", uuid_v4()), "text": text }),
+            Some(request_id.clone()),
+            None,
+        ) {
             if let Some(turn) = lock(&self.state).turn.as_mut().filter(|turn| turn.serial == serial) {
                 turn.pending_steers.remove(&request_id);
             }
@@ -752,6 +782,71 @@ impl Inner {
         self.emit
             .emit(json!({ "method": "thread/tokenUsage/updated", "params": { "threadId": thread.id, "tokenUsage": token_usage } }));
     }
+}
+
+/// Steer messages carry this prefix so a fork boundary never mistakes one for
+/// the start of a turn.
+const STEER_MESSAGE_PREFIX: &str = "steer-";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Boundary {
+    /// `--fork-before-turn`: drop this turn and everything after it.
+    Before(String),
+    /// `--fork-through-turn`: keep history through this turn.
+    Through(String),
+}
+
+/// The message to rewind at for a fork boundary, or `None` when the fork
+/// keeps the whole session. `loaded` is the `droid.load_session` result,
+/// whose `session.messages` lists the session in order.
+fn rewind_point(loaded: &Map<String, Value>, boundary: &Boundary) -> AResult<Option<String>> {
+    let messages = loaded
+        .get("session")
+        .and_then(|session| session.get("messages"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| AdapterError::failed("Droid did not return the session's messages"))?;
+    let turn = match boundary {
+        Boundary::Before(turn) | Boundary::Through(turn) => turn,
+    };
+    let Some(index) = messages
+        .iter()
+        .position(|message| message.get("id").and_then(Value::as_str) == Some(turn.as_str()))
+    else {
+        let older = loaded.get("hasOlderMessages") == Some(&Value::Bool(true));
+        return Err(AdapterError::invalid(format!(
+            "turn {turn} is not in the Droid session{}; only turns Ruddr started after 0.6.7 can bound a fork",
+            if older { " window Droid loaded" } else { "" }
+        )));
+    };
+    match boundary {
+        Boundary::Before(_) => Ok(Some(turn.clone())),
+        Boundary::Through(_) => Ok(messages[index + 1..]
+            .iter()
+            .find(|message| starts_turn(message))
+            .and_then(|message| message.get("id").and_then(Value::as_str).map(str::to_string))),
+    }
+}
+
+/// Whether a Droid session message is the user message that starts a turn:
+/// visible user text, not a tool result, hook record, injected context, or
+/// Ruddr steer.
+fn starts_turn(message: &Value) -> bool {
+    let id = message.get("id").and_then(Value::as_str).unwrap_or("");
+    if message.get("role").and_then(Value::as_str) != Some("user")
+        || id.is_empty()
+        || id.starts_with("context-")
+        || id.starts_with(STEER_MESSAGE_PREFIX)
+        || message.get("visibility").is_some_and(|visibility| !visibility.is_null())
+    {
+        return false;
+    }
+    let content = message.get("content").and_then(Value::as_array);
+    content.is_some_and(|blocks| {
+        blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            && !blocks
+                .iter()
+                .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+    })
 }
 
 fn describe_reason(thread: Option<&DroidThread>, reason: &str) -> String {
