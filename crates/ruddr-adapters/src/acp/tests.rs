@@ -1,5 +1,4 @@
 use super::*;
-use crate::protocol::Latch;
 use crate::protocol::handle;
 use crate::protocol::tests::Collector;
 
@@ -9,19 +8,17 @@ struct FakeAcpClient {
     requests: Mutex<Vec<(String, Value)>>,
     notifications: Mutex<Vec<(String, Value)>>,
     event: Mutex<Option<EventFn>>,
-    /// The response of the next main prompt, set when the test releases it.
+    /// The response of the running main prompt, set when the test releases it.
     prompt_result: Mutex<Option<AResult<Value>>>,
-    prompt_done: Arc<Latch>,
     /// Text the agent "says" when it receives a `/steer` prompt.
     steer_reply: Mutex<Option<String>>,
+    /// `session/cancel` stops the running prompt, as an ACP agent does.
+    cancel_stops_prompt: Mutex<bool>,
 }
 
 impl FakeAcpClient {
     fn new() -> Arc<FakeAcpClient> {
-        Arc::new(FakeAcpClient {
-            prompt_done: Latch::new(),
-            ..FakeAcpClient::default()
-        })
+        Arc::new(FakeAcpClient::default())
     }
     fn update(&self, update: Value) {
         let on_event = lock(&self.event).clone().unwrap();
@@ -29,7 +26,13 @@ impl FakeAcpClient {
     }
     fn finish(&self, result: AResult<Value>) {
         *lock(&self.prompt_result) = Some(result);
-        self.prompt_done.set();
+    }
+    fn prompts(&self) -> Vec<String> {
+        self.requests()
+            .into_iter()
+            .filter(|(method, _)| method == "session/prompt")
+            .map(|(_, params)| params["prompt"][0]["text"].as_str().unwrap().to_string())
+            .collect()
     }
     fn requests(&self) -> Vec<(String, Value)> {
         lock(&self.requests).clone()
@@ -53,13 +56,22 @@ impl AcpClient for Arc<FakeAcpClient> {
             return Ok(json!({ "stopReason": "end_turn" }));
         }
         if method == "session/prompt" {
-            assert!(self.prompt_done.wait(Duration::from_secs(15)), "prompt never released");
-            return lock(&self.prompt_result).take().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                if let Some(result) = lock(&self.prompt_result).take() {
+                    return result;
+                }
+                assert!(std::time::Instant::now() < deadline, "prompt never released");
+                thread::sleep(Duration::from_millis(2));
+            }
         }
         Ok(json!({}))
     }
     fn notify(&self, method: &str, params: Value) -> AResult<()> {
         lock(&self.notifications).push((method.into(), params));
+        if method == "session/cancel" && *lock(&self.cancel_stops_prompt) {
+            self.finish(Ok(json!({ "stopReason": "cancelled" })));
+        }
         Ok(())
     }
     fn close(&self) {}
@@ -218,24 +230,100 @@ fn hermes_steers_with_a_slash_command_and_hides_the_confirmation() {
     adapter.close();
 }
 
+fn steer(adapter: &AcpAdapter, emitted: &Collector, id: i64, thread_id: &str, turn_id: &str, text: &str) -> Value {
+    call(
+        adapter,
+        emitted,
+        id,
+        "turn/steer",
+        json!({ "threadId": thread_id, "expectedTurnId": turn_id, "input": [{ "type": "text", "text": text }] }),
+    );
+    emitted.response(json!(id)).unwrap()
+}
+
 #[test]
-fn openclaw_rejects_steers_and_interrupt_cancels_the_session() {
+fn openclaw_steers_by_restarting_the_prompt_inside_the_same_turn() {
+    let client = FakeAcpClient::new();
+    *lock(&client.cancel_stops_prompt) = true;
+    let (adapter, emitted) = new_adapter(Flavor::OpenClaw, &client);
+    let (thread_id, turn_id) = start(&adapter, &emitted);
+    wait_until(|| client.prompts().len() == 1);
+    client.update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Starting on it." } }));
+    wait_until(|| emitted.notification("item/agentMessage/delta").is_some());
+
+    assert_eq!(
+        steer(&adapter, &emitted, 4, &thread_id, &turn_id, "use tabs")["result"]["turnId"],
+        json!(turn_id)
+    );
+    assert_eq!(
+        lock(&client.notifications).clone(),
+        [("session/cancel".to_string(), json!({ "sessionId": "acp-1" }))]
+    );
+    wait_until(|| client.prompts().len() == 2);
+    assert_eq!(
+        steer(&adapter, &emitted, 5, &thread_id, &turn_id, "and no tests")["result"]["turnId"],
+        json!(turn_id)
+    );
+    wait_until(|| client.prompts().len() == 3);
+    let prompts = client.prompts();
+    assert_eq!(prompts[0], "first");
+    for (prompt, steers) in prompts[1..].iter().zip([&["use tabs"][..], &["use tabs", "and no tests"]]) {
+        assert!(prompt.starts_with("first\n\n[Steer]"), "{prompt}");
+        assert!(prompt.ends_with(&format!("\n\n{}", steers.join("\n\n"))), "{prompt}");
+    }
+    // The cancelled prompts end nothing; only the last one ends the turn.
+    assert!(emitted.notification("turn/completed").is_none());
+    client.update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Done with tabs." } }));
+    client.finish(Ok(json!({ "stopReason": "end_turn" })));
+    emitted.wait_for_method("turn/completed");
+    assert_eq!(emitted.notifications("turn/completed").len(), 1);
+    assert_eq!(
+        emitted.notification("turn/completed").unwrap()["params"]["turn"]["status"],
+        "completed"
+    );
+    let items = emitted.completed_items();
+    let users: Vec<&str> = items
+        .iter()
+        .filter(|i| i["type"] == "userMessage")
+        .map(|i| i["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(users, ["use tabs", "and no tests"]);
+    let messages: Vec<(&str, &str)> = items
+        .iter()
+        .filter(|i| i["type"] == "agentMessage")
+        .map(|i| (i["text"].as_str().unwrap(), i["phase"].as_str().unwrap()))
+        .collect();
+    assert_eq!(messages, [("Starting on it.", "commentary"), ("Done with tabs.", "final_answer")]);
+    adapter.close();
+}
+
+#[test]
+fn an_openclaw_restart_that_never_stops_fails_and_the_turn_ends_interrupted() {
     let client = FakeAcpClient::new();
     let (adapter, emitted) = new_adapter(Flavor::OpenClaw, &client);
     let (thread_id, turn_id) = start(&adapter, &emitted);
-    call(
-        &adapter,
-        &emitted,
-        4,
-        "turn/steer",
-        json!({ "threadId": thread_id, "expectedTurnId": turn_id, "input": [{ "type": "text", "text": "x" }] }),
-    );
-    let error = emitted.response(json!(4)).unwrap()["error"]["message"]
+    wait_until(|| client.prompts().len() == 1);
+    let error = steer(&adapter, &emitted, 4, &thread_id, &turn_id, "x")["error"]["message"]
         .as_str()
         .unwrap()
         .to_string();
-    assert!(error.contains("OpenClaw runs cannot be steered"), "{error}");
-    assert!(!client.requests().iter().any(|(_, p)| p["prompt"][0]["text"] == "/steer x"));
+    assert!(error.contains("did not stop the turn"), "{error}");
+    assert_eq!(client.prompts().len(), 1, "no restart prompt after a failed cancel");
+    // The cancelled prompt stops late and still ends the turn.
+    client.finish(Ok(json!({ "stopReason": "cancelled" })));
+    emitted.wait_for_method("turn/completed");
+    assert_eq!(
+        emitted.notification("turn/completed").unwrap()["params"]["turn"]["status"],
+        "interrupted"
+    );
+    adapter.close();
+}
+
+#[test]
+fn openclaw_interrupt_cancels_the_session() {
+    let client = FakeAcpClient::new();
+    let (adapter, emitted) = new_adapter(Flavor::OpenClaw, &client);
+    let (thread_id, turn_id) = start(&adapter, &emitted);
     call(
         &adapter,
         &emitted,
@@ -247,6 +335,12 @@ fn openclaw_rejects_steers_and_interrupt_cancels_the_session() {
         lock(&client.notifications).clone(),
         [("session/cancel".to_string(), json!({ "sessionId": "acp-1" }))]
     );
+    // A steer during the interrupt is refused rather than restarting the turn.
+    let refused = steer(&adapter, &emitted, 6, &thread_id, &turn_id, "x")["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(refused.contains("being interrupted"), "{refused}");
     client.finish(Ok(json!({ "stopReason": "cancelled" })));
     emitted.wait_for_method("turn/completed");
     assert_eq!(

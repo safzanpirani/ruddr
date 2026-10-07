@@ -6,9 +6,12 @@
 //! A turn is one `session/prompt` request; its response, with a
 //! `stopReason`, ends the turn, and `session/update` notifications stream the
 //! reply, reasoning, and tool calls in between. An interrupt is the
-//! `session/cancel` notification. ACP has no steer, so only Hermes steers:
-//! its ACP server takes `/steer <text>` as a prompt while a turn runs and
-//! answers with a `⏩ Steer queued` message. OpenClaw rejects steers.
+//! `session/cancel` notification. ACP has no steer. Hermes's ACP server
+//! takes `/steer <text>` as a prompt while a turn runs and answers with a
+//! `⏩ Steer queued` message. OpenClaw steers by restarting: the adapter
+//! cancels the running prompt, waits for it to stop, and sends a new prompt
+//! that repeats the task with every steer so far, all inside the same Ruddr
+//! turn.
 //!
 //! The client declares no file-system or terminal capabilities, so the agent
 //! uses its own tools, and every permission request is answered `cancelled`:
@@ -25,9 +28,9 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 // Starting the agent and loading a long session replays its history.
@@ -36,6 +39,13 @@ const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(180);
 // real bound, this only keeps the call finite.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(48 * 3600);
 const STEER_ACCEPTED: &str = "⏩ Steer queued";
+// How long a restart steer waits for the cancelled prompt to stop. The
+// runner's steer call allows 30 seconds.
+const RESTART_SETTLE: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(20)
+};
 /// The catalog model that leaves the agent's configured model in place.
 pub const AGENT_DEFAULT_MODEL: &str = ruddr_core::models::AGENT_DEFAULT_MODEL;
 const STEER_REPLIES: [&str; 3] = [STEER_ACCEPTED, "⚠️ Steer failed", "No active turn"];
@@ -121,9 +131,17 @@ struct Turn {
     message_id: String,
     reasoning: String,
     messages: u32,
-    /// A `/steer` request is in flight; its reply is not part of the answer.
+    /// A `/steer` request or a restart is in flight; a `/steer` reply is
+    /// not part of the answer.
     steering: bool,
     steer_reply: Option<String>,
+    /// The turn's first prompt and the steers that restarted it.
+    task: String,
+    corrections: Vec<String>,
+    /// The `session/prompt` that ends the turn. A restart moves it on, and
+    /// `superseded` records the last replaced prompt that has returned.
+    prompt: u64,
+    superseded: u64,
 }
 
 #[derive(Default)]
@@ -142,6 +160,8 @@ struct Inner {
     client: Box<dyn AcpClient>,
     executable: String,
     state: Mutex<State>,
+    /// Signalled when a superseded prompt returns.
+    prompt_stopped: Condvar,
 }
 
 pub struct AcpAdapter {
@@ -162,6 +182,7 @@ impl AcpAdapter {
                 client,
                 executable,
                 state: Mutex::new(State::default()),
+                prompt_stopped: Condvar::new(),
             }),
         }
     }
@@ -182,7 +203,7 @@ impl Adapter for AcpAdapter {
             "thread/start" => Inner::acquire_thread(inner, params, false),
             "thread/resume" => Inner::acquire_thread(inner, params, true),
             "turn/start" => Inner::start_turn(inner, params),
-            "turn/steer" => inner.steer_turn(params),
+            "turn/steer" => Inner::steer_turn(inner, params),
             "turn/interrupt" => inner.interrupt_turn(params),
             _ => Err(AdapterError::not_found(format!(
                 "method {method} is not supported by the {} adapter",
@@ -269,6 +290,8 @@ impl Inner {
                 serial,
                 id: id.clone(),
                 message_id: format!("{id}-message-0"),
+                task: text.clone(),
+                prompt: 1,
                 ..Turn::default()
             });
             self.emit.emit(json!({
@@ -277,29 +300,30 @@ impl Inner {
             }));
             (id, serial)
         };
-        // The prompt request lasts the whole turn, so it runs off the
-        // dispatch thread and its response completes the turn.
-        let worker = self.clone();
-        let session = thread_id.clone();
-        thread::spawn(move || {
-            let prompt = json!({ "sessionId": session, "prompt": [{ "type": "text", "text": text }] });
-            let outcome = worker.client.request("session/prompt", prompt, Some(PROMPT_TIMEOUT));
-            worker.complete_turn(serial, outcome);
-        });
+        self.send_prompt(thread_id, serial, 1, text);
         Ok(json!({ "turn": { "id": turn_id, "status": "inProgress" } }))
     }
 
-    fn steer_turn(&self, params: &Value) -> AResult<Value> {
+    /// Sends prompt number `prompt` of turn `serial`. The request lasts the
+    /// whole turn, so it runs off the dispatch thread and its response
+    /// completes the turn unless a restart replaced it.
+    fn send_prompt(self: &Arc<Self>, session: String, serial: u64, prompt: u64, text: String) {
+        let worker = self.clone();
+        thread::spawn(move || {
+            let request = json!({ "sessionId": session, "prompt": [{ "type": "text", "text": text }] });
+            let outcome = worker.client.request("session/prompt", request, Some(PROMPT_TIMEOUT));
+            worker.complete_turn(serial, Some(prompt), outcome);
+        });
+    }
+
+    fn steer_turn(self: &Arc<Self>, params: &Value) -> AResult<Value> {
         let input = record(params, "steer parameters")?;
+        if self.flavor == Flavor::OpenClaw {
+            return self.restart_turn(input);
+        }
         let (thread_id, turn_id, serial) = {
             let mut state = lock(&self.state);
             let (thread_id, turn) = require_turn(self.flavor, &mut state, input, "expectedTurnId")?;
-            if self.flavor != Flavor::Hermes {
-                return Err(AdapterError::invalid(format!(
-                    "{} runs cannot be steered; interrupt the turn and send a new prompt",
-                    self.flavor.name()
-                )));
-            }
             if turn.steering {
                 return Err(AdapterError::invalid("a steer is already in flight"));
             }
@@ -336,6 +360,80 @@ impl Inner {
         Ok(json!({ "turnId": turn_id }))
     }
 
+    /// Steers by restarting: cancels the running prompt, waits for it to
+    /// stop, and sends the task again with every steer so far. The turn
+    /// stays open throughout, so the runner sees an accepted steer.
+    fn restart_turn(self: &Arc<Self>, input: &Map<String, Value>) -> AResult<Value> {
+        let text = read_text_input(input.get("input"))?;
+        let name = self.flavor.name();
+        let (thread_id, turn_id, serial, replaced) = {
+            let mut state = lock(&self.state);
+            let (thread_id, turn) = require_turn(self.flavor, &mut state, input, "expectedTurnId")?;
+            if turn.interrupted {
+                return Err(AdapterError::invalid(format!("the {name} turn is being interrupted")));
+            }
+            if turn.steering {
+                return Err(AdapterError::invalid("a steer is already in flight"));
+            }
+            turn.steering = true;
+            let replaced = turn.prompt;
+            turn.prompt += 1;
+            (thread_id, turn.id.clone(), turn.serial, replaced)
+        };
+        if let Err(error) = self.client.notify("session/cancel", json!({ "sessionId": thread_id })) {
+            let mut state = lock(&self.state);
+            if let Some(turn) = state.turn.as_mut().filter(|turn| turn.serial == serial) {
+                turn.prompt = replaced;
+                turn.steering = false;
+            }
+            return Err(error);
+        }
+        let deadline = Instant::now() + RESTART_SETTLE;
+        let mut state = lock(&self.state);
+        loop {
+            let Some(turn) = state.turn.as_mut().filter(|turn| turn.serial == serial) else {
+                return Err(AdapterError::failed(format!("the {name} turn ended before the steer restarted it")));
+            };
+            if turn.superseded >= replaced {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                // The cancelled prompt ends the turn as interrupted whenever it stops.
+                turn.prompt = replaced;
+                turn.steering = false;
+                return Err(AdapterError::failed(format!(
+                    "{name} did not stop the turn within {}s, so the steer was not applied; the turn ends as interrupted",
+                    RESTART_SETTLE.as_secs()
+                )));
+            }
+            state = self
+                .prompt_stopped
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        let turn = state.turn.as_mut().expect("turn is current");
+        turn.steering = false;
+        if turn.interrupted {
+            drop(state);
+            self.complete_turn(serial, None, Ok(json!({ "stopReason": "cancelled" })));
+            return Err(AdapterError::invalid(format!(
+                "the {name} turn was interrupted before the steer restarted it"
+            )));
+        }
+        turn.corrections.push(text.clone());
+        let prompt = restart_prompt(&turn.task, &turn.corrections);
+        let number = turn.prompt;
+        self.emit.emit(json!({
+            "method": "item/completed",
+            "params": { "threadId": thread_id, "item": { "id": uuid_v4(), "type": "userMessage", "status": "completed", "text": text } },
+        }));
+        drop(state);
+        self.send_prompt(thread_id, serial, number, prompt);
+        Ok(json!({ "turnId": turn_id }))
+    }
+
     fn interrupt_turn(&self, params: &Value) -> AResult<Value> {
         let input = record(params, "interrupt parameters")?;
         let thread_id = {
@@ -353,7 +451,7 @@ impl Inner {
             let message = optional_string(event.get("ruddr_error")).unwrap_or_default();
             let serial = lock(&self.state).turn.as_ref().map(|turn| turn.serial);
             if let Some(serial) = serial {
-                self.complete_turn(serial, Err(AdapterError::failed(message)));
+                self.complete_turn(serial, None, Err(AdapterError::failed(message)));
             }
             return;
         }
@@ -454,12 +552,24 @@ impl Inner {
         turn.message_id = format!("{}-message-{}", turn.id, turn.messages);
     }
 
-    fn complete_turn(&self, serial: u64, outcome: AResult<Value>) {
+    /// Ends turn `serial` with the outcome of its prompt number `prompt`, or
+    /// of the session when `prompt` is `None`. A prompt a restart replaced
+    /// only keeps its partial reply as commentary.
+    fn complete_turn(&self, serial: u64, prompt: Option<u64>, outcome: AResult<Value>) {
         let mut state = lock(&self.state);
         if !state.turn.as_ref().is_some_and(|turn| turn.serial == serial) {
             return;
         }
         let thread_id = state.thread.as_ref().map(|t| t.id.clone()).unwrap_or_default();
+        if let Some(prompt) = prompt
+            && let Some(turn) = state.turn.as_mut().filter(|turn| turn.prompt != prompt)
+        {
+            Self::flush_message(&self.emit, &thread_id, turn, "commentary");
+            turn.superseded = turn.superseded.max(prompt);
+            drop(state);
+            self.prompt_stopped.notify_all();
+            return;
+        }
         let mut turn = state.turn.take().expect("turn is current");
         // Unfinished tool calls end with the turn.
         let open: Vec<(String, Map<String, Value>)> = state.tools.drain().collect();
@@ -486,6 +596,20 @@ impl Inner {
         self.emit
             .emit(json!({ "method": "turn/completed", "params": { "threadId": thread_id, "turn": done } }));
     }
+}
+
+/// The prompt that restarts a steered turn: the task, then every steer in
+/// order. The agent's session may already hold the cancelled work.
+fn restart_prompt(task: &str, corrections: &[String]) -> String {
+    let mut text = format!(
+        "{task}\n\n[Steer] The user interrupted your work on the task above to add direction. \
+         Keep any work already done in this session and continue the task, following this direction:"
+    );
+    for correction in corrections {
+        text.push_str("\n\n");
+        text.push_str(correction);
+    }
+    text
 }
 
 fn chunk_text(update: &Map<String, Value>) -> String {

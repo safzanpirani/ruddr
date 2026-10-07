@@ -64,8 +64,9 @@ Providers:
   is a user message that Droid queues and reads at its next step.
 - **Hermes Agent and OpenClaw.** Ruddr speaks the Agent Client Protocol (ACP)
   to `hermes acp` and to `openclaw acp`, OpenClaw's bridge to its running
-  Gateway. Hermes steers through its `/steer` command; OpenClaw runs cannot be
-  steered.
+  Gateway. Hermes steers through its `/steer` command. OpenClaw steers by
+  restarting: Ruddr cancels the running prompt and sends the task again with
+  the steer.
 
 All providers use the same state directory, commands, and TUI. Codex speaks
 the app-server protocol itself. For the others, Ruddr starts its own
@@ -475,7 +476,12 @@ and `/tmp` edits allowed, sensitive paths still asked about, so refused) and
 A Hermes steer is sent as `/steer <text>` while the turn runs. Hermes injects
 it into the active turn and confirms it; the confirmation never reaches the
 transcript, and a steer Hermes does not confirm fails instead of becoming a
-new turn. OpenClaw runs reject steers; interrupt the turn and send a prompt.
+new turn. OpenClaw has no steer, so Ruddr steers it by restarting the prompt
+inside the same turn. It cancels the running prompt with `session/cancel`,
+waits up to 20 seconds for it to stop, and sends a new prompt that repeats the
+task followed by every steer so far. The cancelled prompt's partial reply
+stays in the transcript as commentary. When OpenClaw does not stop in time,
+the steer fails and the turn ends as interrupted.
 `openclaw acp` needs the OpenClaw Gateway running on the same machine. Use
 `--hermes-path` or `RUDDR_HERMES_PATH`, and `--openclaw-path` or
 `RUDDR_OPENCLAW_PATH`, to select the executables; otherwise Ruddr looks for

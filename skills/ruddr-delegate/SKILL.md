@@ -58,7 +58,8 @@ and writes only the release-check cache; it leaves installed skills untouched.
   OpenClaw, both over ACP. Use them when the user names them. The default
   model `agent-default` keeps the agent's configured model. They reject
   `--effort`, `--ephemeral`, `--fork-thread`, and `--sandbox read-only`.
-  Hermes accepts steers; OpenClaw does not, so interrupt and prompt instead.
+  Both accept steers. An OpenClaw steer restarts the turn's prompt with the
+  task and the steer, so keep OpenClaw steers rare and self-contained.
   OpenClaw needs its Gateway running on the same machine.
 - `--provider droid` runs Factory Droid. Use it when the user says "droid"
   or "factory". The default model is `glm-5.3-flash` with efforts `low`,
