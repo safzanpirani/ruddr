@@ -323,6 +323,14 @@ into `.scratch/ruddr` so run files stay out of `git status`. Sessions started
 from `ruddr tui` or `ruddr web` live in `.scratch/ruddr-tui`, which ignores
 itself the same way. Pass `--state-dir` when you want to choose the location.
 
+A nested run cannot widen its parent's sandbox. The controller exports its
+sandbox mode to the provider as `RUDDR_SANDBOX`, so a `ruddr run` that the
+provider's agent starts sees its parent's mode. Without `--sandbox` the nested
+run takes the narrower of `workspace-write` and the parent's mode; a broader
+explicit `--sandbox` fails. This guards against mistakes, not against an agent
+that unsets the variable. The variable does not cross `--remote`, and OpenClaw
+runs its tools in the Gateway, which never sees it.
+
 `--config KEY=VALUE` (repeatable) overrides a `~/.codex/config.toml` setting
 for one Codex run. A run fails at `thread/start` when that file enables a
 feature the chosen model rejects:

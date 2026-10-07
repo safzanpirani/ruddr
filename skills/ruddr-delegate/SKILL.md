@@ -169,6 +169,8 @@ glm-5.3-flash` as chosen above.
   `danger-full-access` only when the task genuinely needs network or
   out-of-workspace access and the user's policy allows it; use `read-only`
   for an advisory consult where edits are unwanted (and say so in the brief).
+  A run started from inside another Ruddr run cannot use a broader sandbox
+  than its parent; without `--sandbox` it inherits a narrower parent mode.
 - `--turn-timeout` defaults to one hour per turn.
 - Expecting follow-up turns? Add `--idle` and send later turns with
   `ruddr prompt --state-dir DIR "next task"`; end the session with

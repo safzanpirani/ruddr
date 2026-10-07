@@ -350,6 +350,8 @@ impl Controller {
         command
             .args(&self.cfg.child_command[1..])
             .current_dir(&self.cfg.cwd)
+            // A run the provider starts in turn stays inside this sandbox.
+            .env(crate::config::SANDBOX_ENV, &self.cfg.sandbox)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr);

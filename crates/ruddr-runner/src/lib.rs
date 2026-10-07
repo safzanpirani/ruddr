@@ -46,6 +46,9 @@ pub fn run_command(args: Vec<String>) -> Result<()> {
     if cfg.prompt_file.as_os_str().is_empty() {
         return Err(Error::usage("--prompt-file is required"));
     }
+    let explicit_sandbox = tokens.iter().any(|t| t.name == "sandbox");
+    let parent_sandbox = std::env::var(config::SANDBOX_ENV).ok();
+    config::inherit_parent_sandbox(&mut cfg, explicit_sandbox, parent_sandbox.as_deref())?;
     config::configure_provider_defaults(&mut cfg, child_args.as_deref().unwrap_or_default())?;
     // Checked here too so a detached launch reports a bad image at once.
     for image in &cfg.images {

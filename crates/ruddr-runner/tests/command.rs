@@ -148,3 +148,39 @@ fn usage_errors_exit_two() {
     run_command(args(&["--help"])).unwrap();
     assert!(!ws.root.join("run").exists(), "a usage error created the state directory");
 }
+
+#[test]
+fn a_nested_run_stays_inside_the_parent_sandbox() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let ws = Workspace::new();
+    let fake = fake_app_server();
+    let prompt = ws.arg("prompt.md");
+    let exported = ws.root.join("exported");
+    let launch = |name: &str, sandbox: Option<&str>| {
+        let state_dir = ws.arg(name);
+        let mut list = vec!["--prompt-file", &prompt, "--state-dir", &state_dir, "--model", "m"];
+        if let Some(sandbox) = sandbox {
+            list.extend(["--sandbox", sandbox]);
+        }
+        let log = exported.to_string_lossy().into_owned();
+        list.extend(["--", &fake, "--complete-on-start", "--sandbox-env-log", &log]);
+        run_command(args(&list))
+    };
+
+    // A top-level run exports its sandbox to the provider.
+    launch("top", Some("danger-full-access")).unwrap();
+    assert_eq!(std::fs::read_to_string(&exported).unwrap(), "danger-full-access");
+
+    // SAFETY: SERIAL keeps the tests in this binary from racing on the environment.
+    unsafe { std::env::set_var("RUDDR_SANDBOX", "read-only") };
+    let defaulted = launch("defaulted", None);
+    let widened = launch("widened", Some("workspace-write"));
+    unsafe { std::env::remove_var("RUDDR_SANDBOX") };
+
+    defaulted.unwrap();
+    assert_eq!(state::read_state(&ws.root.join("defaulted")).unwrap().sandbox, "read-only");
+    assert_eq!(std::fs::read_to_string(&exported).unwrap(), "read-only");
+    let error = widened.unwrap_err();
+    assert!(error.message.contains("cannot widen"), "{error}");
+    assert!(!ws.root.join("widened").exists(), "a refused run created its state directory");
+}

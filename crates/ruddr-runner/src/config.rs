@@ -170,6 +170,44 @@ pub fn validate_run_config(cfg: &mut RunConfig) -> Result<()> {
     }
 }
 
+/// The variable a controller sets on its provider to its sandbox mode. A run
+/// started from inside that provider reads it as its parent's sandbox.
+pub const SANDBOX_ENV: &str = "RUDDR_SANDBOX";
+
+/// How much a sandbox mode allows; `None` for an unknown mode.
+fn sandbox_rank(mode: &str) -> Option<u8> {
+    match mode {
+        "read-only" => Some(0),
+        "workspace-write" => Some(1),
+        "danger-full-access" => Some(2),
+        _ => None,
+    }
+}
+
+/// Keeps a nested run inside its parent run's sandbox. `parent` is the
+/// [`SANDBOX_ENV`] value the run inherited. Without `--sandbox` the run takes
+/// the narrower of its default and the parent's mode; an explicit broader
+/// `--sandbox` fails.
+pub fn inherit_parent_sandbox(cfg: &mut RunConfig, explicit: bool, parent: Option<&str>) -> Result<()> {
+    let Some(parent) = parent.filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    let Some(limit) = sandbox_rank(parent) else {
+        return Err(Error::failed(format!("{SANDBOX_ENV} has unsupported sandbox {parent:?}")));
+    };
+    match sandbox_rank(&cfg.sandbox) {
+        Some(rank) if rank > limit && explicit => Err(Error::failed(format!(
+            "--sandbox {} is broader than the parent run's {parent} sandbox; a nested run cannot widen it",
+            cfg.sandbox
+        ))),
+        Some(rank) if rank > limit => {
+            cfg.sandbox = parent.into();
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Fills in the default model and the app-server child command.
 ///
 /// Codex runs `codex app-server --listen stdio://` plus `-c KEY=VALUE` from
@@ -421,6 +459,44 @@ mod tests {
                 .message
                 .contains("persisted Claude session")
         );
+    }
+
+    #[test]
+    fn nested_runs_never_widen_the_parent_sandbox() {
+        let with = |sandbox: &str| RunConfig {
+            sandbox: sandbox.into(),
+            ..base()
+        };
+        // No parent: nothing changes.
+        let mut free = with("danger-full-access");
+        inherit_parent_sandbox(&mut free, true, None).unwrap();
+        inherit_parent_sandbox(&mut free, true, Some("")).unwrap();
+        assert_eq!(free.sandbox, "danger-full-access");
+        // The default narrows to the parent's mode.
+        let mut default = with("workspace-write");
+        inherit_parent_sandbox(&mut default, false, Some("read-only")).unwrap();
+        assert_eq!(default.sandbox, "read-only");
+        // A narrower or equal mode stays.
+        let mut narrower = with("read-only");
+        inherit_parent_sandbox(&mut narrower, true, Some("workspace-write")).unwrap();
+        assert_eq!(narrower.sandbox, "read-only");
+        let mut equal = with("workspace-write");
+        inherit_parent_sandbox(&mut equal, true, Some("workspace-write")).unwrap();
+        assert_eq!(equal.sandbox, "workspace-write");
+        let mut default_under_full = with("workspace-write");
+        inherit_parent_sandbox(&mut default_under_full, false, Some("danger-full-access")).unwrap();
+        assert_eq!(default_under_full.sandbox, "workspace-write");
+        // An explicit broader mode fails.
+        for (child, parent) in [
+            ("danger-full-access", "read-only"),
+            ("danger-full-access", "workspace-write"),
+            ("workspace-write", "read-only"),
+        ] {
+            let error = inherit_parent_sandbox(&mut with(child), true, Some(parent)).unwrap_err();
+            assert!(error.message.contains("cannot widen"), "{child} under {parent}: {error}");
+        }
+        let error = inherit_parent_sandbox(&mut with("read-only"), true, Some("yolo")).unwrap_err();
+        assert!(error.message.contains(SANDBOX_ENV), "{error}");
     }
 
     #[test]

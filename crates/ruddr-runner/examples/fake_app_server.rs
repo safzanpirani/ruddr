@@ -2,7 +2,8 @@
 //! line-delimited JSON-RPC on stdio and follows the flags it is started with,
 //! so each test picks its scenario without touching shared environment
 //! variables. `--request-log FILE` records every line the controller sends,
-//! so tests can assert the exact JSON-RPC requests.
+//! so tests can assert the exact JSON-RPC requests. `--sandbox-env-log FILE`
+//! writes the `RUDDR_SANDBOX` value the controller exported.
 //!
 //! `--detach-helper STATUS --detach-dir DIR` instead stands in for a detached
 //! controller: it records its arguments, then writes a state with STATUS, or
@@ -58,6 +59,7 @@ const VALUE_FLAGS: &[&str] = &[
     "eof-marker",
     "detach-helper",
     "detach-dir",
+    "sandbox-env-log",
 ];
 
 struct Out(std::io::Stdout);
@@ -85,6 +87,9 @@ fn main() {
     let options = Options::parse();
     if let Some(status) = options.value("detach-helper") {
         detach_helper(status, options.value("detach-dir").unwrap_or("."));
+    }
+    if let Some(path) = options.value("sandbox-env-log") {
+        std::fs::write(path, std::env::var("RUDDR_SANDBOX").unwrap_or_default()).unwrap();
     }
     if let Some(pid_file) = options.value("grandchild-pid-file") {
         spawn_grandchild(pid_file, options.on("term-ignoring-grandchild"));
