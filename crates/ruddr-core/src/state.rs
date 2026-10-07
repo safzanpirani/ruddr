@@ -145,6 +145,9 @@ pub struct RunState {
     pub completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The launch's `--request-id`; a repeated launch with it returns this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 fn is_zero_u32(value: &u32) -> bool {

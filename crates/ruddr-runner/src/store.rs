@@ -82,6 +82,7 @@ impl StateStore {
             updated_at: now,
             completed_at: None,
             error: None,
+            request_id: (!cfg.request_id.is_empty()).then(|| cfg.request_id.clone()),
         };
         if let Some(hook) = &cfg.before_state_reserve {
             hook();

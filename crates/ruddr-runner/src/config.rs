@@ -46,6 +46,8 @@ pub struct RunConfig {
     pub images: Vec<PathBuf>,
     /// Record the run in the global registry the TUI and web dashboard read.
     pub register_run: bool,
+    /// `--request-id`: a repeated launch with this key returns the same run.
+    pub request_id: String,
     /// Test seams that keep lifecycle tests fast and deterministic.
     pub idle_turn_start_timeout: Option<Duration>,
     pub interrupt_timeout: Option<Duration>,
@@ -83,6 +85,7 @@ impl Default for RunConfig {
             codex_config: Vec::new(),
             images: Vec::new(),
             register_run: false,
+            request_id: String::new(),
             idle_turn_start_timeout: None,
             interrupt_timeout: None,
             before_state_reserve: None,

@@ -171,6 +171,10 @@ glm-5.3-flash` as chosen above.
   for an advisory consult where edits are unwanted (and say so in the brief).
   A run started from inside another Ruddr run cannot use a broader sandbox
   than its parent; without `--sandbox` it inherits a narrower parent mode.
+- Add `--request-id KEY` (a unique slug per task, such as the task slug) when
+  a launch might be retried after a lost response or tool timeout. A repeat
+  with the same key reports the existing run instead of starting a second
+  one; use a new key to run the task again.
 - `--turn-timeout` defaults to one hour per turn.
 - Expecting follow-up turns? Add `--idle` and send later turns with
   `ruddr prompt --state-dir DIR "next task"`; end the session with

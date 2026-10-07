@@ -174,6 +174,12 @@ const SPECS: &[Spec] = &[
         help: "start in the background; observe startup for up to 15s and check the printed status",
     },
     Spec {
+        name: "request-id",
+        kind: Kind::Text,
+        value: "KEY",
+        help: "retry-safe launch: if this key already started a run, report that run instead of starting another",
+    },
+    Spec {
         name: "config",
         kind: Kind::Repeat,
         value: "KEY=VALUE",
@@ -338,6 +344,7 @@ fn apply(parsed: &mut Parsed, spec: &Spec, value: &str) -> Result<()> {
         "idle" => cfg.idle = parse_bool(spec.name, value)?,
         "idle-timeout" => cfg.idle_timeout = duration(value)?,
         "detach" => parsed.detach = parse_bool(spec.name, value)?,
+        "request-id" => cfg.request_id = crate::request::checked_request_id(value)?,
         "config" => {
             ruddr_core::models::parse_config_override(value)?;
             cfg.codex_config.push(value.into());
@@ -444,6 +451,8 @@ mod tests {
             "--image",
             "a.png",
             "--image=/b.jpg",
+            "--request-id",
+            "task-7",
         ]))
         .unwrap();
         let cfg = &parsed.cfg;
@@ -472,6 +481,7 @@ mod tests {
         assert_eq!(cfg.idle_timeout, std::time::Duration::ZERO);
         assert_eq!(cfg.codex_config, ["a=b", "c=d"]);
         assert_eq!(cfg.images, [PathBuf::from("a.png"), PathBuf::from("/b.jpg")]);
+        assert_eq!(cfg.request_id, "task-7");
         assert!(parsed.child_args.is_none());
     }
 
@@ -496,6 +506,7 @@ mod tests {
             (vec!["--turn-timeout", "-1s"], "invalid value"),
             (vec!["--idle=maybe"], "invalid boolean"),
             (vec!["--config", "no-equals-sign"], "KEY=VALUE"),
+            (vec!["--request-id", "a/b"], "--request-id"),
         ] {
             let error = parse(&strings(&args)).unwrap_err();
             assert_eq!(error.exit, ruddr_core::Exit::Usage, "{args:?}");

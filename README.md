@@ -323,6 +323,17 @@ into `.scratch/ruddr` so run files stay out of `git status`. Sessions started
 from `ruddr tui` or `ruddr web` live in `.scratch/ruddr-tui`, which ignores
 itself the same way. Pass `--state-dir` when you want to choose the location.
 
+`--request-id KEY` makes a launch retry-safe. Agents often repeat a launch
+after a lost response or a tool timeout. With a key, the default state
+directory is `.scratch/ruddr/req-KEY` and `state.json` records the key as
+`requestId`. When that directory already holds the key's run, `run` starts
+nothing and reports that run instead: `run --detach` prints its usual
+`detached run:` line, and a foreground `run` exits 0 for a completed run or 3
+for one still running. A failed or interrupted run exits 1 and a stale one
+exits 4, as `wait` would. Use a new key to run the task again. A key is 1 to 64
+letters, digits, `.`, `-`, or `_`. With an explicit `--state-dir`, the run in
+that directory must carry the same key.
+
 A nested run cannot widen its parent's sandbox. The controller exports its
 sandbox mode to the provider as `RUDDR_SANDBOX`, so a `ruddr run` that the
 provider's agent starts sees its parent's mode. Without `--sandbox` the nested
@@ -1360,6 +1371,8 @@ Starting runs. Useful `ruddr run` flags:
    --sandbox                    read-only | workspace-write (default) |
                                 danger-full-access
    --cwd DIR                    the workspace the provider edits
+   --request-id KEY             retry-safe launch: a repeat reports the
+                                run KEY already started
    --turn-timeout 1h            per-turn watchdog; 0 disables
    --config KEY=VALUE           Codex config override for this run
 The delegate skill selects --model gpt-6.1-sol --effort high for Codex.

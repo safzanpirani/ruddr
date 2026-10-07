@@ -106,8 +106,9 @@ flags with --help.
 run --detach starts the controller in the background and observes startup for
 up to 15 seconds. Check the printed status; starting means startup is pending.
 --prompt-file - and --message-file - read the text from stdin.
-A run started from inside another run cannot use a broader --sandbox than its
-parent.
+run --request-id KEY makes a launch retry-safe: when KEY already started a run,
+run reports that run instead of starting another. A run started from inside
+another run cannot use a broader --sandbox than its parent.
 run, steer, and prompt take --image FILE (repeatable) to attach png, jpg, gif,
 or webp images.
 

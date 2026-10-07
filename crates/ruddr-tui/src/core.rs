@@ -912,6 +912,7 @@ pub mod tests_support {
             updated_at: String::new(),
             completed_at: None,
             error: None,
+            request_id: None,
         }
     }
 }

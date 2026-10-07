@@ -16,6 +16,7 @@ mod controller_tests;
 pub mod detach;
 pub mod output;
 pub mod process;
+pub mod request;
 pub mod run;
 pub mod signals;
 pub mod store;
@@ -55,12 +56,21 @@ pub fn run_command(args: Vec<String>) -> Result<()> {
         ruddr_core::images::checked_image(image).map_err(Error::usage)?;
     }
     if cfg.state_dir.as_os_str().is_empty() {
-        let dir = config::default_state_dir(&cfg.cwd)?;
+        let dir = if cfg.request_id.is_empty() {
+            config::default_state_dir(&cfg.cwd)?
+        } else {
+            request::request_state_dir(&cfg.cwd, &cfg.request_id)?
+        };
         args::set_flag(&mut tokens, "state-dir", &dir.to_string_lossy());
         if !detach {
             eprintln!("ruddr: state-dir={}", dir.display());
         }
         cfg.state_dir = dir;
+    }
+    if !cfg.request_id.is_empty()
+        && let Some(existing) = request::existing_run(&cfg.state_dir, &cfg.request_id)?
+    {
+        return request::report_existing(&existing, &cfg.request_id, detach);
     }
     if cfg.prompt_file.as_os_str() == "-" {
         cfg.prompt_file = detach::write_stdin_prompt(&cfg.state_dir, std::io::stdin().lock())?;

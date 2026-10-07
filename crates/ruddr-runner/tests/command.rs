@@ -150,6 +150,61 @@ fn usage_errors_exit_two() {
 }
 
 #[test]
+fn a_repeated_request_id_reports_the_first_run_instead_of_starting_another() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let ws = Workspace::new();
+    let fake = fake_app_server();
+    let prompt = ws.arg("prompt.md");
+    let cwd = ws.root.to_string_lossy().into_owned();
+    let started = ws.root.join("started");
+    let launch = |key: &str| {
+        run_command(args(&[
+            "--prompt-file",
+            &prompt,
+            "--cwd",
+            &cwd,
+            "--request-id",
+            key,
+            "--model",
+            "m",
+            "--",
+            &fake,
+            "--complete-on-start",
+            "--sandbox-env-log",
+            &started.to_string_lossy(),
+        ]))
+    };
+    launch("task-7").unwrap();
+    let dir = ws.root.join(".scratch").join("ruddr").join("req-task-7");
+    let first = state::read_state(&dir).unwrap();
+    assert_eq!((first.status, first.request_id.as_deref()), (Status::Completed, Some("task-7")));
+    std::fs::remove_file(&started).unwrap();
+
+    // The retry starts no provider and leaves the first run untouched.
+    launch("task-7").unwrap();
+    assert!(!started.exists(), "the retry started a second provider");
+    assert_eq!(state::read_state(&dir).unwrap(), first);
+    assert_eq!(ruddr_core::registry::registered_in(std::slice::from_ref(&ws.registry)).len(), 1);
+
+    // An explicit state directory must hold a run with the same key.
+    let explicit = run_command(args(&[
+        "--prompt-file",
+        &prompt,
+        "--state-dir",
+        &dir.to_string_lossy(),
+        "--request-id",
+        "other",
+        "--",
+        &fake,
+    ]))
+    .unwrap_err();
+    assert!(explicit.message.contains("different request ID"), "{explicit}");
+
+    let bad = run_command(args(&["--prompt-file", &prompt, "--request-id", "../x"])).unwrap_err();
+    assert_eq!(bad.exit, Exit::Usage);
+}
+
+#[test]
 fn a_nested_run_stays_inside_the_parent_sandbox() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let ws = Workspace::new();

@@ -117,6 +117,7 @@ mod tests {
             updated_at: updated.into(),
             completed_at: None,
             error: None,
+            request_id: None,
         }
     }
 
