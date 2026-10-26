@@ -40,7 +40,7 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bunx tsc -p tsconfig.json --noEmit
+      - run: bunx tsrs -p tsconfig.json --noEmit
       - run: bun test web scripts
       - name: Check the embedded client bundle is current
         run: bun scripts/build-web.ts --check

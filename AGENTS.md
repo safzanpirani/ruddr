@@ -213,7 +213,7 @@ development dependency for it and nothing else. After changing `web/client`,
 
 ```bash
 bun install --frozen-lockfile --ignore-scripts
-bunx tsc -p tsconfig.json --noEmit
+bunx tsrs -p tsconfig.json --noEmit
 bun test web scripts
 bun scripts/build-web.ts          # rebuild crates/ruddr-web/assets
 bun scripts/build-web.ts --check  # exit 1 when the committed bundle is stale
