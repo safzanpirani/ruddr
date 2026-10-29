@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.4
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bunx tsrs -p tsconfig.json --noEmit
       - run: bun test web scripts

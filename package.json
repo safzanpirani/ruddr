@@ -51,7 +51,7 @@
   "devDependencies": {
     "@pierre/diffs": "1.5.1",
     "@pierre/trees": "1.0.0-beta.6",
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.4",
     "typescript": "^5.9.3"
   }
 }
