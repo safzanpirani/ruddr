@@ -84,6 +84,7 @@ fn null_default<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(deseri
 
 const CODEX_EFFORTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 const SOL_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+// gpt-6-luna, and the gpt-6.2 and gpt-6.1-terra models a Responses broker serves (2026-11-18).
 const LUNA_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 // OpenCode 2.0.22 model.list variants for the built-in OpenRouter DeepSeek model.
 const OPENCODE_EFFORTS: &[&str] = &["none", "low", "high", "max"];
@@ -91,6 +92,8 @@ const PI_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"
 // omp 18.6.1 `--thinking` levels.
 const OMP_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"];
 const DROID_EFFORTS: &[&str] = &["low", "high", "max"];
+// `droid exec -r` accepts these for Factory's Claude, GPT and Gemini models (droid 1.14.0).
+const DROID_FRONTIER_EFFORTS: &[&str] = &["off", "low", "medium", "high", "xhigh", "max"];
 /// Hermes and OpenClaw run the model their own config selects; this entry
 /// passes no model to the agent.
 pub const AGENT_DEFAULT_MODEL: &str = "agent-default";
@@ -113,22 +116,32 @@ pub fn builtin_catalog() -> Vec<ProviderModel> {
     let deepseek = "openrouter/deepseek/deepseek-v4-flash-vision-exp";
     vec![
         model(Codex, "gpt-6-astra", "GPT-6-Astra", CODEX_EFFORTS, true),
+        model(Codex, "gpt-6.2-sol", "GPT-6.2-Sol", LUNA_EFFORTS, false),
+        model(Codex, "gpt-6.2-astra", "GPT-6.2-Astra", LUNA_EFFORTS, false),
         model(Codex, "gpt-6.1-sol", "GPT-6.1-Sol", SOL_EFFORTS, false),
+        model(Codex, "gpt-6.1-terra", "GPT-6.1-Terra", LUNA_EFFORTS, false),
         model(Codex, "gpt-6-sol", "GPT-6-Sol", SOL_EFFORTS, false),
         model(Codex, "gpt-6-luna", "GPT-6-Luna", LUNA_EFFORTS, false),
         model(Codex, "gpt-5.6-sol", "GPT-5.6-Sol", CODEX_EFFORTS, false),
         model(Codex, "gpt-5.6-terra", "GPT-5.6-Terra", CODEX_EFFORTS, false),
         model(Codex, "gpt-5.6-luna", "GPT-5.6-Luna", CODEX_EFFORTS, false),
+        model(Claude, "claude-fable-5-2", "Claude Fable 5.2", &[], false),
         model(Claude, "claude-fable-5-1", "Claude Fable 5.1", &[], false),
-        model(Claude, "claude-fable-5", "Claude Fable 5", &[], false),
         model(Claude, "claude-opus-5-5", "Claude Opus 5.5", &[], true),
         model(Claude, "claude-opus-5", "Claude Opus 5", &[], false),
-        model(Claude, "claude-sonnet-5", "Claude Sonnet 5", &[], false),
-        model(Claude, "claude-haiku-4-5-20251001", "Claude Haiku 4.5", &[], false),
+        model(Claude, "claude-sonnet-5-5", "Claude Sonnet 5.5", &[], false),
+        model(Claude, "claude-haiku-5-5", "Claude Haiku 5.5", &[], false),
         model(OpenCode, deepseek, "DeepSeek V4 Flash Vision Exp", OPENCODE_EFFORTS, true),
         model(Pi, deepseek, "DeepSeek V4 Flash Vision Exp", PI_EFFORTS, true),
         model(Omp, "anthropic/claude-opus-5-5", "Claude Opus 5.5", OMP_EFFORTS, true),
         model(Droid, "glm-5.3-flash", "GLM-5.3-Flash", DROID_EFFORTS, true),
+        model(Droid, "claude-opus-5-5", "Claude Opus 5.5", DROID_FRONTIER_EFFORTS, false),
+        model(Droid, "claude-sonnet-5-5", "Claude Sonnet 5.5", DROID_FRONTIER_EFFORTS, false),
+        model(Droid, "claude-haiku-5-5", "Claude Haiku 5.5", DROID_FRONTIER_EFFORTS, false),
+        model(Droid, "claude-fable-5.2", "Claude Fable 5.2", DROID_FRONTIER_EFFORTS, false),
+        model(Droid, "gpt-6.1-sol", "GPT-6.1-Sol", DROID_FRONTIER_EFFORTS, false),
+        model(Droid, "gpt-5.6-terra", "GPT-5.6-Terra", DROID_FRONTIER_EFFORTS, false),
+        model(Droid, "gemini-3.1-pro-preview", "Gemini 3.1 Pro", DROID_FRONTIER_EFFORTS, false),
         model(Hermes, AGENT_DEFAULT_MODEL, "Hermes default", &[], true),
         model(OpenClaw, AGENT_DEFAULT_MODEL, "OpenClaw default", &[], true),
     ]
@@ -572,7 +585,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert_eq!(remove("codex", "gpt-5.6-luna").unwrap(), Removal::HidBuiltin);
-            set_default("claude", "claude-sonnet-5").unwrap();
+            set_default("claude", "claude-sonnet-5-5").unwrap();
 
             let catalog = load_catalog().unwrap();
             let find = |p: &str, id: &str| catalog.iter().find(|m| m.provider == p && m.id == id).cloned();
@@ -586,7 +599,7 @@ pub(crate) mod tests {
             assert_eq!(preview.efforts, ["low", "high"]);
             assert!(!preview.default);
             assert!(find("codex", "gpt-5.6-luna").is_none());
-            assert_eq!(default_model(Provider::Claude).unwrap().as_deref(), Some("claude-sonnet-5"));
+            assert_eq!(default_model(Provider::Claude).unwrap().as_deref(), Some("claude-sonnet-5-5"));
             for provider in Provider::ALL {
                 assert_eq!(catalog.iter().filter(|m| m.provider == provider.as_str() && m.default).count(), 1);
             }

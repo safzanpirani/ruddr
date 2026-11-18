@@ -63,7 +63,10 @@ and writes only the release-check cache; it leaves installed skills untouched.
   OpenClaw needs its Gateway running on the same machine.
 - `--provider droid` runs Factory Droid. Use it when the user says "droid"
   or "factory". The default model is `glm-5.3-flash` with efforts `low`,
-  `high`, and `max`; `droid exec --help` lists the rest. The sandbox sets
+  `high`, and `max`. The catalog also lists `claude-opus-5-5`,
+  `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5.2`, `gpt-6.1-sol`,
+  `gpt-5.6-terra`, and `gemini-3.1-pro-preview`; `droid exec --help` lists
+  most of the rest, and its list can lag behind Factory. The sandbox sets
   Droid's autonomy (`read-only` off, `workspace-write` medium,
   `danger-full-access` high). Ruddr rejects Droid's permission requests, so a
   tool call above that level ends the turn as failed. Droid refuses
@@ -74,8 +77,9 @@ and writes only the release-check cache; it leaves installed skills untouched.
 any the user added with `ruddr models add`; `ruddr run` without `--model`
 uses the listed default. OpenCode resumes keep their stored model. This skill
 selects `gpt-6.1-sol` at `high` effort
-for Codex runs. The built-in catalog also includes `gpt-6-sol` and
-`gpt-6-luna`; use `ruddr models --json` for their supported efforts. Honor
+for Codex runs. The built-in catalog also includes `gpt-6.2-sol`,
+`gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-sol`, and `gpt-6-luna`; use
+`ruddr models --json` for their supported efforts. Honor
 an explicit user choice. Pass `--model` explicitly so the run is reproducible
 from `state.json`.
 

@@ -3,8 +3,8 @@
 //! The adapter runs `droid exec --input-format stream-jsonrpc
 //! --output-format stream-jsonrpc` and speaks Factory's JSON-RPC envelope
 //! (`factoryApiVersion` 1.0.0). It is verified against droid 0.228.0,
-//! 0.230.0, and 0.234.0, which speak Factory protocols 1.233.0, 1.241.0, and
-//! 1.246.0. Factory publishes no schema; these behaviors were observed live:
+//! 0.230.0, 0.234.0, and 1.14.0, which speak Factory protocols 1.233.0,
+//! 1.241.0, 1.246.0, and 1.354.0. Factory publishes no schema; these behaviors were observed live:
 //!
 //! - `droid.load_session` works without `droid.initialize_session`. Calling
 //!   initialize first would create a stray empty session, so resume and fork

@@ -289,8 +289,8 @@ export routes that 2.0.15 introduced, and falls back to the older
 
 Pi runs require the `pi` executable with RPC mode. omp runs require the `omp`
 executable; the adapter follows the RPC protocol of omp 18.6.1. Droid runs require the
-`droid` executable and are verified against droid 0.228.0, 0.230.0, and
-0.234.0, which speak Factory protocols 1.233.0, 1.241.0, and 1.246.0. The adapters inherit each CLI's normal authentication
+`droid` executable and are verified against droid 0.228.0, 0.230.0,
+0.234.0, and 1.14.0, which speak Factory protocols 1.233.0, 1.241.0, 1.246.0, and 1.354.0. The adapters inherit each CLI's normal authentication
 environment.
 
 ## Run a task
@@ -517,7 +517,11 @@ ruddr run --provider droid --cwd "$PWD" \
 ```
 
 The default Droid model is `glm-5.3-flash`, with efforts `low`, `high`, and
-`max`. `droid exec --help` lists every model your Factory account offers. Use
+`max`. The catalog also lists Factory's `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`, `claude-fable-5.2`, `gpt-6.1-sol`, `gpt-5.6-terra`, and
+`gemini-3.1-pro-preview`, each with efforts `off` through `max`.
+`droid exec --help` lists most models your Factory account offers, though its
+list can lag behind Factory. Use
 `--droid-path` or `RUDDR_DROID_PATH` to select a Droid executable; without
 either, Ruddr looks for `droid` on `PATH`. The sandbox
 sets Droid's autonomy level: `read-only` runs at `off`, `workspace-write` at
@@ -668,9 +672,11 @@ Rules:
 its default. The TUI's picker uses it, and `ruddr run` without `--model` uses
 the default. OpenCode resumes keep their stored model.
 
-The Codex catalog includes `gpt-6.1-sol`, `gpt-6-sol`, and `gpt-6-luna`.
-All three support `low`, `medium`, `high`, `xhigh`, and `max` reasoning;
-the two Sol models also support `ultra`. Select one with `--model`, for example
+The Codex catalog includes `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-sol`,
+`gpt-6.1-terra`, `gpt-6-sol`, and `gpt-6-luna`. All of them support `low`,
+`medium`, `high`, `xhigh`, and `max` reasoning; `gpt-6.1-sol` and `gpt-6-sol`
+also support `ultra`. The gpt-6.2 and gpt-6.1-terra models need a Codex model
+provider that serves them. Select one with `--model`, for example
 `ruddr run --prompt-file task.md --model gpt-6.1-sol --effort high`.
 The delegate skill defaults to that model and effort; the CLI catalog default
 is `gpt-6-astra`.
@@ -684,7 +690,7 @@ IDs to choose from.
 ruddr models add opencode opencode/deepseek-v4-flash --label "DeepSeek Flash" --default
 ruddr models add codex gpt-7-preview --efforts low,medium,high
 ruddr models add codex gpt-6-sol --config features.token_budget.use_history_notes_extension=false
-ruddr models default claude claude-sonnet-5
+ruddr models default claude claude-sonnet-5-5
 ruddr models remove codex gpt-5.6-luna      # hides a built-in model
 ruddr models path                           # where the file lives
 ```
@@ -1376,7 +1382,7 @@ Starting runs. Useful `ruddr run` flags:
    --turn-timeout 1h            per-turn watchdog; 0 disables
    --config KEY=VALUE           Codex config override for this run
 The delegate skill selects --model gpt-6.1-sol --effort high for Codex.
-The catalog also includes gpt-6-sol and gpt-6-luna. A run without --model
+The catalog also includes gpt-6.2-sol, gpt-6.2-astra, gpt-6.1-terra, gpt-6-sol and gpt-6-luna. A run without --model
 uses the catalog default (gpt-6-astra unless changed in models.json).
 A Codex run that fails at thread/start over a model or feature setting takes
 it from ~/.codex/config.toml. Override it with --config KEY=VALUE, or once for
