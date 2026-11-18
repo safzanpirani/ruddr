@@ -744,6 +744,24 @@ the run. Stdout and exit codes keep their existing behavior.
 Use a positive Go duration such as `30s` or `1m`; bare integers are invalid.
 Use `--progress 1m` for background waits so the harness's job band shows liveness.
 
+### Addresses
+
+Every run has an address: `ruddr://` plus its absolute state directory, for
+example `ruddr:///home/me/app/.scratch/ruddr-demo/run`. `status` for one run
+prints it on an `address:` line, `status --json` carries it as `"address"` for
+one run or several, and a detached launch prints `address=`. Every
+`--state-dir` flag, including those of `run`, `tui`, and `web`, accepts the
+address in place of the directory, so a note or handoff can cite the run and a
+later command can act on it:
+
+```bash
+ruddr status --state-dir ruddr:///home/me/app/.scratch/ruddr-demo/run
+```
+
+Once the provider has a thread, `status` also prints `session:`, the dejavu
+address of that provider session (`dejavu://codex/<thread id>`), which
+`dejavu show` and `dejavu transcript` open.
+
 ### Prune missing run references
 
 ```bash

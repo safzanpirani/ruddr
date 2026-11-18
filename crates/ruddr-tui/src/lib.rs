@@ -93,7 +93,9 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             "--root" => args.roots.push(absolute(value("--root")?)),
             // state.json records an absolute stateDir; resolve here so the
             // explicit-session comparisons match a relative argument.
-            "--state-dir" => args.state_dirs.push(absolute(value("--state-dir")?)),
+            "--state-dir" => args
+                .state_dirs
+                .push(absolute(ruddr_core::address::state_dir_arg(&value("--state-dir")?).to_string())),
             "--interval" => args.interval = parse_interval(&value("--interval")?)?,
             "--theme" => args.theme = Some(value("--theme")?),
             "--beta" => args.beta = true,

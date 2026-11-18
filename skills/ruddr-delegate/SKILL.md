@@ -240,6 +240,11 @@ ruddr tui                                                 # every session, live
 ruddr web                                                 # browser dashboard
 ```
 
+`status` prints the run's address, `ruddr://<absolute state dir>`, and once the
+provider has a thread, its `dejavu://<provider>/<thread id>` session. Cite those
+in notes, commits, and handoffs instead of a bare path. Every `--state-dir`
+flag accepts the `ruddr://` address, and `dejavu show` opens the session.
+
 In `ruddr tui`, `H` browses every agent's local sessions. With `deja` on PATH,
 `f` searches sessions as you type and Enter opens a result read-only. `Ctrl+R`
 opens its continuation prompt. `L` opens the last eligible session in the TUI

@@ -323,7 +323,7 @@ fn apply(parsed: &mut Parsed, spec: &Spec, value: &str) -> Result<()> {
         "cwd" => cfg.cwd = PathBuf::from(value),
         "prompt-file" => cfg.prompt_file = PathBuf::from(value),
         "image" => cfg.images.push(PathBuf::from(value)),
-        "state-dir" => cfg.state_dir = PathBuf::from(value),
+        "state-dir" => cfg.state_dir = PathBuf::from(ruddr_core::address::state_dir_arg(value)),
         "model" => cfg.model = value.into(),
         "effort" => cfg.effort = value.into(),
         "sandbox" => cfg.sandbox = value.into(),

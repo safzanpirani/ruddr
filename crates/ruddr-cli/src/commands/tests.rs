@@ -394,15 +394,20 @@ fn single_status_prints_a_line_and_stale_state() {
     let mut out = Vec::new();
     runs::status(&mut out, strings(&["--state-dir", &dir.display().to_string()])).unwrap();
     let text = String::from_utf8(out).unwrap();
+    let address = ruddr_core::address::of_state_dir(dir);
     assert_eq!(
         text,
         format!(
-            "stale provider=codex thread=th turn=tu pid={DEAD_PID} steers=2\nerror: Ruddr pid {DEAD_PID} is not running; persisted state is stale\n"
+            "stale provider=codex thread=th turn=tu pid={DEAD_PID} steers=2\naddress: {address}\nsession: dejavu://codex/th\nerror: Ruddr pid {DEAD_PID} is not running; persisted state is stale\n"
         )
     );
+    // The address works wherever a state directory does.
     let mut out = Vec::new();
-    runs::status(&mut out, strings(&["--state-dir", &dir.display().to_string(), "--json"])).unwrap();
-    let state: RunState = serde_json::from_slice(&out).unwrap();
+    runs::status(&mut out, strings(&["--state-dir", &address, "--json"])).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(value["address"], address.as_str());
+    assert_eq!(value["session"], "dejavu://codex/th");
+    let state: RunState = serde_json::from_value(value).unwrap();
     assert_eq!(state.status, Status::Stale);
 }
 

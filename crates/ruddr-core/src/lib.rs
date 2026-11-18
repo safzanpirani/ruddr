@@ -2,6 +2,7 @@
 //! nothing here starts processes or threads: it holds the contracts (state
 //! files, exit codes, control messages, JSON-RPC framing) and pure helpers.
 
+pub mod address;
 pub mod control;
 pub mod diff;
 pub mod duration;

@@ -82,8 +82,11 @@ pub fn run_command(args: Vec<String>) -> Result<()> {
         command.extend(child.into_iter().map(OsString::from));
         let startup = detach::start_detached_run(&cfg.state_dir, &command, detach::STARTUP_WINDOW)?;
         println!(
-            "detached run: state-dir={} pid={} status={}",
-            startup.state_dir, startup.pid, startup.status
+            "detached run: state-dir={} pid={} status={} address={}",
+            startup.state_dir,
+            startup.pid,
+            startup.status,
+            ruddr_core::address::of_state_dir(std::path::Path::new(&startup.state_dir))
         );
         return Ok(());
     }

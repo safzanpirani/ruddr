@@ -72,7 +72,9 @@ pub fn parse_web_arguments(argv: &[String], environment: &dyn Fn(&str) -> Option
             "--host" => args.host = value()?,
             "--port" => args.port = parse_port(&value()?).ok_or_else(|| Error::usage("--port must be 0-65535"))?,
             "--root" => args.roots.push(ruddr_core::paths::absolute(value()?.as_ref())),
-            "--state-dir" => args.state_dirs.push(ruddr_core::paths::absolute(value()?.as_ref())),
+            "--state-dir" => args
+                .state_dirs
+                .push(ruddr_core::paths::absolute(ruddr_core::address::state_dir_arg(&value()?).as_ref())),
             "--interval" => {
                 let interval = parse_interval(&value()?).ok_or_else(|| Error::usage("--interval must look like 500ms or 2s"))?;
                 if interval < Duration::from_millis(100) {

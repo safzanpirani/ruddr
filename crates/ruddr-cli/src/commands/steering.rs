@@ -40,6 +40,7 @@ fn attached_images(parsed: &args::Parsed) -> Result<Vec<String>> {
 fn state_dir_flag(parsed: &args::Parsed) -> Result<String> {
     parsed
         .string("state-dir")
+        .map(|d| ruddr_core::address::state_dir_arg(&d).to_string())
         .filter(|d| !d.is_empty())
         .ok_or_else(|| Error::usage("--state-dir is required"))
 }
@@ -59,7 +60,7 @@ fn turn_of(state: &RunState) -> &str {
 
 pub fn steer(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> Result<()> {
     let specs = [
-        args::value("state-dir", "DIR", "Ruddr run state directory"),
+        args::value("state-dir", "DIR", "Ruddr run state directory or ruddr:// address"),
         args::value("message-file", "FILE", "read steering text from this file; - reads stdin"),
         args::multi("image", "FILE", "attach a png, jpg, gif, or webp image (repeatable)"),
         args::value("expected-turn-id", "ID", "reject the steer if the active turn changed"),
@@ -102,7 +103,7 @@ pub fn steer(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> Re
 
 pub fn prompt(out: &mut dyn Write, argv: Vec<String>, stdin: &mut dyn Read) -> Result<()> {
     let specs = [
-        args::value("state-dir", "DIR", "Ruddr run state directory"),
+        args::value("state-dir", "DIR", "Ruddr run state directory or ruddr:// address"),
         args::value("message-file", "FILE", "read prompt text from this file; - reads stdin"),
         args::multi("image", "FILE", "attach a png, jpg, gif, or webp image (repeatable)"),
         args::value("timeout", "DURATION", "control request timeout (default 1m0s)"),

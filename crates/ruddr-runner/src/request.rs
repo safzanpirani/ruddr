@@ -67,7 +67,12 @@ pub fn report_existing(run: &RunState, key: &str, detach: bool) -> Result<()> {
             run.state_dir
         ))),
         status if detach => {
-            println!("detached run: state-dir={} pid={} status={status}", run.state_dir, run.pid);
+            println!(
+                "detached run: state-dir={} pid={} status={status} address={}",
+                run.state_dir,
+                run.pid,
+                ruddr_core::address::of_state_dir(std::path::Path::new(&run.state_dir))
+            );
             Ok(())
         }
         Status::Completed => Ok(()),

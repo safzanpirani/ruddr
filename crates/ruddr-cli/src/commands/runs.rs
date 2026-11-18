@@ -6,7 +6,7 @@
 use super::args::{self, Parsed, Spec, multi};
 use super::progress::Progress;
 use ruddr_core::state::{RunState, STATE_FILE, Status, read_state};
-use ruddr_core::{Error, Result};
+use ruddr_core::{Error, Result, address};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ pub fn process_alive(pid: i64) -> bool {
 
 /// The flags that select runs.
 pub const SELECTION_SPECS: [Spec; 2] = [
-    multi("state-dir", "DIR", "Ruddr run state directory (repeatable)"),
+    multi("state-dir", "DIR", "Ruddr run state directory or ruddr:// address (repeatable)"),
     multi("root", "DIR", "act on every run below DIR (repeatable)"),
 ];
 
@@ -50,7 +50,11 @@ pub struct Selection {
 impl Selection {
     pub fn from_parsed(parsed: &Parsed) -> Result<Selection> {
         let selection = Selection {
-            state_dirs: parsed.all("state-dir"),
+            state_dirs: parsed
+                .all("state-dir")
+                .iter()
+                .map(|dir| ruddr_core::address::state_dir_arg(dir).to_string())
+                .collect(),
             roots: parsed.all("root"),
         };
         if selection.state_dirs.iter().chain(&selection.roots).any(String::is_empty) {
@@ -220,7 +224,11 @@ impl View {
 
     pub fn to_json(&self) -> serde_json::Value {
         match self {
-            View::Run(state) => serde_json::to_value(state).unwrap_or(serde_json::Value::Null),
+            View::Run(state) => {
+                let mut value = serde_json::to_value(state).unwrap_or(serde_json::Value::Null);
+                address::annotate(&mut value, Path::new(&state.state_dir), &state.provider, state.thread_id.as_deref());
+                value
+            }
             View::Unreadable { state_dir, error } => {
                 serde_json::json!({ "status": "unreadable", "stateDir": state_dir, "error": error })
             }
@@ -558,9 +566,12 @@ pub fn status(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
         }
         return print_table(out, &refs, &views, ruddr_core::time::now_ms());
     };
-    let state = read_state(require_state_dir(single)?)?.displayed();
+    let state_dir = require_state_dir(single)?;
+    let state = read_state(state_dir)?.displayed();
     if json {
-        return print_json(out, &state);
+        let mut value = serde_json::to_value(&state)?;
+        address::annotate(&mut value, state_dir, &state.provider, state.thread_id.as_deref());
+        return print_json(out, &value);
     }
     writeln!(
         out,
@@ -572,6 +583,10 @@ pub fn status(out: &mut dyn Write, argv: Vec<String>) -> Result<()> {
         state.pid,
         state.steers
     )?;
+    writeln!(out, "address: {}", address::of_state_dir(state_dir))?;
+    if let Some(session) = address::session(&state.provider, state.thread_id.as_deref()) {
+        writeln!(out, "session: {session}")?;
+    }
     if let Some(error) = state.error.as_deref().filter(|e| !e.is_empty()) {
         writeln!(out, "error: {error}")?;
     }
