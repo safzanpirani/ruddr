@@ -71,7 +71,11 @@ and writes only the release-check cache; it leaves installed skills untouched.
   `danger-full-access` high). Ruddr rejects Droid's permission requests, so a
   tool call above that level ends the turn as failed. Droid refuses
   `--ephemeral`. `--fork-thread` copies the whole session, and the fork turn
-  selectors work on turns Ruddr started after 0.6.7.
+  selectors work on turns Ruddr started after 0.6.7. For implementation work
+  pick `--model claude-opus-5-5 --effort high` (or `gpt-6.1-sol --effort
+  high`) with `workspace-write`; the `glm-5.3-flash` default suits only easy,
+  non-technical tasks. Droid has its own Task tool, so tell it in the brief not
+  to start subagents.
 
 `ruddr models --json` lists every model and effort per provider, including
 any the user added with `ruddr models add`; `ruddr run` without `--model`
@@ -169,6 +173,12 @@ glm-5.3-flash` as chosen above.
   It exits non-zero if startup fails during that window. Check the printed
   status: a successful return can still report `starting`. Poll
   `ruddr status --state-dir DIR --json` until startup finishes.
+- Create the brief file in one tool call and launch in the next. Do not chain
+  `cat > brief <<EOF`, `ruddr run ... &` and a `sleep` into one shell call:
+  a harness that blocks hand-rolled sleeps rejects the whole call, the brief is
+  never written, and the run fails with `read <brief>: No such file or
+  directory`. Read startup with `ruddr status --json` or `ruddr peek` instead
+  of sleeping.
 - `--sandbox workspace-write` is the safe default. Escalate to
   `danger-full-access` only when the task genuinely needs network or
   out-of-workspace access and the user's policy allows it; use `read-only`
